@@ -13,10 +13,19 @@ export function CartPage() {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState('');
+  const [guest, setGuest] = useState(false);
   async function load() {
     setError('');
     try { setCart(await api<Cart>('/cart')); }
-    catch (e) { if (e instanceof ApiError && (e.status === 401 || e.status === 403)) setError('Bitte melde dich an, um deinen Warenkorb zu sehen.'); else setError(errorMessage(e)); }
+    catch (e) {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        // Not signed in: show the guest basket instead of an error. Buying
+        // without an account is a supported path, not a dead end.
+        try { setCart(await api<Cart>('/guest/cart')); setGuest(true); setLoading(false); return; }
+        catch { setError('Bitte melde dich an, um deinen Warenkorb zu sehen.'); setLoading(false); return; }
+      }
+      setError(errorMessage(e));
+    }
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
@@ -27,7 +36,10 @@ export function CartPage() {
   }
   async function remove(productId: string) {
     setBusy(productId); setError('');
-    try { setCart(await api<Cart>(`/cart/items/${productId}`, 'DELETE')); }
+    try {
+      setCart(guest ? await api<Cart>(`/guest/cart/items/${encodeURIComponent(productId)}`, 'DELETE')
+        : await api<Cart>(`/cart/items/${productId}`, 'DELETE'));
+    }
     catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
   }
   const total = cart.total_gross_cents ?? cart.subtotal_gross_cents;
@@ -52,7 +64,9 @@ export function CartPage() {
           <div className="summary-lines"><p><span>Zwischensumme</span><strong>{euro(cart.subtotal_gross_cents)}</strong></p>
             {cart.discount_cents && cart.discount_cents !== '0' && <p><span>Rabatt {cart.coupon_code ? `(${cart.coupon_code})` : ''}</span><strong>−{euro(cart.discount_cents)}</strong></p>}
             <p className="summary-total"><span>Gesamt</span><strong>{euro(total)}</strong></p></div>
-          <Link className="button button-primary" href="/kasse">Zur Bestellung <Arrow/></Link>
+          <Link className="button button-primary" href={guest ? '/kasse/gast' : '/kasse'}>Zur Bestellung <Arrow/></Link>
+          {guest && <p className="muted small-print">Du bestellst ohne Konto. <Link className="text-link"
+            href={`/anmelden?weiter=${encodeURIComponent('/warenkorb')}`}>Anmelden</Link> – dein Warenkorb wandert mit.</p>}
         </section>
         <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">GUTSCHEIN</span>
           <h2>Gutscheincode</h2><p>Ein Gutschein je Bestellung. Der Rabatt wird beim Bestellen erneut geprüft.</p></div></div>

@@ -52,14 +52,16 @@ export function AdminOrders() {
         <h2>Offene und bezahlte Bestellungen</h2>
         <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt` : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
         <div className="choice-row" role="group" aria-label="Statusfilter">
-          {['awaiting', 'paid', 'review', 'cancelled', ''].map(value => <label key={value || 'all'}>
+          {['awaiting', 'paid', 'unlinked', 'review', 'cancelled', ''].map(value => <label key={value || 'all'}>
             <input type="radio" checked={state === value} onChange={() => { setState(value); void load(value); }}/>
-            {value === '' ? 'Alle' : paymentStateLabels[value]}</label>)}
+            {value === '' ? 'Alle' : value === 'unlinked' ? 'Ohne Konto' : paymentStateLabels[value]}</label>)}
         </div>
         {!orders.length && !error ? <p className="muted">Keine Bestellungen in dieser Auswahl.</p> : <div className="draft-list">
           {orders.map(order => <Link className="draft-row" key={order.id} href={`/admin/bestellungen/${order.id}`}>
             <div><strong>{order.order_number} · {order.buyer.name || order.buyer.email}</strong>
-              <span>{dateTime(order.placed_at)} · {order.payment_method === 'invoice' ? 'Rechnung' : 'Karte'} · {order.items.join(', ')}</span></div>
+              <span>{dateTime(order.placed_at)} · {order.payment_method === 'invoice' ? 'Rechnung' : 'Karte'}
+                {order.identity_kind === 'guest' && <> · Gastkauf{!order.buyer.has_account && ' · ohne Konto'}</>}
+                {' · '}{order.items.join(', ')}</span></div>
             <span className="draft-row-end"><span className="draft-badge">{euro(order.total_gross_cents)}</span>
               <span className="status-chip">{paymentStateLabels[order.payment_state] ?? order.payment_state}</span><Arrow/></span></Link>)}
         </div>}
@@ -72,7 +74,8 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
   const [order, setOrder] = useState<OrderDetail>();
   const [error, setError] = useState(''); const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState('');
-  const [reference, setReference] = useState(''); const [note, setNote] = useState(''); const [reason, setReason] = useState('customer_request');
+  const [reference, setReference] = useState('');
+  const [decision, setDecision] = useState<'grant' | 'cancel'>('grant'), [linkNote, setLinkNote] = useState(''); const [note, setNote] = useState(''); const [reason, setReason] = useState('customer_request');
   const [reauthPassword, setReauthPassword] = useState(''); const [reauthCode, setReauthCode] = useState('');
   const [reauthNeeded, setReauthNeeded] = useState(false);
   async function load() {
@@ -148,6 +151,24 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
             <button className="button button-secondary" disabled={!!busy}>{busy === 'cancel' ? 'Bitte warten …' : 'Bestellung stornieren'}</button>
           </form>
         </> : <p className="publication-ok">Für diese Bestellung ist keine Zahlungsbuchung mehr offen.</p>}
+        {manage && order.payment_state === 'paid' && order.identity_kind === 'guest' && !order.account_linked && <>
+          <div className="inner-divider"/>
+          <h3>Gastbestellung ohne Konto</h3>
+          <p className="muted">Die Adresse dieser bezahlten Bestellung gehört zu einem gesperrten Konto. Der Zugang wurde
+            bewusst nicht automatisch vergeben. Entscheide ausdrücklich.</p>
+          <form className="stack-form" onSubmit={event => { event.preventDefault();
+            void run('resolve', `/admin/orders/${order.id}/resolve-link`, { decision, note: linkNote },
+              decision === 'grant' ? 'Zugang ausdrücklich vergeben.' : 'Bestellung storniert; Erstattung separat veranlassen.'); }}>
+            <Field label="Entscheidung" id="resolve-decision"><select id="resolve-decision" value={decision}
+              onChange={e => setDecision(e.target.value as 'grant' | 'cancel')}>
+              <option value="grant">Trotz Sperre Zugang vergeben (Kunde hat bezahlt)</option>
+              <option value="cancel">Bestellung stornieren und erstatten</option></select></Field>
+            <Field label="Begründung" id="resolve-note"><input id="resolve-note" value={linkNote}
+              onChange={e => setLinkNote(e.target.value)} maxLength={500} required/></Field>
+            <button className="button button-secondary" disabled={!!busy}>
+              {busy === 'resolve' ? 'Bitte warten …' : 'Entscheidung festhalten'}</button>
+          </form>
+        </>}
         <div className="inner-divider"/>
         <h3>Zugang</h3>
         {order.access.length ? <ul className="plain-list">{order.access.map(access => <li key={access.course_id}>

@@ -41,6 +41,26 @@ export class Outbox {
       status: 'queued', max_attempts: 8, run_after: now,
     } });
   }
+  /** Re-issue an activation mail for an account created by a guest purchase. */
+  async issueActivationFor(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    if (!user || user.status !== 'pending_activation') return;
+    await this.issueToken(tx, user, 'activation');
+  }
+
+  /** Transactional mail for a recipient without (or before) an account. */
+  async notifyGuest(tx: Prisma.TransactionClient, toEmail: string, firstName: string, templateKey: string,
+                    variables: Record<string, string> = {}): Promise<void> {
+    const version = await this.template(tx, templateKey);
+    const id = uuidv7(); const now = new Date();
+    await tx.emailOutbox.create({ data: { id, template_version_id: version.id, purpose: 'transaction',
+      user_id: null, to_email: toEmail, variables_public: { first_name: firstName, ...variables },
+      idempotency_key: `outbox-${id}`, status: 'queued', scheduled_at: now } });
+    await tx.automationJob.create({ data: { id: uuidv7(), kind: 'email.send', ref_type: 'email_outbox',
+      ref_id: id, payload_schema_version: 1, payload: { schema_version: 1 }, idempotency_key: `email-${id}`,
+      status: 'queued', max_attempts: 8, run_after: now } });
+  }
+
   async notify(tx: Prisma.TransactionClient, userId: string, toEmail: string, firstName: string, templateKey: string,
                variables: Record<string, string> = {}): Promise<void> {
     const version = await this.template(tx, templateKey);

@@ -5,10 +5,12 @@ import { Mfa } from './mfa';
 import { Sessions, ApiRequest } from './sessions';
 import { Admin } from './admin';
 import { apiError } from './security';
+import { GuestCheckout } from './guest';
 
 @Controller()
 export class IdentityController {
-  constructor(private readonly auth: Auth, private readonly mfa: Mfa, private readonly sessions: Sessions, private readonly admin: Admin) {}
+  constructor(private readonly auth: Auth, private readonly mfa: Mfa, private readonly sessions: Sessions,
+              private readonly admin: Admin, private readonly guest: GuestCheckout) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   // Publication, commerce and learning access are available behind explicit
@@ -32,8 +34,16 @@ export class IdentityController {
   }
   @Post('auth/login')
   async login(@Req() req: ApiRequest, @Res({passthrough:true}) res: Response, @Body() body: unknown) {
-    await this.sessions.verifyCsrf(req); const status = await this.auth.login(body, this.ip(req), req, res);
-    res.status(status === 'authenticated' ? 200 : 202); return { status };
+    await this.sessions.verifyCsrf(req);
+    const login = await this.auth.login(body, this.ip(req), req, res);
+    const { status } = login;
+    // A guest basket follows the buyer into the account instead of disappearing.
+    // The user id comes from the login transaction itself: the new session cookie
+    // only exists in the response, never in this request. Backoffice users get
+    // their basket after the MFA challenge instead.
+    const merged_items = status === 'authenticated'
+      ? await this.guest.mergeIntoAccount(req, res, login.userId) : 0;
+    res.status(status === 'authenticated' ? 200 : 202); return { status, merged_items };
   }
   @Post('auth/mfa/enrollment/start') @HttpCode(200)
   async mfaStart(@Req() req: ApiRequest) {

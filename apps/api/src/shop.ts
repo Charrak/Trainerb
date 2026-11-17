@@ -8,6 +8,7 @@ import { billingAddress, couponCode, discountFor, idempotencyKey, optionalCoupon
   type BillingAddress } from './commerce-validation';
 import { getConfig } from './config';
 import { Outbox } from './outbox';
+import { fulfilPaidOrder } from './fulfilment';
 
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
 const CART_TTL_MS = 24 * 60 * 60_000;
@@ -386,10 +387,14 @@ export class Shop {
       accesses: { select: { course_id: true, revoked_at: true } } } });
     if (!order) throw missing();
     const staff = ctx.permissionKeys.has('orders.read') && ctx.session.kind === 'backoffice';
+    // An unlinked guest order is only reachable through the buyer cookie (see
+    // `orderDetail`); a session alone never proves a guest's identity.
     if (order.user_id !== ctx.user.id && !staff) throw missing();
     const settings = await this.settings(tx);
     return {
       id: order.id, order_number: order.order_number, placed_at: order.placed_at,
+      identity_kind: order.identity_kind, buyer_email: order.buyer_email_canonical,
+      account_linked: order.user_id !== null,
       payment_method: order.payment_method, payment_state: order.payment_state,
       fulfillment_state: order.fulfillment_state, subtotal_gross_cents: String(order.subtotal_gross_cents),
       discount_cents: String(order.discount_cents), total_gross_cents: String(order.total_gross_cents),
@@ -435,20 +440,30 @@ export class Shop {
   /** Admin: all orders with an optional state filter. */
   async adminOrders(ctx: SessionContext, stateInput: unknown, limitInput: unknown, cursorInput: unknown) {
     const state = stateInput === undefined || stateInput === '' ? null : String(stateInput);
-    if (state !== null && !['awaiting', 'paid', 'cancelled', 'review'].includes(state)) {
+    // `unlinked` is not a payment state: it filters paid guest orders that still
+    // have no account, which is exactly the set a human has to resolve.
+    if (state !== null && !['awaiting', 'paid', 'cancelled', 'review', 'unlinked'].includes(state)) {
       throw apiError(422, 'INVALID_STATE', 'Unbekannter Status.');
     }
     const limit = limitInput === undefined ? 25 : Number(limitInput);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw apiError(422, 'INVALID_LIMIT', 'Ungültige Seitengröße.');
     const cursor = cursorInput === undefined ? undefined : requireUuid(String(cursorInput));
-    const where: Prisma.OrderWhereInput = state ? { payment_state: state } : {};
+    const where: Prisma.OrderWhereInput = state === 'unlinked'
+      ? { identity_kind: 'guest', user_id: null, payment_state: 'paid' }
+      : state ? { payment_state: state } : {};
     const rows = await this.db.order.findMany({ where, take: limit + 1, orderBy: [{ placed_at: 'desc' }, { id: 'desc' }],
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       include: { user: { select: { id: true, first_name: true, last_name: true, email_canonical: true } },
         items: { select: { title_snapshot: true } } } });
     const data = rows.slice(0, limit).map(order => ({ id: order.id, order_number: order.order_number,
-      placed_at: order.placed_at, buyer: { name: `${order.user.first_name ?? ''} ${order.user.last_name ?? ''}`.trim(),
-        email: order.user.email_canonical }, payment_method: order.payment_method, payment_state: order.payment_state,
+      placed_at: order.placed_at, identity_kind: order.identity_kind,
+      // An unlinked guest order still shows who bought it: the verified address
+      // and the participant name captured with the order.
+      buyer: { name: order.user ? `${order.user.first_name ?? ''} ${order.user.last_name ?? ''}`.trim()
+          : [order.guest_participant_first_name, order.guest_participant_last_name].filter(Boolean).join(' '),
+        email: order.user?.email_canonical ?? order.buyer_email_canonical,
+        has_account: !!order.user_id },
+      payment_method: order.payment_method, payment_state: order.payment_state,
       fulfillment_state: order.fulfillment_state, total_gross_cents: String(order.total_gross_cents),
       currency: order.currency, items: order.items.map(item => item.title_snapshot) }));
     return { data, next_cursor: rows.length > limit && data.length ? data[data.length - 1].id : null,
@@ -502,41 +517,22 @@ export class Shop {
           currency: order.currency, confirmed_at: now, provider_payment_id: reference } });
       }
       await tx.order.update({ where: { id: orderId }, data: { payment_state: 'paid', paid_at: now,
-        paid_confirmed_by: ctx.user.id } });
-      await this.grantAccess(tx, orderId);
-      await tx.couponReservation.updateMany({ where: { order_id: orderId, status: 'reserved' },
-        data: { status: 'redeemed', resolved_at: now } });
+        paid_via: 'admin', paid_confirmed_by: ctx.user.id } });
+      // A guest order gets its account here, inside the same transaction: money
+      // is real, so the buyer may be linked; the order stays unfulfilled if the
+      // account is blocked and a human has to decide.
+      await fulfilPaidOrder(tx, orderId, this.outbox);
       await this.audit(tx, ctx.user.id, 'order.payment_confirmed', 'order', orderId, { reference, note: note || null });
-      if (order.buyer_email_original) {
-        const buyer = await tx.user.findUnique({ where: { id: order.user_id }, select: { first_name: true } });
-        await this.outbox.notify(tx, order.user_id, order.buyer_email_original, buyer?.first_name || 'du', 'order_paid',
+      const paid = await tx.order.findUniqueOrThrow({ where: { id: orderId }, select: { user_id: true } });
+      if (order.buyer_email_original && paid.user_id) {
+        const buyer = await tx.user.findUnique({ where: { id: paid.user_id }, select: { first_name: true } });
+        await this.outbox.notify(tx, paid.user_id, order.buyer_email_original,
+          buyer?.first_name || order.guest_participant_first_name || 'du', 'order_paid',
           { order_number: order.order_number, total: centsToText(order.total_gross_cents),
             payment_reference: order.payment_reference || order.order_number });
       }
       return this.orderView(tx, ctx, orderId);
     });
-  }
-
-  /** Access is derived from the frozen order snapshot, never from current product links. */
-  private async grantAccess(tx: Prisma.TransactionClient, orderId: string) {
-    const items = await tx.orderItemCourse.findMany({ where: { order_id: orderId }, include: { item: true },
-      orderBy: [{ order_item_product: 'asc' }] });
-    const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
-    if (!items.length) throw apiError(409, 'FULFILMENT_INCOMPLETE', 'Diese Bestellung enthält keine Kurszuordnung.');
-    const now = new Date();
-    for (const item of items) {
-      const existing = await tx.courseAccess.findFirst({ where: { user_id: order.user_id, course_id: item.course_id,
-        revoked_at: null } });
-      if (existing) {
-        // Buying the same course twice would silently extend nothing; the second
-        // order still gets fulfilled, but the existing access stays untouched.
-        continue;
-      }
-      const endsAt = item.access_days ? new Date(now.getTime() + item.access_days * 24 * 60 * 60_000) : null;
-      await tx.courseAccess.create({ data: { id: uuidv7(), user_id: order.user_id, course_id: item.course_id,
-        course_version_id: item.course_version_id, source: 'order', order_id: orderId, starts_at: now, ends_at: endsAt } });
-    }
-    await tx.order.update({ where: { id: orderId }, data: { fulfillment_state: 'fulfilled', fulfilled_at: now } });
   }
 
   async cancelOrder(ctx: SessionContext, orderIdInput: string, input: unknown) {

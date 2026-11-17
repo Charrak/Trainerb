@@ -10,6 +10,7 @@ import { RateLimiter } from './limiter';
 import { getConfig } from './config';
 import { apiError, bodyObject, keyedHash, seal, unseal } from './security';
 import { ApiRequest, SessionContext, Sessions } from './sessions';
+import { GuestCheckout } from './guest';
 
 const fail = () => apiError(401, 'MFA_FAILED', 'Der Bestätigungscode ist ungültig oder abgelaufen.');
 const recoveryHash = (code: string) => keyedHash(getConfig().tokenKey, 'mfa-recovery', code.replace(/-/g, '').toLowerCase());
@@ -25,7 +26,8 @@ function matchingStep(secret: string, label: string, code: string): bigint | nul
 
 @Injectable()
 export class Mfa {
-  constructor(private readonly db: Database, private readonly limiter: RateLimiter, private readonly sessions: Sessions) {}
+  constructor(private readonly db: Database, private readonly limiter: RateLimiter, private readonly sessions: Sessions,
+              private readonly guest: GuestCheckout) {}
 
   // The caller holds the user row lock, which serializes role changes, resets,
   // logout and the creation of a full backoffice session.
@@ -114,6 +116,8 @@ export class Mfa {
       return this.sessions.prepare(tx, req, ctx.user.id, 'backoffice', ctx.session.id);
     });
     this.sessions.setCookies(res, cookies);
-    return { status: 'authenticated' };
+    // A basket collected before login follows the buyer into the backoffice too.
+    const merged_items = await this.guest.mergeIntoAccount(req, res, ctx.user.id);
+    return { status: 'authenticated', merged_items };
   }
 }

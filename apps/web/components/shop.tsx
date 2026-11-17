@@ -56,14 +56,22 @@ export function ShopProductPage({ productId }: { productId: string }) {
         ? 'Dieses Produkt ist nicht buchbar.' : errorMessage(e)); });
     return () => { active = false; };
   }, [productId]);
+  /**
+   * Adding to the basket works signed in or not: the guest basket is the
+   * default, and it merges into the account when the buyer signs in later. Only
+   * a backoffice-only session (403) is redirected to the login form.
+   */
   async function add() {
     setBusy(true); setError('');
-    try { await api('/cart/items', 'POST', { product_id: productId }); setAdded(true); router.push('/warenkorb'); }
-    catch (e) {
-      if (e instanceof ApiError && e.status === 401) { router.push(`/anmelden?weiter=${encodeURIComponent(`/buchen/${productId}`)}`); return; }
-      if (e instanceof ApiError && e.status === 403) { router.push(`/anmelden?weiter=${encodeURIComponent(`/buchen/${productId}`)}`); return; }
-      setError(errorMessage(e)); setBusy(false);
-    }
+    try {
+      try { await api('/cart/items', 'POST', { product_id: productId }); }
+      catch (e) {
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          await api('/guest/cart/items', 'POST', { product_id: productId });
+        } else throw e;
+      }
+      setAdded(true); router.push('/warenkorb');
+    } catch (e) { setError(errorMessage(e)); setBusy(false); }
   }
   return <div className="catalog-page content-width"><Link className="back-link" href="/buchen">← Alle Angebote</Link>
     <Notice message={error}/>
