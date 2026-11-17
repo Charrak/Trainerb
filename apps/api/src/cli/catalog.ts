@@ -18,6 +18,7 @@ const templates: Record<string,{subject:string;text:string}> = {
   password_changed: { subject:'Dein Passwort wurde geändert', text:'Hallo {{first_name}},\n\ndas Passwort für dein Konto wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
   order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\nvielen Dank für deine Bestellung {{order_number}} über {{total}} EUR.\n\nBitte überweise den Betrag unter Angabe der Referenz {{payment_reference}} auf das im Konto genannte Konto. Sobald der Zahlungseingang gebucht ist, steht dir der Inhalt in deinem Konto zur Verfügung.' },
   order_paid: { subject:'Zahlungseingang zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben deine Zahlung zur Bestellung {{order_number}} verbucht. Dein Zugang ist jetzt in deinem Konto freigeschaltet.' },
+  checkout_email_verify: { subject:'Bestätige deine E-Mail-Adresse für die Bestellung', text:'Hallo,\n\nbitte bestätige diese E-Mail-Adresse, damit wir deine Bestellung annehmen können. Öffne dafür diesen Link:\n\n{{verify_url}}\n\nAlternativ kannst du diesen Code eingeben: {{code}}\n\nDer Link ist 30 Minuten gültig. Wenn du nichts bestellt hast, ignoriere diese Nachricht einfach.' },
   email_changed_old: { subject:'Deine Konto-E-Mail-Adresse wurde geändert', text:'Hallo {{first_name}},\n\ndie E-Mail-Adresse deines Kontos wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
 };
 
@@ -46,6 +47,9 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
             ...(key === 'activation' ? [{ name:'activation_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'password_reset' ? [{ name:'reset_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'email_change' ? [{ name:'email_change_url', type:'url', secrecy:'secret' }] : []),
+            ...(key === 'checkout_email_verify' ? [
+              { name:'verify_url', type:'url', secrecy:'secret' },
+              { name:'code', type:'text', secrecy:'secret' }] : []),
             ...(key === 'order_placed' || key === 'order_paid' ? [
               { name:'order_number', type:'text', secrecy:'public' },
               { name:'total', type:'text', secrecy:'public' },

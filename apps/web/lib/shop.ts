@@ -8,10 +8,16 @@ export type ShopProductDetail = { id: string; sku: string; type: 'single' | 'bun
 export type CartItem = { product_id: string; price_id: string; sku: string; title: string; variant_name: string | null;
   gross_cents: string; list_gross_cents: string; currency: string };
 export type Cart = { id: string | null; items: CartItem[]; subtotal_gross_cents: string; currency: string;
-  discount_cents?: string; total_gross_cents?: string; coupon_code?: string | null };
+  discount_cents?: string; total_gross_cents?: string; coupon_code?: string | null;
+  email_verified?: boolean; email_verification_pending?: boolean };
+/** A guest order is identified by the cart cookie, never by a session. */
+export type GuestOrder = OrderDetail & { identity_kind: 'account' | 'guest'; buyer_email: string;
+  account_linked: boolean };
+export type ProofStatus = { email_verified: boolean; email_verification_pending: boolean; email: string | null };
 export type OrderSummary = { id: string; order_number: string; placed_at: string; payment_state: string;
   fulfillment_state: string; total_gross_cents: string; currency: string };
-export type OrderDetail = OrderSummary & { payment_method: 'invoice' | 'stripe'; subtotal_gross_cents: string;
+export type OrderDetail = OrderSummary & { identity_kind?: 'account' | 'guest'; buyer_email?: string;
+  account_linked?: boolean; payment_method: 'invoice' | 'stripe'; subtotal_gross_cents: string;
   discount_cents: string; due_at: string | null; paid_at: string | null; payment_reference: string | null;
   billing_snapshot: Record<string, string | null>; coupon_code: string | null;
   items: { product_id: string; title: string; variant: string | null; unit_gross_cents: string; total_gross_cents: string;
@@ -26,7 +32,8 @@ export type OrderDetail = OrderSummary & { payment_method: 'invoice' | 'stripe';
 export type MyCourse = { course_id: string; slug: string; title: string; subtitle: string | null;
   duration_minutes: number | null; starts_at: string; ends_at: string | null; chapter_count: number;
   completed_count: number };
-export type AdminOrder = { id: string; order_number: string; placed_at: string; buyer: { name: string; email: string | null };
+export type AdminOrder = { id: string; order_number: string; placed_at: string; identity_kind: 'account' | 'guest';
+  buyer: { name: string; email: string | null; has_account: boolean };
   payment_method: string; payment_state: string; fulfillment_state: string; total_gross_cents: string; currency: string;
   items: string[] };
 

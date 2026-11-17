@@ -3,6 +3,7 @@ import { Shop } from './shop';
 import { Learning, Accesses } from './learning';
 import { Commerce } from './commerce';
 import { StripePayments } from './stripe';
+import { GuestCheckout } from './guest';
 import { RateLimiter } from './limiter';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError } from './security';
@@ -104,7 +105,7 @@ export class ShopController {
 @Controller()
 export class CommerceAdminController {
   constructor(private readonly shop: Shop, private readonly commerce: Commerce, private readonly accesses: Accesses,
-              private readonly sessions: Sessions) {}
+              private readonly sessions: Sessions, private readonly guest: GuestCheckout) {}
 
   @Get('admin/orders') async orders(@Req() req: ApiRequest, @Query('state') state: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
@@ -124,6 +125,12 @@ export class CommerceAdminController {
   async cancel(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'orders.manage', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.shop.cancelOrder(ctx, id, body);
+  }
+  /** Resolve a paid guest order whose address belongs to a blocked account. */
+  @Post('admin/orders/:id/resolve-link') @HttpCode(200)
+  async resolveLink(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'orders.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.guest.resolveUnlinked(ctx, id, body);
   }
   @Get('admin/commerce') async commerceState(@Req() req: ApiRequest) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage' });

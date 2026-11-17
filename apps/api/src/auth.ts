@@ -110,7 +110,8 @@ export class Auth {
     });
   }
 
-  async login(body: unknown, ip: string, req: ApiRequest, res: Response): Promise<'authenticated' | 'mfa_required' | 'mfa_enrollment_required'> {
+  async login(body: unknown, ip: string, req: ApiRequest, res: Response):
+    Promise<{ status: 'authenticated' | 'mfa_required' | 'mfa_enrollment_required'; userId: string }> {
     const data = bodyObject(body, ['email', 'password']);
     const email = normalizeEmail(data.email);
     const password = typeof data.password === 'string' && Buffer.byteLength(data.password, 'utf8') <= 1024 ? data.password : '';
@@ -137,10 +138,10 @@ export class Auth {
       await tx.user.update({ where: { id: current.id }, data: { last_login_at: new Date(), ...(upgradedHash ? { password_hash: upgradedHash } : {}) } });
       const cookies = await this.sessions.prepare(tx, req, current.id, privileged ? 'preauth' : 'participant');
       const status = privileged ? (current.mfa_factors.length ? 'mfa_required' : 'mfa_enrollment_required') : 'authenticated';
-      return { cookies, status } as const;
+      return { cookies, status, userId: current.id } as const;
     });
     this.sessions.setCookies(res, result.cookies);
-    return result.status;
+    return { status: result.status, userId: result.userId };
   }
 
   async resetPassword(body: unknown, ip: string): Promise<void> {

@@ -5,6 +5,8 @@ import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
 import { getConfig } from './config';
 import { apiError } from './security';
+import { Outbox } from './outbox';
+import { fulfilPaidOrder } from './fulfilment';
 
 const unavailable = () => apiError(409, 'STRIPE_UNAVAILABLE', 'Kartenzahlung ist derzeit nicht eingerichtet.');
 
@@ -22,10 +24,10 @@ type StripeSessionFacts = { id: string; paymentIntentId: string | null; amount: 
  */
 @Injectable()
 export class StripePayments {
+  constructor(private readonly db: Database, private readonly outbox: Outbox) {}
+
   private readonly client = getConfig().stripeSecretKey
     ? new Stripe(getConfig().stripeSecretKey!, { maxNetworkRetries: 2 }) : null;
-
-  constructor(private readonly db: Database) {}
 
   get enabled(): boolean { return this.client !== null; }
 
@@ -124,19 +126,13 @@ export class StripePayments {
         provider_payment_id: facts.paymentIntentId } });
       await tx.paymentAttempt.updateMany({ where: { order_id: order.id, provider: 'stripe', id: { not: attempt.id },
         status: { in: ['created', 'pending'] } }, data: { status: 'cancelled', failure_code: 'superseded' } });
-      await tx.order.update({ where: { id: order.id }, data: { payment_state: 'paid', paid_at: now } });
-      await tx.couponReservation.updateMany({ where: { order_id: order.id, status: 'reserved' },
-        data: { status: 'redeemed', resolved_at: now } });
-      const courses = await tx.orderItemCourse.findMany({ where: { order_id: order.id } });
-      for (const course of courses) {
-        const existing = await tx.courseAccess.findFirst({ where: { user_id: order.user_id,
-          course_id: course.course_id, revoked_at: null } });
-        if (existing) continue;
-        const endsAt = course.access_days ? new Date(now.getTime() + course.access_days * 24 * 60 * 60_000) : null;
-        await tx.courseAccess.create({ data: { id: uuidv7(), user_id: order.user_id, course_id: course.course_id,
-          course_version_id: course.course_version_id, source: 'order', order_id: order.id, starts_at: now, ends_at: endsAt } });
-      }
-      await tx.order.update({ where: { id: order.id }, data: { fulfillment_state: 'fulfilled', fulfilled_at: now } });
+      // A provider callback is a payment confirmation without a human actor;
+      // `paid_via` records that instead of a person.
+      await tx.order.update({ where: { id: order.id }, data: { payment_state: 'paid', paid_at: now,
+        paid_via: 'provider' } });
+      // Shared with the bank-transfer path: the same rules decide when access
+      // exists, including linking a guest order to its account.
+      await fulfilPaidOrder(tx, order.id, this.outbox);
     });
   }
 }

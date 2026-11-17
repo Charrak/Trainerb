@@ -91,7 +91,11 @@ export class MailWorker {
   private async message(outboxId: string): Promise<MailMessage | null> {
     const item = await this.db.emailOutbox.findUnique({ where: { id: outboxId },
       include: { user: true, template_version: { include: { template: true } } } });
-    if (!item || item.status !== 'sending' || !item.user || !['pending_activation', 'active'].includes(item.user.status)) return null;
+    // Guest mails have no account yet; they are addressed to the proven address.
+    if (!item || item.status !== 'sending') return null;
+    if (item.user && !['pending_activation', 'active'].includes(item.user.status)) return null;
+    if (!item.user && item.template_version.template.key !== 'checkout_email_verify' &&
+        !['order_placed', 'order_paid'].includes(item.template_version.template.key)) return null;
     const publicVars = item.variables_public;
     if (!publicVars || typeof publicVars !== 'object' || Array.isArray(publicVars) || typeof publicVars.first_name !== 'string') {
       throw new Error('Invalid template variables.');
@@ -100,6 +104,7 @@ export class MailWorker {
     const key = item.template_version.template.key;
     const purposes = { activation: 'activation_url', password_reset: 'reset_url', email_change: 'email_change_url' } as const;
     if (key in purposes) {
+      if (!item.user) return null;
       if (!item.variables_secret_ciphertext || !item.secret_key_id || !item.secret_delete_after || item.secret_delete_after <= new Date()) return null;
       const payload = unseal<{ token: string; purpose: string }>(item.variables_secret_ciphertext, `outbox:${item.id}`, item.secret_key_id);
       if (payload.purpose !== key || !/^[A-Za-z0-9_-]{43}$/.test(payload.token)) throw new Error('Invalid secret payload.');
@@ -118,6 +123,18 @@ export class MailWorker {
         if (typeof value !== 'string' || !/^[A-Za-z0-9 .,:€/-]{1,64}$/.test(value)) throw new Error('Invalid template variables.');
         variables[name] = value;
       }
+    } else if (key === 'checkout_email_verify') {
+      // Guest checkout proof: the six-digit code is public, the link token is
+      // sealed. A proof that already expired or was consumed is not re-sent —
+      // the buyer has to request a fresh one, exactly like an expired link.
+      const code = publicVars.code;
+      if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new Error('Invalid template variables.');
+      if (!item.variables_secret_ciphertext || !item.secret_key_id || !item.secret_delete_after ||
+          item.secret_delete_after <= new Date()) return null;
+      const payload = unseal<{ token: string; purpose: string }>(item.variables_secret_ciphertext, `outbox:${item.id}`, item.secret_key_id);
+      if (payload.purpose !== key || !/^[A-Za-z0-9_-]{43}$/.test(payload.token)) throw new Error('Invalid secret payload.');
+      variables.code = code;
+      variables.verify_url = `${getConfig().publicBaseUrl}/kasse/bestaetigen#token=${encodeURIComponent(payload.token)}`;
     } else if (!['password_changed', 'email_changed_old'].includes(key)) {
       throw new Error('Unsupported mail template.');
     }
