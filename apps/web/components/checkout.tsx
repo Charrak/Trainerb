@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { checkoutKey, dateOnly, euro, type Cart, type OrderDetail, type ShopConfig } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
+import { InvoiceDownload } from './invoices';
 
 const emptyCart: Cart = { id: null, items: [], subtotal_gross_cents: '0', currency: 'EUR' };
 
@@ -231,6 +232,8 @@ export function OrderPage({ orderId }: { orderId: string }) {
         <h2>Rechnung</h2></div></div>
         {order.invoice ? <>
           <p><strong>{order.invoice.invoice_number}</strong> · {dateOnly(order.invoice.issued_at)}</p>
+          {order.invoice.pdf_href && <InvoiceDownload href={order.invoice.pdf_href}/>}
+          {!order.invoice.pdf_href && <p className="muted small-print">Der Beleg steht zum Download bereit, sobald die Zahlung bestätigt ist.</p>}
           <div className="invoice-columns"><div><span className="section-kicker">RECHNUNGSSTELLER</span>
             <p>{order.invoice.seller.name}<br/>{order.invoice.seller.street}<br/>{order.invoice.seller.postal_code} {order.invoice.seller.city}<br/>{order.invoice.seller.email}</p></div>
             <div><span className="section-kicker">RECHNUNGSEMPFÄNGER</span>

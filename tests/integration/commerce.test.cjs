@@ -272,6 +272,68 @@ test('invoice checkout creates an immutable order, and access appears only after
   status(await strangerFixture.browser.get(`/orders/${placed.body.id}`), 404);
 });
 
+test('the invoice is an immutable document: issued once, downloaded only by its owner', async () => {
+  const order = await db.order.findFirstOrThrow({ where: { user_id: { not: null }, payment_state: 'paid' } });
+  const buyer = new Browser();
+  const owner = await db.user.findUniqueOrThrow({ where: { id: order.user_id } });
+  status(await buyer.change('post', '/auth/login', { email: owner.email_canonical, password }), 200);
+
+  const list = await buyer.get('/invoices'); status(list, 200);
+  const entry = list.body.data.find(row => row.order_id === order.id);
+  assert.ok(entry, 'the paid order appears in the invoice list');
+  assert.match(entry.invoice_number, /^TB-RE-\d{4}-\d{6}$/);
+  assert.equal(entry.total_gross_cents, String(order.total_gross_cents));
+  assert.equal(entry.payment_state, 'paid');
+
+  const pdf = await buyer.get(`/invoices/${entry.id}/pdf`);
+  status(pdf, 200);
+  assert.match(pdf.headers['content-type'], /application\/pdf/);
+  assert.match(pdf.headers['content-disposition'], /attachment; filename="Rechnung-TB-RE-\d{4}-\d{6}\.pdf"/);
+  assert.match(pdf.headers['cache-control'], /no-store/);
+  assert.equal(pdf.headers['x-content-type-options'], 'nosniff');
+  const raw = pdf.body.toString('latin1');
+  assert.ok(raw.startsWith('%PDF-1.4'));
+  assert.ok(raw.trimEnd().endsWith('%%EOF'));
+  // The document is rebuilt from the snapshot, so a later change to the product
+  // or the settings must not alter an already issued invoice.
+  const stored = await db.invoice.findUniqueOrThrow({ where: { id: entry.id } });
+  const before = pdf.body;
+  await db.commerceSettings.update({ where: { id: 1 }, data: { invoice_seller_name: 'Anderer Steller' } });
+  const second = await buyer.get(`/invoices/${entry.id}/pdf`); status(second, 200);
+  assert.deepEqual(second.body, before);
+  assert.ok(!second.body.toString('latin1').includes('Anderer Steller'));
+  await db.commerceSettings.update({ where: { id: 1 }, data: { invoice_seller_name: 'Trainer B Akademie (Platzhalter – bitte ergänzen)' } });
+
+  // Another account and an anonymous caller get the same `404` as for any id.
+  const stranger = await register('invoice-stranger');
+  status(await stranger.browser.change('post', '/auth/login', { email: stranger.email, password }), 200);
+  status(await stranger.browser.get(`/invoices/${entry.id}/pdf`), 404);
+  status(await request(server).get(`/api/v1/invoices/${entry.id}/pdf`), 401);
+  // A random id is indistinguishable from a foreign one.
+  status(await buyer.get(`/invoices/${uuidv7()}/pdf`), 404);
+
+  // Staff support access requires the order permission, not the buyer session.
+  status(await buyer.get(`/admin/invoices/${entry.id}/pdf`), 403);
+  const staffPdf = await admin.get(`/admin/invoices/${entry.id}/pdf`); status(staffPdf, 200);
+  assert.deepEqual(staffPdf.body, before);
+  // A paid order links to its document; an unpaid transfer order does not.
+  const detail = await buyer.get(`/orders/${order.id}`); status(detail, 200);
+  assert.equal(detail.body.invoice.pdf_href, `/invoices/${entry.id}/pdf`);
+  const pending = await db.order.create({ data: { id: uuidv7(),
+    order_number: `TB-2026-${String(Date.now()).slice(-6)}`, checkout_idempotency_key: `inv-${uuidv7()}`,
+    user_id: order.user_id, buyer_email_original: owner.email_original,
+    buyer_email_canonical: owner.email_canonical, currency: 'EUR', payment_method: 'invoice',
+    payment_state: 'awaiting', fulfillment_state: 'waiting', subtotal_gross_cents: 1000n, discount_cents: 0n,
+    total_gross_cents: 1000n, billing_snapshot: { first_name: 'Gina', last_name: 'Gast', country: 'DE' },
+    due_at: new Date(), created_by: order.user_id } });
+  await db.invoice.create({ data: { id: uuidv7(), order_id: pending.id, invoice_number: `TB-RE-2026-9${Date.now() % 100000}`,
+    seller_snapshot: { name: 'X' }, buyer_snapshot: { first_name: 'Gina' }, lines_snapshot: [], total_gross_cents: 1000n,
+    currency: 'EUR' } });
+  const pendingView = await buyer.get(`/orders/${pending.id}`); status(pendingView, 200);
+  assert.equal(pendingView.body.invoice.pdf_href, null, 'an unpaid order never offers a document link');
+  assert.ok(stored.lines_snapshot.length >= 1);
+});
+
 test('coupons are validated, cannot be reused and are released on cancellation', async () => {
   await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: true } });
   const created = await admin.change('post', '/admin/coupons', { code: 'Willkommen10', type: 'percent', value: 1000,

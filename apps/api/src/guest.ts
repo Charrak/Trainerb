@@ -5,6 +5,7 @@ import type { Request, Response } from 'express';
 import { Database } from './database';
 import { Sessions, type ApiRequest, type SessionContext } from './sessions';
 import { Outbox } from './outbox';
+import { Invoices } from './invoices';
 import { apiError, bodyObject, keyedHash, normalizeEmail, randomToken, requireName, requireString, seal } from './security';
 import { billingAddress, idempotencyKey, optionalCouponCode, paymentMethod, type BillingAddress } from './commerce-validation';
 import { getConfig } from './config';
@@ -32,7 +33,8 @@ const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
  */
 @Injectable()
 export class GuestCheckout {
-  constructor(private readonly db: Database, private readonly sessions: Sessions, private readonly outbox: Outbox) {}
+  constructor(private readonly db: Database, private readonly sessions: Sessions, private readonly outbox: Outbox,
+              private readonly invoices: Invoices) {}
 
   private cookieOptions(expires: Date) {
     const preview = getConfig().embeddedPreviewCookies;
@@ -70,6 +72,9 @@ export class GuestCheckout {
       if (cart.status === 'open') {
         await tx.cart.update({ where: { id: cart.id }, data: { status: 'abandoned' } });
       }
+      // A converted or expired cart keeps the browser's secret (it is still the
+      // proof for that order), so the next cart is created under the same one
+      // instead of minting a second identity for the same browser.
       cart = null;
     }
     if (!cart && create) {
@@ -84,6 +89,20 @@ export class GuestCheckout {
     // Re-issue the cookie so an existing cart keeps its lifetime in sync.
     res.cookie(GUEST_CART_COOKIE, secret, this.cookieOptions(cart.expires_at));
     return cart;
+  }
+
+  /**
+   * The cart a closed checkout left behind: after `POST guest/orders` the cart is
+   * `converted`, so the open-cart lookup no longer finds it. The buyer still has
+   * to reach *their* order and invoice with the cookie they bought with, so this
+   * lookup deliberately accepts the converted state — and only that.
+   */
+  private async settledCartId(req: ApiRequest): Promise<string | null> {
+    const secret = this.readCookie(req, GUEST_CART_COOKIE);
+    if (!secret) return null;
+    const cart = await this.db.cart.findFirst({ where: { guest_secret_hash: this.secretHash(secret),
+      status: 'converted' }, orderBy: { created_at: 'desc' }, select: { id: true } });
+    return cart?.id ?? null;
   }
 
   /** Cart view: identical shape to the account cart so the UI can reuse it. */
@@ -307,7 +326,8 @@ export class GuestCheckout {
       if (!items.length) throw apiError(409, 'CART_EMPTY', 'Der Warenkorb ist leer.');
       if (items.length > 20) throw apiError(422, 'CART_TOO_LARGE', 'Der Warenkorb enthält zu viele Positionen.');
       const lines: { productId: string; priceId: string; title: string; variant: string | null; unit: bigint;
-        courses: { course_id: string; course_version_id: string; title: string; access_days: number | null }[] }[] = [];
+        taxCategory: string; courses: { course_id: string; course_version_id: string; title: string;
+          access_days: number | null }[] }[] = [];
       for (const item of items) {
         const price = item.price;
         const inWindow = price.status === 'active' && price.valid_from <= now &&
@@ -322,7 +342,7 @@ export class GuestCheckout {
           price.sale_starts_at <= now && now < price.sale_ends_at;
         const unit = onSale ? price.sale_gross_cents! : price.gross_cents;
         if (unit <= 0n) throw apiError(409, 'PRICE_CHANGED', `„${item.product.title}“ hat keinen gültigen Preis.`);
-        lines.push({ productId: item.product_id, priceId: item.price_id, title: item.product.title,
+        lines.push({ productId: item.product_id, priceId: item.price_id, title: item.product.title, taxCategory: price.tax_category,
           variant: item.product.variant_name, unit,
           courses: published.map(link => ({ course_id: link.course_id, course_version_id: link.course.versions[0]!.id,
             title: link.course.versions[0]!.title,
@@ -402,7 +422,7 @@ export class GuestCheckout {
         await tx.paymentAttempt.create({ data: { id: uuidv7(), order_id: orderId, provider: 'invoice',
           environment: getConfig().appEnv === 'production' ? 'live' : 'test',
           provider_idempotency_key: `invoice-${orderId}`, status: 'pending', amount_cents: total, currency: 'EUR' } });
-        await this.issueInvoice(tx, orderId, settings, proof.email_original);
+        await this.invoices.issue(tx, orderId, settings, proof.email_original);
       }
       await tx.checkoutEmailVerification.update({ where: { id: proof.id }, data: { consumed_at: now } });
       await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
@@ -411,27 +431,12 @@ export class GuestCheckout {
         target_ref: orderId, after_safe: { order_number: orderNumber, total_gross_cents: String(total) } } });
       await this.outbox.notifyGuest(tx, proof.email_original, participantFirst, 'order_placed',
         { order_number: orderNumber, total: centsToTextGuest(total), payment_reference: paymentReference });
-      res.clearCookie(GUEST_CART_COOKIE, this.cookieOptions(new Date(0)));
+      // The cookie stays: it is the buyer's only proof for *this* order. It no
+      // longer points at an open cart (the cart is `converted`), so nothing can
+      // be added to it — but the status page and the invoice stay reachable
+      // until the cookie expires, exactly like any other receipt link.
       return this.orderView(tx, orderId);
     }, { timeout: 20_000 });
-  }
-
-  private async issueInvoice(tx: Prisma.TransactionClient, orderId: string,
-                             settings: NonNullable<Awaited<ReturnType<Database['commerceSettings']['findUnique']>>>,
-                             recipientEmail: string) {
-    const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: { items: { orderBy: { position: 'asc' } } } });
-    const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-RE-', 'invoice_number_seq') AS number`;
-    await tx.invoice.create({ data: { id: uuidv7(), order_id: orderId, invoice_number: numberRow[0].number,
-      seller_snapshot: { name: settings.invoice_seller_name, street: settings.invoice_seller_street,
-        postal_code: settings.invoice_seller_postal, city: settings.invoice_seller_city,
-        country: settings.invoice_seller_country, email: settings.invoice_seller_email,
-        vat_id: settings.invoice_seller_vat_id } as Prisma.InputJsonValue,
-      buyer_snapshot: order.billing_snapshot as Prisma.InputJsonValue,
-      lines_snapshot: order.items.map(item => ({ position: item.position, title: item.title_snapshot,
-        variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
-        discount_cents: String(item.discount_cents), total_gross_cents: String(item.total_gross_cents) })) as Prisma.InputJsonValue,
-      total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
-      payment_reference: order.payment_reference, recipient_email: recipientEmail } });
   }
 
   /** Guest view of an order, addressed by the guest-order cookie. */
@@ -463,7 +468,10 @@ export class GuestCheckout {
       invoice: order.invoice ? { id: order.invoice.id, invoice_number: order.invoice.invoice_number,
         issued_at: order.invoice.issued_at, seller: order.invoice.seller_snapshot, buyer: order.invoice.buyer_snapshot,
         lines: order.invoice.lines_snapshot, total_gross_cents: String(order.invoice.total_gross_cents),
-        due_at: order.invoice.due_at, payment_reference: order.invoice.payment_reference } : null,
+        due_at: order.invoice.due_at, payment_reference: order.invoice.payment_reference,
+        // Only a paid order has a document to download, and only while the cart
+        // cookie still proves who is asking.
+        pdf_href: order.payment_state === 'paid' ? `/guest/invoices/${order.invoice.id}/pdf` : null } : null,
       bank: order.payment_method === 'invoice' && order.payment_state === 'awaiting' && settings ? {
         holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
         bank: settings.bank_name, reference: order.payment_reference } : null,
@@ -518,12 +526,17 @@ export class GuestCheckout {
     });
   }
 
-  /** Guest order status after a Stripe redirect; the cookie is the only proof. */
+  /**
+   * Guest order status after the checkout (and after a Stripe redirect). The
+   * cookie is the only proof, and it must still work once the cart was closed by
+   * the order — otherwise the buyer would lose their own receipt.
+   */
   async myOrder(req: ApiRequest, res: Response, orderIdInput: string) {
     const orderId = requireString(orderIdInput, 'order_id', 36);
     const cart = await this.cartFor(req, res, false);
-    if (!cart) throw missing();
-    return this.orderView(this.db, orderId, cart.id);
+    const cartId = cart?.id ?? await this.settledCartId(req);
+    if (!cartId) throw missing();
+    return this.orderView(this.db, orderId, cartId);
   }
 
   /**

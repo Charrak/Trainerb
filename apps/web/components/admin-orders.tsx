@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, errorMessage, type Profile } from '../lib/api';
 import { dateTime, euro, paymentStateLabels, fulfillmentLabels, type AdminOrder, type OrderDetail } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
+import { InvoiceDownload } from './invoices';
 
 const canRead = (profile: Profile) => profile.permissions.includes('orders.read') &&
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
@@ -11,6 +12,11 @@ const canManage = (profile: Profile) => profile.permissions.includes('orders.man
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
 const canConfigure = (profile: Profile) => profile.permissions.includes('settings.manage') &&
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
+
+export function StaffInvoiceDownload({ invoiceId }: { invoiceId: string }) {
+  // The staff route enforces `orders.read` on the server; the button only asks.
+  return <InvoiceDownload href={`/admin/invoices/${invoiceId}/pdf`} label="Rechnung (PDF) ansehen"/>;
+}
 
 export function AdminOrders() {
   const [profile, setProfile] = useState<Profile>();
@@ -132,7 +138,10 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
           order.billing_snapshot.street, order.billing_snapshot.street_extra,
           `${order.billing_snapshot.postal_code ?? ''} ${order.billing_snapshot.city ?? ''}`, order.billing_snapshot.country]
           .filter(Boolean).join(' · ')}</p>
-        {order.invoice && <p className="muted">Rechnung {order.invoice.invoice_number} · {euro(order.invoice.total_gross_cents)} · fällig {order.invoice.due_at ? dateTime(order.invoice.due_at) : '–'}</p>}
+        {order.invoice && <div className="stack-form">
+          <p className="muted">Rechnung {order.invoice.invoice_number} · {euro(order.invoice.total_gross_cents)} · fällig {order.invoice.due_at ? dateTime(order.invoice.due_at) : '–'}</p>
+          {/* Support sees the document exactly as it was issued to the buyer. */}
+          <StaffInvoiceDownload invoiceId={order.invoice.id}/></div>}
       </section>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">AKTIONEN</span>
         <h2>Zahlungseingang buchen</h2><p>Nur buchen, wenn das Geld tatsächlich eingegangen ist.</p></div></div>

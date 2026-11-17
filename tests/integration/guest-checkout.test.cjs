@@ -70,6 +70,17 @@ async function legalVersions() {
 }
 const address = { company: null, first_name: 'Gast', last_name: 'Käufer', street: 'Gassenweg 7', street_extra: null,
   postal_code: '10115', city: 'Berlin', region: null, country: 'DE', vat_id: null };
+/**
+ * The guest proof request is limited per IP address (10 per hour). These tests
+ * share one loopback address, so each proof request clears that counter first —
+ * the limit itself is asserted in its own test below.
+ */
+async function proofRequest(browser, email, expected = 202) {
+  const keys = await redis.keys('trainerb:rl:guest-proof-ip:*'); if (keys.length) await redis.del(...keys);
+  const response = await browser.change('post', '/guest/email/verify/request', { email });
+  if (expected !== null) status(response, expected);
+  return response;
+}
 async function guestBody(extra = {}) {
   return { idempotency_key: `guest-${uuidv7()}`, billing_address: address, payment_method: 'invoice',
     legal_versions: await legalVersions(), terms_accepted: true, withdrawal_notice_seen: true,
@@ -159,10 +170,12 @@ after(async () => { if (redis) redis.disconnect(); if (app) await app.close(); }
 
 test('a guest cart is bound to a browser secret, never to an account', async () => {
   const guest = new Browser();
-  // The cart cookie is only set once something is actually in the basket.
+  // The cart cookie is only set once something is actually in the basket; a
+  // browser without a cart gets `200` with an empty basket, never a new cart row.
   const empty = await guest.get('/guest/cart'); status(empty, 200);
   assert.deepEqual(empty.body.items, []);
   assert.equal(guest.has('__Host-guest-cart'), false);
+  assert.equal(await db.cart.count(), 0);
 
   const added = await guest.change('post', '/guest/cart/items', { product_id: product.id });
   status(added, 200);
@@ -195,16 +208,16 @@ test('checkout without a proven address is impossible, and the proof is single-u
 
   // Empty carts cannot trigger a proof mail.
   const emptyGuest = new Browser();
+  const keys = await redis.keys('trainerb:rl:guest-proof-ip:*'); if (keys.length) await redis.del(...keys);
   status(await emptyGuest.change('post', '/guest/email/verify/request', { email: 'leer@example.invalid' }), 409);
 
-  const requested = await guest.change('post', '/guest/email/verify/request', { email: 'gina@example.invalid' });
-  status(requested, 202);
+  const requested = await proofRequest(guest, 'gina@example.invalid');
   const proof = await proofFromOutbox();
   assert.match(proof.code, /^\d{6}$/);
   // The response is the same for a known and an unknown address (no enumeration).
   const other = new Browser();
   status(await other.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  const secondRequest = await other.change('post', '/guest/email/verify/request', { email: 'unbekannt@example.invalid' });
+  const secondRequest = await proofRequest(other, 'unbekannt@example.invalid');
   assert.deepEqual(secondRequest.body, requested.body);
 
   // A bogus token is rejected.
@@ -222,10 +235,28 @@ test('checkout without a proven address is impossible, and the proof is single-u
   assert.equal(noCookie.body.email, null);
 });
 
+test('proof mails are limited per client so the endpoint cannot be used as a mail cannon', async () => {
+  const keys = await redis.keys('trainerb:rl:guest-proof-ip:*'); if (keys.length) await redis.del(...keys);
+  const browser = new Browser();
+  status(await browser.change('post', '/guest/cart/items', { product_id: product.id }), 200);
+  // Deliberately bypass the resetting helper: the limit must accumulate here.
+  for (let index = 0; index < 10; index += 1) {
+    status(await browser.change('post', '/guest/email/verify/request',
+      { email: `menge-${index}@example.invalid` }), 202);
+  }
+  // The eleventh request in the same hour is refused, and no further mail is queued.
+  const queuedBefore = await db.emailOutbox.count({ where: { user_id: null,
+    template_version: { template: { key: 'checkout_email_verify' } } } });
+  const limited = await browser.change('post', '/guest/email/verify/request', { email: 'menge-11@example.invalid' });
+  status(limited, 429); assert.equal(limited.body.code, 'RATE_LIMITED');
+  assert.equal(await db.emailOutbox.count({ where: { user_id: null,
+    template_version: { template: { key: 'checkout_email_verify' } } } }), queuedBefore);
+});
+
 test('a proven guest order is created without an account and grants nothing until paid', async () => {
   const guest = new Browser();
   status(await guest.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await guest.change('post', '/guest/email/verify/request', { email: 'gina@example.invalid' }), 202);
+  status(await proofRequest(guest, 'gina@example.invalid'), 202);
   proofToken = (await proofFromOutbox()).token;
   status(await guest.change('post', '/guest/email/verify/confirm', { token: proofToken }), 200);
 
@@ -301,7 +332,7 @@ test('an existing account is reused, a blocked one is never granted silently', a
   const guest = new Browser();
   // A second product so the same course is not owned twice.
   status(await guest.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await guest.change('post', '/guest/email/verify/request', { email: existingEmail }), 202);
+  status(await proofRequest(guest, existingEmail), 202);
   status(await guest.change('post', '/guest/email/verify/confirm',
     { token: (await proofFromOutbox()).token }), 200);
   const placed = await guest.change('post', '/guest/orders', await guestBody());
@@ -332,7 +363,7 @@ test('a blocked buyer is not granted access by a payment', async () => {
 
   const guest = new Browser();
   status(await guest.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await guest.change('post', '/guest/email/verify/request', { email: blockedEmail }), 202);
+  status(await proofRequest(guest, blockedEmail), 202);
   status(await guest.change('post', '/guest/email/verify/confirm',
     { token: (await proofFromOutbox()).token }), 200);
   const placed = await guest.change('post', '/guest/orders', await guestBody());
@@ -412,7 +443,7 @@ test('guest coupons are limited per proven address, not per account', async () =
   const email = 'gutschein@example.invalid';
   const first = new Browser();
   status(await first.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await first.change('post', '/guest/email/verify/request', { email }), 202);
+  status(await proofRequest(first, email), 202);
   status(await first.change('post', '/guest/email/verify/confirm', { token: (await proofFromOutbox()).token }), 200);
   const placed = await first.change('post', '/guest/orders', await guestBody({ coupon_code: 'GAST10' }));
   status(placed, 201);
@@ -425,7 +456,7 @@ test('guest coupons are limited per proven address, not per account', async () =
   // The same address cannot use the code a second time.
   const second = new Browser();
   status(await second.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await second.change('post', '/guest/email/verify/request', { email }), 202);
+  status(await proofRequest(second, email), 202);
   const proofs = await db.emailOutbox.findMany({ where: { user_id: null,
     template_version: { template: { key: 'checkout_email_verify' } } }, orderBy: { created_at: 'desc' } });
   const newest = unseal(proofs[0].variables_secret_ciphertext, `outbox:${proofs[0].id}`,
@@ -433,6 +464,53 @@ test('guest coupons are limited per proven address, not per account', async () =
   status(await second.change('post', '/guest/email/verify/confirm', { token: newest }), 200);
   const reused = await second.change('post', '/guest/orders', await guestBody({ coupon_code: 'GAST10' }));
   status(reused, 422); assert.equal(reused.body.code, 'COUPON_ALREADY_USED');
+});
+
+test('a guest can download the invoice of a paid order, and only with its cart cookie', async () => {
+  const email = 'beleg@example.invalid';
+  const guest = new Browser();
+  status(await guest.change('post', '/guest/cart/items', { product_id: product.id }), 200);
+  status(await proofRequest(guest, email), 202);
+  status(await guest.change('post', '/guest/email/verify/confirm',
+    { token: (await proofFromOutbox()).token }), 200);
+  const placed = await guest.change('post', '/guest/orders', await guestBody());
+  status(placed, 201);
+  const invoice = await db.invoice.findFirstOrThrow({ where: { order_id: placed.body.id } });
+  // Unpaid: the document exists for the buyer, but there is no download yet.
+  const unpaid = await guest.get(`/guest/orders/${placed.body.id}`); status(unpaid, 200);
+  assert.equal(unpaid.body.invoice.pdf_href, null);
+  status(await guest.get(`/guest/invoices/${invoice.id}/pdf`), 404);
+
+  // Pay the transfer; afterwards the cookie is the only proof needed.
+  await freshReauth(admin, adminUser.id);
+  status(await admin.change('post', `/admin/orders/${placed.body.id}/confirm-payment`,
+    { reference: 'Kontoauszug 77' }), 200);
+  const paid = await guest.get(`/guest/orders/${placed.body.id}`); status(paid, 200);
+  assert.equal(paid.body.invoice.pdf_href, `/guest/invoices/${invoice.id}/pdf`);
+  const pdf = await guest.get(`/guest/invoices/${invoice.id}/pdf`);
+  status(pdf, 200);
+  assert.match(pdf.headers['content-type'], /application\/pdf/);
+  assert.match(pdf.headers['content-disposition'], /attachment; filename="Rechnung-/);
+  assert.ok(pdf.body.toString('latin1').startsWith('%PDF-1.4'));
+
+  // The payment also created the account — but the buyer has not activated it
+  // yet, so the cookie must keep working for their receipt.
+  const linked = await db.order.findUniqueOrThrow({ where: { id: placed.body.id } });
+  assert.ok(linked.user_id, 'a paid guest order is linked to an account');
+  status(await guest.get(`/guest/invoices/${invoice.id}/pdf`), 200);
+
+  // A different browser without the cookie never gets the document.
+  const stranger = new Browser();
+  status(await stranger.get(`/guest/invoices/${invoice.id}/pdf`), 404);
+  status(await request(server).get(`/api/v1/guest/invoices/${invoice.id}/pdf`), 404);
+  // And the linked buyer reaches the same document through the account route.
+  const buyer = new Browser();
+  const user = await db.user.findUniqueOrThrow({ where: { id: linked.user_id } });
+  status(await activate(user), 204);
+  status(await buyer.change('post', '/auth/login', { email: user.email_canonical, password }), 200);
+  const accountPdf = await buyer.get(`/invoices/${invoice.id}/pdf`);
+  status(accountPdf, 200);
+  assert.deepEqual(accountPdf.body, pdf.body, 'the document is identical for every entitled viewer');
 });
 
 test('a repeated payment confirmation grants access exactly once', async () => {
@@ -460,7 +538,7 @@ test('a guest cannot buy the same course twice once the address is proven', asyn
   const email = 'gina@example.invalid';
   const browser = new Browser();
   status(await browser.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await browser.change('post', '/guest/email/verify/request', { email }), 202);
+  status(await proofRequest(browser, email), 202);
   status(await browser.change('post', '/guest/email/verify/confirm',
     { token: (await proofFromOutbox()).token }), 200);
   const refused = await browser.change('post', '/guest/cart/items', { product_id: product.id });
@@ -472,10 +550,10 @@ test('a guest cannot buy the same course twice once the address is proven', asyn
 });
 
 test('a guest mail survives a transport failure and never leaks its link into the database', async () => {
-  const email = 'retry@example.invalid';
+  const email = 'wiederholung@example.invalid';
   const browser = new Browser();
   status(await browser.change('post', '/guest/cart/items', { product_id: product.id }), 200);
-  status(await browser.change('post', '/guest/email/verify/request', { email }), 202);
+  status(await proofRequest(browser, email), 202);
   const mail = await db.emailOutbox.findFirstOrThrow({ where: { to_email: email,
     template_version: { template: { key: 'checkout_email_verify' } } } });
   const { token } = unseal(mail.variables_secret_ciphertext, `outbox:${mail.id}`, mail.secret_key_id);

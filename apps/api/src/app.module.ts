@@ -20,8 +20,10 @@ import { Commerce } from './commerce';
 import { StripePayments } from './stripe';
 import { GuestCheckout } from './guest';
 import { GuestController } from './guest-controller';
+import { Invoices } from './invoices';
 
 @Module({ controllers:[IdentityController, CatalogController, ProductController, PublicationController,
   ShopController, CommerceAdminController, GuestController], providers:[Database, RateLimiter, Sessions, Outbox, Auth,
-  Mfa, Admin, Catalog, Products, Publication, Shop, Learning, Accesses, Commerce, StripePayments, GuestCheckout] })
+  Mfa, Admin, Catalog, Products, Publication, Shop, Learning, Accesses, Commerce, StripePayments, GuestCheckout,
+  Invoices] })
 export class AppModule {}

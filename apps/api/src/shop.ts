@@ -8,6 +8,7 @@ import { billingAddress, couponCode, discountFor, idempotencyKey, optionalCoupon
   type BillingAddress } from './commerce-validation';
 import { getConfig } from './config';
 import { Outbox } from './outbox';
+import { Invoices } from './invoices';
 import { fulfilPaidOrder } from './fulfilment';
 
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
@@ -35,7 +36,8 @@ export type CartLine = { product_id: string; price_id: string; sku: string; titl
 
 @Injectable()
 export class Shop {
-  constructor(private readonly db: Database, private readonly sessions: Sessions, private readonly outbox: Outbox) {}
+  constructor(private readonly db: Database, private readonly sessions: Sessions, private readonly outbox: Outbox,
+              private readonly invoices: Invoices) {}
   /** Read-only access for controllers that only need an order view. */
   get client(): Database { return this.db; }
 
@@ -256,7 +258,8 @@ export class Shop {
 
       // Re-price every line, then freeze product, price and course versions.
       const lines: { productId: string; priceId: string; title: string; variant: string | null; unit: bigint;
-        courses: { course_id: string; course_version_id: string; title: string; access_days: number | null }[] }[] = [];
+        taxCategory: string; courses: { course_id: string; course_version_id: string; title: string;
+          access_days: number | null }[] }[] = [];
       for (const item of items) {
         const current = item.price;
         const inWindow = current.status === 'active' && current.valid_from <= now &&
@@ -270,7 +273,7 @@ export class Shop {
         const unit = effectivePrice(current, now);
         if (unit <= 0n) throw apiError(409, 'PRICE_CHANGED', `„${item.product.title}“ hat keinen gültigen Preis.`);
         lines.push({ productId: item.product_id, priceId: item.price_id, title: item.product.title,
-          variant: item.product.variant_name, unit,
+          variant: item.product.variant_name, unit, taxCategory: current.tax_category,
           courses: published.map(link => ({ course_id: link.course_id, course_version_id: link.course.versions[0]!.id,
             title: link.course.versions[0]!.title,
             access_days: link.access_days_override ?? link.course.versions[0]!.default_access_days ?? null })) });
@@ -344,7 +347,7 @@ export class Shop {
           environment: getConfig().appEnv === 'production' ? 'live' : 'test',
           provider_idempotency_key: `invoice-${orderId}`, status: 'pending', amount_cents: total,
           currency: 'EUR' } });
-        await this.issueInvoice(tx, orderId, settings);
+        await this.invoices.issue(tx, orderId, settings);
       }
       await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
       await tx.cart.update({ where: { id: cart.id }, data: { status: 'converted' } });
@@ -357,25 +360,6 @@ export class Shop {
       }
       return this.orderView(tx, ctx, orderId);
     });
-  }
-
-  private async issueInvoice(tx: Prisma.TransactionClient, orderId: string,
-                             settings: NonNullable<Awaited<ReturnType<Shop['settings']>>>) {
-    const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: {
-      items: { orderBy: { position: 'asc' } }, user: true } });
-    const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-RE-', 'invoice_number_seq') AS number`;
-    const buyer = order.billing_snapshot as unknown as BillingAddress;
-    await tx.invoice.create({ data: { id: uuidv7(), order_id: orderId, invoice_number: numberRow[0].number,
-      seller_snapshot: { name: settings.invoice_seller_name, street: settings.invoice_seller_street,
-        postal_code: settings.invoice_seller_postal, city: settings.invoice_seller_city,
-        country: settings.invoice_seller_country, email: settings.invoice_seller_email,
-        vat_id: settings.invoice_seller_vat_id } as Prisma.InputJsonValue,
-      buyer_snapshot: buyer as unknown as Prisma.InputJsonValue,
-      lines_snapshot: order.items.map(item => ({ position: item.position, title: item.title_snapshot,
-        variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
-        discount_cents: String(item.discount_cents), total_gross_cents: String(item.total_gross_cents) })) as Prisma.InputJsonValue,
-      total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
-      payment_reference: order.payment_reference } });
   }
 
   /** Order view for its owner or for staff with order permissions. */
@@ -408,7 +392,11 @@ export class Shop {
       invoice: order.invoice ? { id: order.invoice.id, invoice_number: order.invoice.invoice_number,
         issued_at: order.invoice.issued_at, seller: order.invoice.seller_snapshot, buyer: order.invoice.buyer_snapshot,
         lines: order.invoice.lines_snapshot, total_gross_cents: String(order.invoice.total_gross_cents),
-        due_at: order.invoice.due_at, payment_reference: order.invoice.payment_reference } : null,
+        due_at: order.invoice.due_at, payment_reference: order.invoice.payment_reference,
+        // The download only exists once the money arrived; the document link is
+        // never a promise that an unpaid transfer has been received.
+        pdf_href: this.invoices.linkFor({ id: order.id, payment_state: order.payment_state,
+          invoice: order.invoice })?.href ?? null } : null,
       bank: order.payment_method === 'invoice' && order.payment_state === 'awaiting' && settings ? {
         holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
         bank: settings.bank_name, reference: order.payment_reference } : null,

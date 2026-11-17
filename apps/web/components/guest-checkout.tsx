@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { checkoutKey, dateOnly, euro, type Cart, type GuestOrder, type ProofStatus, type ShopConfig } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
+import { InvoiceDownload } from './invoices';
 
 const emptyCart: Cart = { id: null, items: [], subtotal_gross_cents: '0', currency: 'EUR' };
 const countryOptions = [
@@ -327,6 +328,9 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
         {order.invoice ? <>
           <p><strong>{order.invoice.invoice_number}</strong> · {dateOnly(order.invoice.issued_at)}</p>
           <p className="muted small-print">Die Rechnung wird an {order.buyer_email} gesendet.</p>
+          {order.invoice.pdf_href && <InvoiceDownload href={order.invoice.pdf_href}
+            label="Rechnung als PDF herunterladen"/>}
+          {!order.invoice.pdf_href && <p className="muted small-print">Der Download steht bereit, sobald die Zahlung bestätigt ist.</p>}
         </> : <p className="muted">Für Kartenzahlungen wird die Rechnung nach bestätigter Zahlung erstellt.</p>}
         <div className="legal-block"><span className="section-kicker">BESTÄTIGT</span>
           <ul className="plain-list">{order.acceptances.map(acceptance => <li key={acceptance.kind}>
