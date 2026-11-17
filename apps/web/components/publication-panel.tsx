@@ -63,7 +63,7 @@ export function CoursePublication({ courseId, version, canPublish, onChanged }: 
   }
   const published = state?.versions.find(item => item.state === 'published');
   return <section className="dashboard-card" id="freigabe"><div className="section-heading"><div><span className="section-kicker">FREIGABE</span>
-    <h2>Veröffentlichung</h2><p>Veröffentlichen stellt nur den Kurstext in den Katalog. Es gibt weiterhin keinen Verkauf, keinen Lernzugang und keine Prüfungen.</p></div>
+    <h2>Veröffentlichung</h2><p>Veröffentlichen stellt den Kurstext in den Katalog. Verkauf und Lernzugang entstehen erst über ein aktives Produkt; Prüfungen gibt es noch nicht.</p></div>
     {state && <span className="draft-badge">{stateLabels[state.status] || state.status}</span>}</div>
     <Notice message={error}/><Notice kind="success" message={message}/>
     {!state ? <p className="muted">Freigabestatus wird geladen …</p> : <>
@@ -133,7 +133,7 @@ export function ProductActivation({ productId, revision, canManage, onChanged }:
     } finally { setBusy(false); }
   }
   return <section className="dashboard-card" id="freigabe"><div className="section-heading"><div><span className="section-kicker">FREIGABE</span>
-    <h2>Aktivierung</h2><p>Ein aktives Produkt ist katalogfähig, aber noch nicht kaufbar: Warenkorb, Checkout und Zahlung fehlen.</p></div>
+    <h2>Aktivierung</h2><p>Ein aktives Produkt mit aktivem Preis ist im Shop buchbar. Zugang entsteht erst nach bestätigtem Zahlungseingang.</p></div>
     {state && <span className="draft-badge">{stateLabels[state.status] || state.status}</span>}</div>
     <Notice message={error}/><Notice kind="success" message={message}/>
     {!state ? <p className="muted">Aktivierungsstatus wird geladen …</p> : <>

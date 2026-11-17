@@ -111,6 +111,13 @@ export class MailWorker {
       if (to !== (key === 'email_change' ? token.target_email_canonical : item.user.email_canonical)) return null;
       const path = key === 'activation' ? '/konto/aktivieren' : key === 'password_reset' ? '/konto/passwort-zuruecksetzen' : '/konto/email-bestaetigen';
       variables[purposes[key as keyof typeof purposes]] = `${getConfig().publicBaseUrl}${path}#token=${encodeURIComponent(payload.token)}`;
+    } else if (['order_placed', 'order_paid'].includes(key)) {
+      // Order mails only carry order facts that are already public to the buyer.
+      for (const name of ['order_number', 'total', 'payment_reference']) {
+        const value = publicVars[name];
+        if (typeof value !== 'string' || !/^[A-Za-z0-9 .,:€/-]{1,64}$/.test(value)) throw new Error('Invalid template variables.');
+        variables[name] = value;
+      }
     } else if (!['password_changed', 'email_changed_old'].includes(key)) {
       throw new Error('Unsupported mail template.');
     }

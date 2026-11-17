@@ -57,6 +57,6 @@ export function PublicCourseDetail({ slug }: { slug: string }) {
         {course.subtitle && <p className="public-subtitle">{course.subtitle}</p>}
         {course.duration_minutes !== null && <p className="course-duration">Umfang: {course.duration_minutes} Minuten</p>}
         {course.description && <div className="public-description">{course.description}</div>}
-        <p className="muted">Buchung und Zahlung stehen derzeit nicht zur Verfügung.</p></article>}
+        <p className="muted">Ob eine Buchung möglich ist, steht im Bereich <Link className="text-link" href="/buchen">Buchen</Link>.</p></article>}
   </div>;
 }

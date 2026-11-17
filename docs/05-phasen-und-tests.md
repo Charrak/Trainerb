@@ -131,7 +131,7 @@ Dieser vollständige Lauf eignet sich mindestens für einen nächtlichen bzw. Re
 
 ## 5.6 Go-live-Sperren
 
-Die **Veröffentlichung einzelner Kurse und die Aktivierung von Produkten/Preisen ist technisch möglich**, ersetzt aber keine Freigabe: Sie bestätigt nur technische Voraussetzungen (Struktur, Sollzahlen, Preis, Kursveröffentlichung) und eine frische Identitätsbestätigung. Es gibt weiterhin keinen Verkauf, keinen Checkout, keine Zahlung und keinen Lernzugang; aktivierte Produkte sind katalogfähig, nicht kaufbar.
+Die **Kaufstrecke ist technisch umgesetzt** (öffentlicher Katalog, Warenkorb, Bestellung mit Snapshots, Rechnung, Zahlungseingangsbestätigung, Lernzugang, optionale Stripe-Testzahlung). Das ersetzt keine Freigabe: Veröffentlichung, Aktivierung und Verkaufsfreischaltung bestätigen nur technische Voraussetzungen und eine frische Identitätsbestätigung. Der Verkauf bleibt standardmäßig aus (`commerce_settings.sales_enabled = false`), bis der Betreiber ihn in einer isolierten Testumgebung ausdrücklich freischaltet.
 
 Die Verkaufsfreigabe bleibt aus, solange einer der folgenden Punkte offen ist:
 

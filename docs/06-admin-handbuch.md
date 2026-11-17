@@ -101,6 +101,8 @@ Die Seitenbausteine verwenden sichere Inhaltsblöcke. Beliebige Skripte, unkontr
 
 ## 6.6 Bestellungen, Kunden und Zugänge
 
+> **Umsetzungsstand:** Umgesetzt sind die Bestellübersicht und -detailansicht (`/admin/bestellungen`), die Bestätigung von Zahlungseingängen, das Stornieren mit Grund, Gutscheine, Rechtsfassungen und manuelle Zugangsvergabe samt Entzug. Kundenverwaltung, Erstattungen und Providerabgleich bleiben Zielzustand.
+
 - **Bestellungen** nach Nummer, Zeitraum und Zahlungszustand suchen. Eine ausstehende oder fehlgeschlagene Zahlung ist nicht bezahlt. Rechnungen und erlaubte Details nur an Berechtigte ausgeben.
 - **Kunden** nach Name/E-Mail suchen, Kontostatus und zulässige Lernstände einsehen, Daten im erlaubten Umfang korrigieren oder Konto sperren. Vor- und Nachname bleiben auch nach einer Korrektur verpflichtend; das Leeren beider Felder ist nur im autorisierten Datenschutz-Löschprozess beim anonymisierten Konto vorgesehen. Eine Sperrung beendet laufende Sitzungen.
 - Bei Gastbestellungen sind Teilnehmername und Rechnungs-Ansprechperson getrennt erfasst. Der Zugang gehört zum Konto der bestätigten E-Mail; bei einem bestehenden Konto wird dessen Profilname für spätere Zertifikate verwendet und nicht durch Rechnungsdaten überschrieben. Eine gesonderte Geschenk- oder Mehrteilnehmerzuordnung ist zunächst nicht vorgesehen.
@@ -109,9 +111,9 @@ Die Seitenbausteine verwenden sichere Inhaltsblöcke. Beliebige Skripte, unkontr
 - **Erstattung:** zahlungsbezogenen Vorgang auswählen, Betrag/Grund prüfen, frische Anmeldung bestätigen und tatsächliches Providerergebnis abwarten. Anschließend für jede betroffene Zugangsquelle ausdrücklich über Beibehaltung/Sperrung/Entzug entscheiden. Eine Teilerstattung eines Pakets ist nicht automatisch einem Kurs zugeordnet.
 - Jede manuelle Änderung an Rollen, Kunden, Preisen und Zugängen ist mit Akteur, Zeitpunkt, Aktion und zulässigen vorherigen/nachherigen Statuswerten nachvollziehbar. Audit enthält keine Passwörter, Tokens oder unnötigen Rechnungsadressen.
 
-## 6.6a Produkte und Preise (aktivierbar, noch nicht verkäuflich)
+## 6.6a Produkte und Preise (aktivierbar und, bei freigegebenem Verkauf, buchbar)
 
-**Mein Konto → Produkte** ist derzeit ausschließlich für Admin und Superadmin mit `products.manage` sichtbar. Kursmanager und Dozenten haben keinen Zugang. Bestellungen, Checkout und Zahlungen aus 6.6 sind noch **nicht** implementiert; die dort beschriebenen Abläufe bleiben Zielzustand.
+**Mein Konto → Produkte** ist ausschließlich für Admin und Superadmin mit `products.manage` sichtbar. Kursmanager und Dozenten haben keinen Zugang. Bestellungen, Checkout und Zahlungen sind implementiert (siehe 6.6b); ein aktiviertes Produkt mit aktivem Preis ist buchbar, sobald der Verkauf freigeschaltet ist.
 
 1. Unter **Produkte** einen Entwurf mit SKU, Produktart (Einzelprodukt oder Paket), Titel, optionaler Variante und Beschreibung anlegen. SKU und Produktart sind danach unveränderlich. Ein Einzelprodukt nimmt höchstens einen Kurs auf; ein Paket darf mehrere verschiedene Kurse enthalten.
 2. Kurszuordnungen in der Detailansicht pflegen; eine optionale Zugangsdauer überschreibt später die Kursvorgabe. Solange der Entwurf unvollständig ist, lässt er sich speichern – die Aktivierung bleibt dann mit einer Blockerliste gesperrt.
@@ -119,7 +121,16 @@ Die Seitenbausteine verwenden sichere Inhaltsblöcke. Beliebige Skripte, unkontr
 4. Änderungen und Löschungen benötigen den aktuellen Stand (Revision). Bei „zwischenzeitlich geändert“ die Seite neu laden und die Eingaben erneut prüfen. Ein Produkt lässt sich erst löschen, wenn alle Preiszeiträume entfernt sind.
 5. **Aktivieren:** Der Block **Aktivierung** in der Produktdetailansicht zeigt die Blockerliste (`SINGLE_COURSE_COUNT`, `BUNDLE_COURSE_COUNT`, `COURSE_NOT_PUBLISHED`, `NO_PRICE`, `NO_CURRENT_PRICE`, `MISSING_DESCRIPTION`). Erst wenn sie leer ist, lässt sich das Produkt aktivieren – nur Admin/Superadmin mit `products.manage` und mit einer höchstens fünf Minuten alten Bestätigung (Passwort + App-Code oder Wiederherstellungscode). Ein Einzelprodukt braucht genau einen **veröffentlichten** Kurs, ein Paket mindestens zwei verschiedene; ein noch nicht veröffentlichter Kurs blockiert die Aktivierung.
 6. **Preiszeitraum aktivieren:** In der Preistabelle den gewünschten Entwurf aktivieren (`prices.manage`, frische Bestätigung). Das geht nur bei aktivem Produkt und positivem Bruttobetrag. Aktive Zeiträume desselben Produkts und derselben Währung dürfen sich **nicht** überschneiden; die Datenbank erzwingt das und die API antwortet `409 PRICE_OVERLAP`. Ein aktiver Zeitraum wird über **Zurückziehen** beendet, nicht gelöscht.
-7. **Deaktivieren:** Ein Produkt lässt sich erst deaktivieren, wenn keine aktiven Preiszeiträume mehr bestehen. Ein Kurs, der in einem aktiven Produkt verwendet wird, kann nicht zurückgenommen werden (`409 COURSE_STILL_IN_ACTIVE_PRODUCT`); zuerst das Produkt deaktivieren. Aktivierte Produkte und Preise werden **nirgends öffentlich ausgegeben**: Es gibt keinen Warenkorb, keinen Checkout, keine Zahlung und keine Rechnung. `tax_category` bleibt eine Kennung ohne Steuersatz; Steuer- und Rechtsfreigabe stehen weiterhin aus.
+7. **Deaktivieren:** Ein Produkt lässt sich erst deaktivieren, wenn keine aktiven Preiszeiträume mehr bestehen. Ein Kurs, der in einem aktiven Produkt verwendet wird, kann nicht zurückgenommen werden (`409 COURSE_STILL_IN_ACTIVE_PRODUCT`); zuerst das Produkt deaktivieren. Aktivierte Produkte und Preise erscheinen im Shop unter `/buchen`, sobald zusätzlich der Verkauf freigeschaltet ist (siehe unten). `tax_category` bleibt eine Kennung ohne Steuersatz; Steuer- und Rechtsfreigabe stehen weiterhin aus.
+
+### Verkauf, Rechnungen und Zahlungen (6.6b)
+
+- **Verkauf freischalten:** unter **Mein Konto → Zahlung & Recht** (`settings.manage`) Rechnungssteller, Bankverbindung, Zahlungsziel und die drei Rechtsfassungen pflegen; bestellen lässt sich erst, wenn je Art eine Fassung aktiv ist. Danach die Verkaufssperre aufheben.
+- **Bestellungen:** `/admin/bestellungen` (`orders.read`) listet wartende, bezahlte, zu prüfende und stornierte Bestellungen. Die Detailansicht zeigt Positionen-Snapshot, Rechnung, Adresse und die akzeptierten Rechtsfassungen.
+- **Zahlungseingang bestätigen:** `orders.manage` und frische Bestätigung; Referenz (z. B. Kontoauszug) und optionale Notiz sind Pflicht. Erst dann wird die Bestellung bezahlt, der Lernzugang entsteht und die Bestellbestätigung versendet. Der Zugang wird nur zu veröffentlichten Kursen geschaltet.
+- **Stornieren:** Grund angeben. Aktiver Zugang muss vorher entzogen werden; ein reservierter Gutschein wird automatisch freigegeben. Rechnungsnummern bleiben erhalten und werden nicht neu verwendet.
+- **Gutscheine:** Codes mit Prozent- oder Festrabatt, Gültigkeitsfenster und Einlöselimit; ein Gutschein je Bestellung, Rabatt nie über den Warenwert hinaus.
+- **Manuelle Zugänge** bleiben getrennt vom Kauf: Sie erzeugen keine Bestellung und keine Rechnung.
 
 ## 6.7 Zertifikate
 

@@ -40,6 +40,16 @@ model User {
   products_activated Product[] @relation("ProductActivator")
   course_publications CoursePublication[] @relation("PublicationActor")
   prices_created Price[] @relation("PriceCreator")
+  carts Cart[] @relation("CartOwner")
+  orders_bought Order[] @relation("OrderBuyer")
+  orders_created Order[] @relation("OrderCreator")
+  orders_confirmed Order[] @relation("OrderConfirmer")
+  coupons_created Coupon[] @relation("CouponCreator")
+  coupon_reservations CouponReservation[] @relation("CouponReservationUser")
+  course_accesses CourseAccess[] @relation("CourseAccessUser")
+  course_access_granted CourseAccess[] @relation("CourseAccessGranter")
+  legal_versions_activated LegalDocumentVersion[] @relation("LegalActivator")
+  commerce_settings CommerceSettings[] @relation("CommerceSettingsEditor")
 
   @@map("users")
 }
@@ -313,6 +323,8 @@ model Course {
   staff      CourseStaff[]
   products   ProductCourse[]
   publications CoursePublication[]
+  order_item_courses OrderItemCourse[]
+  accesses CourseAccess[]
   @@map("courses")
 }
 
@@ -344,6 +356,9 @@ model CourseVersion {
   chapters                   CourseChapter[]
   contents                   ChapterContent[]
   publications               CoursePublication[]
+  order_item_courses         OrderItemCourse[]
+  accesses                   CourseAccess[]
+  chapter_progress           ChapterProgress[]
   @@unique([course_id, version])
   @@unique([id, course_id])
   @@index([created_by])
@@ -381,6 +396,7 @@ model CourseChapter {
   course_version    CourseVersion  @relation(fields: [course_version_id], references: [id], onDelete: Restrict)
   module            CourseModule   @relation(fields: [module_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
   contents          ChapterContent[]
+  progress          ChapterProgress[]
   @@unique([module_id, position])
   @@unique([id, course_version_id])
   @@index([course_version_id])
@@ -440,6 +456,9 @@ model Product {
   activator    User?           @relation("ProductActivator", fields: [activated_by], references: [id], onDelete: Restrict)
   courses      ProductCourse[]
   prices       Price[]
+  cart_items   CartItem[]
+  order_items  OrderItem[]
+  coupon_links CouponProduct[]
   @@index([created_by])
   @@index([created_at, id])
   @@map("products")
@@ -478,6 +497,8 @@ model Price {
   updated_at       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   product          Product   @relation(fields: [product_id], references: [id], onDelete: Restrict)
   creator          User      @relation("PriceCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  cart_items       CartItem[]
+  order_items      OrderItem[]
   @@unique([id, product_id])
   @@index([product_id, created_at, id])
   @@index([created_by])
@@ -498,4 +519,312 @@ model CoursePublication {
   @@index([course_id, created_at, id])
   @@index([actor_user_id])
   @@map("course_publications")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: commerce (cart, order, payment, coupons) and learning access.
+// The SQL migration holds the authoritative guards; these models describe the
+// same tables for the typed client.
+// ---------------------------------------------------------------------------
+
+model LegalDocument {
+  id         String                 @id @db.Uuid
+  kind       String                 @db.Text
+  created_at DateTime               @default(now()) @db.Timestamptz(6)
+  versions   LegalDocumentVersion[]
+  @@map("legal_documents")
+}
+
+model LegalDocumentVersion {
+  id           String   @id @db.Uuid
+  document_id  String   @db.Uuid
+  version      Int
+  wording      String   @db.Text
+  status       String   @default("draft") @db.Text
+  activated_at DateTime? @db.Timestamptz(6)
+  activated_by String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  document     LegalDocument @relation(fields: [document_id], references: [id], onDelete: Restrict)
+  activations  User?    @relation("LegalActivator", fields: [activated_by], references: [id], onDelete: Restrict)
+  acceptances  OrderLegalAcceptance[]
+  @@unique([document_id, version])
+  @@index([activated_by])
+  @@map("legal_document_versions")
+}
+
+model CommerceSettings {
+  id                     Int      @id @default(1) @db.SmallInt
+  sales_enabled          Boolean  @default(false)
+  invoice_seller_name    String   @db.Text
+  invoice_seller_street  String   @db.Text
+  invoice_seller_postal  String   @db.Text
+  invoice_seller_city    String   @db.Text
+  invoice_seller_country String   @db.Char(2)
+  invoice_seller_email   String   @db.Text
+  invoice_seller_vat_id  String?  @db.Text
+  bank_account_holder    String   @db.Text
+  bank_iban              String   @db.Text
+  bank_bic               String?  @db.Text
+  bank_name              String?  @db.Text
+  payment_term_days      Int      @default(14)
+  currency               String   @default("EUR") @db.Char(3)
+  updated_by             String?  @db.Uuid
+  updated_at             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  editor                 User?    @relation("CommerceSettingsEditor", fields: [updated_by], references: [id], onDelete: Restrict)
+  @@map("commerce_settings")
+}
+
+model Cart {
+  id         String     @id @db.Uuid
+  user_id    String     @db.Uuid
+  currency   String     @default("EUR") @db.Char(3)
+  status     String     @default("open") @db.Text
+  expires_at DateTime   @db.Timestamptz(6)
+  created_at DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  user       User       @relation("CartOwner", fields: [user_id], references: [id], onDelete: Restrict)
+  items      CartItem[]
+  order      Order?
+  @@index([user_id, created_at])
+  @@map("carts")
+}
+
+model CartItem {
+  cart_id    String   @db.Uuid
+  product_id String   @db.Uuid
+  price_id   String   @db.Uuid
+  quantity   Int      @default(1) @db.SmallInt
+  added_at   DateTime @default(now()) @db.Timestamptz(6)
+  cart       Cart     @relation(fields: [cart_id], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  price      Price    @relation(fields: [price_id, product_id], references: [id, product_id], onDelete: Restrict)
+  @@id([cart_id, product_id])
+  @@map("cart_items")
+}
+
+model Order {
+  id                       String    @id @db.Uuid
+  order_number             String    @unique @db.Text
+  cart_id                  String?   @unique @db.Uuid
+  checkout_idempotency_key String    @db.Text
+  user_id                  String    @db.Uuid
+  buyer_email_original     String    @db.Text
+  buyer_email_canonical    String    @db.Text
+  currency                 String    @db.Char(3)
+  payment_method           String    @db.Text
+  payment_state            String    @default("awaiting") @db.Text
+  fulfillment_state        String    @default("not_ready") @db.Text
+  subtotal_gross_cents     BigInt
+  discount_cents           BigInt    @default(0)
+  total_gross_cents        BigInt
+  billing_snapshot         Json
+  placed_at                DateTime  @default(now()) @db.Timestamptz(6)
+  paid_at                  DateTime? @db.Timestamptz(6)
+  paid_confirmed_by        String?   @db.Uuid
+  payment_reference        String?   @db.Text
+  due_at                   DateTime? @db.Timestamptz(6)
+  fulfilled_at             DateTime? @db.Timestamptz(6)
+  cancelled_at             DateTime? @db.Timestamptz(6)
+  cancelled_reason         String?   @db.Text
+  created_by               String    @db.Uuid
+  updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  user                     User      @relation("OrderBuyer", fields: [user_id], references: [id], onDelete: Restrict)
+  creator                  User      @relation("OrderCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  confirmer                User?     @relation("OrderConfirmer", fields: [paid_confirmed_by], references: [id], onDelete: Restrict)
+  cart                     Cart?     @relation(fields: [cart_id], references: [id], onDelete: Restrict)
+  items                    OrderItem[]
+  acceptances              OrderLegalAcceptance[]
+  attempts                 PaymentAttempt[]
+  events                   PaymentEvent[]
+  coupon                   CouponReservation?
+  accesses                 CourseAccess[]
+  invoice                  Invoice?
+  @@unique([user_id, checkout_idempotency_key])
+  @@index([user_id, placed_at])
+  @@index([payment_state, placed_at])
+  @@map("orders")
+}
+
+model OrderItem {
+  order_id          String   @db.Uuid
+  product_id        String   @db.Uuid
+  price_id          String   @db.Uuid
+  position          Int
+  title_snapshot    String   @db.Text
+  variant_snapshot  String?  @db.Text
+  quantity          Int      @default(1) @db.SmallInt
+  unit_gross_cents  BigInt
+  discount_cents    BigInt   @default(0)
+  total_gross_cents BigInt
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+  order             Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  product           Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  price             Price    @relation(fields: [price_id, product_id], references: [id, product_id], onDelete: Restrict)
+  courses           OrderItemCourse[]
+  @@id([order_id, product_id])
+  @@unique([order_id, position])
+  @@map("order_items")
+}
+
+model OrderItemCourse {
+  order_id              String @db.Uuid
+  order_item_product    String @db.Uuid
+  course_id             String @db.Uuid
+  course_version_id     String @db.Uuid
+  course_title_snapshot String @db.Text
+  access_days           Int?
+  item                  OrderItem @relation(fields: [order_id, order_item_product], references: [order_id, product_id], onDelete: Restrict)
+  course                Course    @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  version               CourseVersion @relation(fields: [course_version_id, course_id], references: [id, course_id], onDelete: Restrict)
+  @@id([order_id, order_item_product, course_id])
+  @@map("order_item_courses")
+}
+
+model OrderLegalAcceptance {
+  id                        String   @id @db.Uuid
+  order_id                  String   @db.Uuid
+  legal_document_version_id String   @db.Uuid
+  kind                      String   @db.Text
+  wording_snapshot          String   @db.Text
+  affirmed                  Boolean
+  ip_hmac                   Bytes?
+  user_agent_hmac           Bytes?
+  created_at                DateTime @default(now()) @db.Timestamptz(6)
+  order                     Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  version                   LegalDocumentVersion @relation(fields: [legal_document_version_id], references: [id], onDelete: Restrict)
+  @@unique([order_id, kind])
+  @@map("order_legal_acceptances")
+}
+
+model PaymentAttempt {
+  id                       String    @id @db.Uuid
+  order_id                 String    @db.Uuid
+  provider                 String    @db.Text
+  environment              String    @db.Text
+  provider_session_id      String?   @db.Text
+  provider_payment_id      String?   @db.Text
+  provider_idempotency_key String    @unique @db.Text
+  status                   String    @db.Text
+  amount_cents             BigInt
+  currency                 String    @db.Char(3)
+  confirmed_at             DateTime? @db.Timestamptz(6)
+  failure_code             String?   @db.Text
+  created_at               DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  order                    Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  @@index([order_id])
+  @@map("payment_attempts")
+}
+
+model PaymentEvent {
+  id                String   @id @db.Uuid
+  order_id          String   @db.Uuid
+  provider          String   @db.Text
+  environment       String   @db.Text
+  provider_event_id String   @db.Text
+  event_type        String   @db.Text
+  amount_cents      BigInt
+  currency          String   @db.Char(3)
+  received_at       DateTime @default(now()) @db.Timestamptz(6)
+  order             Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  @@unique([provider, environment, provider_event_id])
+  @@map("payment_events")
+}
+
+model Coupon {
+  id              String    @id @db.Uuid
+  code_original   String    @db.Text
+  code_canonical  String    @unique @db.Text
+  type            String    @db.Text
+  value           BigInt
+  currency        String?   @db.Char(3)
+  valid_from      DateTime  @default(now()) @db.Timestamptz(6)
+  valid_until     DateTime? @db.Timestamptz(6)
+  max_redemptions Int?
+  active          Boolean   @default(false)
+  created_by      String    @db.Uuid
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime  @default(now()) @db.Timestamptz(6)
+  creator         User      @relation("CouponCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  products        CouponProduct[]
+  reservations    CouponReservation[]
+  @@map("coupons")
+}
+
+model CouponProduct {
+  coupon_id  String   @db.Uuid
+  product_id String   @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  coupon     Coupon   @relation(fields: [coupon_id], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  @@id([coupon_id, product_id])
+  @@map("coupon_products")
+}
+
+model CouponReservation {
+  id          String    @id @db.Uuid
+  coupon_id   String    @db.Uuid
+  order_id    String    @unique @db.Uuid
+  user_id     String    @db.Uuid
+  status      String    @db.Text
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  resolved_at DateTime? @db.Timestamptz(6)
+  coupon      Coupon    @relation(fields: [coupon_id], references: [id], onDelete: Restrict)
+  order       Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  user        User      @relation("CouponReservationUser", fields: [user_id], references: [id], onDelete: Restrict)
+  @@index([coupon_id, status])
+  @@map("coupon_reservations")
+}
+
+model CourseAccess {
+  id                String    @id @db.Uuid
+  user_id           String    @db.Uuid
+  course_id         String    @db.Uuid
+  course_version_id String    @db.Uuid
+  source            String    @db.Text
+  order_id          String?   @db.Uuid
+  granted_by        String?   @db.Uuid
+  starts_at         DateTime  @default(now()) @db.Timestamptz(6)
+  ends_at           DateTime? @db.Timestamptz(6)
+  revoked_at        DateTime? @db.Timestamptz(6)
+  revoke_reason     String?   @db.Text
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  user              User      @relation("CourseAccessUser", fields: [user_id], references: [id], onDelete: Restrict)
+  course            Course    @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  version           CourseVersion @relation(fields: [course_version_id, course_id], references: [id, course_id], onDelete: Restrict)
+  order             Order?    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  granter           User?     @relation("CourseAccessGranter", fields: [granted_by], references: [id], onDelete: Restrict)
+  progress          ChapterProgress[]
+  @@index([user_id, created_at])
+  @@map("course_access")
+}
+
+model ChapterProgress {
+  id                String   @id @db.Uuid
+  access_id         String   @db.Uuid
+  course_version_id String   @db.Uuid
+  chapter_id        String   @db.Uuid
+  completed_at      DateTime @default(now()) @db.Timestamptz(6)
+  access            CourseAccess @relation(fields: [access_id], references: [id], onDelete: Restrict)
+  version           CourseVersion @relation(fields: [course_version_id], references: [id], onDelete: Restrict)
+  chapter           CourseChapter @relation(fields: [chapter_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  @@unique([access_id, chapter_id])
+  @@map("chapter_progress")
+}
+
+model Invoice {
+  id                String   @id @db.Uuid
+  order_id          String   @unique @db.Uuid
+  invoice_number    String   @unique @db.Text
+  issued_at         DateTime @default(now()) @db.Timestamptz(6)
+  seller_snapshot   Json
+  buyer_snapshot    Json
+  lines_snapshot    Json
+  total_gross_cents BigInt
+  currency          String   @db.Char(3)
+  due_at            DateTime? @db.Timestamptz(6)
+  payment_reference String?  @db.Text
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+  order             Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  @@map("invoices")
 }

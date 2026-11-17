@@ -20,6 +20,15 @@ export async function createApplication(): Promise<INestApplication> {
     req.requestId = uuidv7(); res.setHeader('X-Request-ID', req.requestId);
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); next();
   });
+  // The Stripe webhook needs the exact bytes it signed; every other route keeps
+  // the strict JSON parser. Only this single path captures a raw buffer.
+  app.use((req: any, res: any, next: () => void) => {
+    if (req.method === 'POST' && req.path === '/api/v1/payments/stripe/webhook') {
+      express.raw({ type: '*/*', limit: '256kb' })(req, res, () => { req.rawBody = req.body; req.body = undefined; next(); });
+      return;
+    }
+    next();
+  });
   app.use(express.json({ limit:'32kb', strict:true }));
   app.use(cookieParser());
   app.setGlobalPrefix('api/v1');

@@ -1,10 +1,10 @@
 # Online-Akademie – Konzept und Entwicklungsstand
 
-**Stand: 15.11.2026 · Phase 1 und erster Teil von Phase 2 in Entwicklung · nicht produktionsreif**
+**Stand: 15.11.2026 · Phase 3 (Kaufstrecke) in Entwicklung · nicht produktionsreif**
 
 Verantwortlich: Soufian Charrak
 
-Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die erste Umsetzung der Benutzerverwaltung und eine geschützte Verwaltung für Kursentwürfe. Kursbetrieb, Prüfungen, Shop, Zahlungsanbindung und Zertifikate sind noch **nicht** implementiert; aktivierte Produkte sind katalogfähig, aber nicht kaufbar. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Es gibt keine Kauf- oder Zahlungsfunktion. Ein späterer Kaufzugang setzt gemäß Konzept einen signaturgeprüften, idempotent verarbeiteten Erfolgswebhook voraus.
+Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die Umsetzung der Benutzerverwaltung, eine geschützte Verwaltung für Kursentwürfe und eine vollständige **Kaufstrecke**: öffentlicher Produktkatalog, Warenkorb, Bestellung mit Positions- und Preis-Snapshot, Rechnung, Zahlungseingangsbestätigung durch die Verwaltung und Freischaltung des Lernzugangs. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Prüfungen, Zertifikate, Medien und ein Auswertungs-Dashboard sind weiterhin **nicht** implementiert.
 
 ## Bereits umgesetzt
 
@@ -16,7 +16,11 @@ Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), di
 - Öffentliche Katalogansicht unter `/kurse` sowie MFA-geschützte Kursverwaltung unter `/admin/kurse`: globale Administratoren legen Entwürfe an; zugewiesene Kursmanager und Dozenten bearbeiten deren Angaben, Module und Kapitel. Die Anmeldung und die Einzelrechte werden serverseitig geprüft. Mitarbeiterzuordnungen erfordern frische Bestätigung; Rollenentzug entfernt die zugehörigen Kurszuordnungen.
 - Kapitel können geschützte **Entwurfsbausteine** für Textabsätze, Überschriften, Aufzählungen und Links enthalten. Die Vorschau zeigt Text ohne HTML-Ausführung; Links werden dort nicht geöffnet. Medien und ein Teilnehmer-Lernzugang fehlen weiterhin.
 - Revisionsprüfung gegen überschreibende parallele Bearbeitung, eindeutige Positionen, nachvollziehbare Änderungsereignisse ohne Lehrtexte und Datenbank-Fremdschlüssel. Kapitel mit Inhalten und Module mit Kapiteln können nicht versehentlich gelöscht werden. Der Kurs selbst kann in diesem Teilumfang noch nicht gelöscht oder veröffentlicht werden. Die Vorlage für die erste Fitnesstrainer-B-Lizenz übernimmt nur Titel und geplante Anzahlen 14 / 42 / 2 – keine erfundenen Inhalte oder Prüfungen.
-- Automatisierte Unit- und Datenbank-/API-Integrationstests sowie lokale Browser-Smoke-Tests für Identität, Kursentwürfe und Produkt-/Preisentwürfe.
+- **Kaufstrecke:** öffentlicher Katalog unter `/buchen` (nur bei freigeschaltetem Verkauf), Warenkorb (24 Stunden gültig, ein Gutschein je Bestellung), Bestellung als unveränderlicher Snapshot aus Produkten, Preisen, Adresse und Rechtsfassungen, Rechnung mit fortlaufender Nummer, Zahlungsziel und Verwendungszweck, Zahlungseingangsbestätigung durch die Verwaltung sowie Freischaltung des Kurszugangs. Stornieren gibt Gutschein und Sitzplatz frei.
+- **Optional Kartenzahlung über Stripe im Testmodus:** ohne hinterlegte Testschlüssel bleibt die Zahlungsart deaktiviert (`STRIPE_UNAVAILABLE`). Ein Erfolgswebhook wird nur mit gültiger Signatur, idempotent und erst nach Prüfung von Betrag und Währung akzeptiert; der Zugang wird nie allein auf ein Browser-Redirect hin freigeschaltet.
+- **Lernbereich als Folge des Kaufs:** `/konto/kurse` und `/lernen/<kurs>` zeigen die freigeschalteten, veröffentlichten Kapitel als reinen Text (kein HTML, Links mit `rel="noopener noreferrer nofollow"`) und speichern den Kapitelabschluss idempotent. Der Zugang wird bei jeder Anfrage erneut geprüft.
+- **Verwaltung** unter `/admin/bestellungen` (Zahlung bestätigen, stornieren, Beleg prüfen) und `/admin/commerce` (Verkauf freischalten, Rechnungssteller, Bankverbindung, Zahlungsziel, Rechtstexte anlegen und aktivieren). Alle schreibenden Aktionen verlangen eine frische Bestätigung.
+- Automatisierte Unit- und Datenbank-/API-Integrationstests sowie lokale Browser-Smoke-Tests für Identität, Kursentwürfe, Produkt-/Preisentwürfe und die Kaufstrecke.
 
 **Keine Freigabe für echte Kundendaten oder den Produktivbetrieb:** Betriebs- und Sicherheitsabnahme, vollständige Datenschutzprozesse, Schlüsselrotation, Aufbewahrungs-/Löschjobs, restriktive Datenbankrollen, Überwachung, Backup-Restore, CSP und rechtliche Prüfung stehen noch aus. Der Browser-Smoke-Test ersetzt keine vollständige Accessibility- oder Sicherheitsprüfung. SMTP-Status `accepted` bedeutet Anbieterannahme, nicht garantierte Zustellung; bei einem Absturz nach Annahme kann eine Mail erneut gesendet werden. Es gibt keine Zusicherung eines Exactly-once-Mailversands.
 
@@ -64,7 +68,19 @@ BOOTSTRAP_ADMIN_LAST_NAME=Admin \
 npm run bootstrap
 ```
 
-Alle drei Angaben sind Pflicht. Die Aktivierungsmail erscheint im lokalen Mailpit; nach Passwortvergabe folgt beim ersten Login die TOTP-Einrichtung. Wiederholung mit denselben Angaben erzeugt kein Duplikat, ein zweiter unbeaufsichtigter Bootstrap wird abgelehnt. Das obige Beispiel legt keine mitgelieferten Zugangsdaten oder ein Standardpasswort fest. Nach Anmeldung und MFA führt **Mein Konto → Kursverwaltung** zu den Entwürfen; weitere Mitarbeiter erhalten zuerst ihre Rolle in der Nutzerverwaltung und danach eine Kurszuordnung. **Mein Konto → Produkte** (nur Admin/Superadmin mit `products.manage`) führt zu privaten Produkt- und Preisentwürfen. Produkte sind weder aktiv noch kaufbar; es gibt keine öffentliche Produktseite, keinen Checkout und keine Zahlung.
+Alle drei Angaben sind Pflicht. Die Aktivierungsmail erscheint im lokalen Mailpit; nach Passwortvergabe folgt beim ersten Login die TOTP-Einrichtung. Wiederholung mit denselben Angaben erzeugt kein Duplikat, ein zweiter unbeaufsichtigter Bootstrap wird abgelehnt. Das obige Beispiel legt keine mitgelieferten Zugangsdaten oder ein Standardpasswort fest. Nach Anmeldung und MFA führt **Mein Konto → Kursverwaltung** zu den Entwürfen; weitere Mitarbeiter erhalten zuerst ihre Rolle in der Nutzerverwaltung und danach eine Kurszuordnung. **Mein Konto → Produkte** (nur Admin/Superadmin mit `products.manage`) führt zu Produkt- und Preisentwürfen. Ein Produkt ist erst nach der Aktivierung und mit aktivem Preis buchbar.
+
+## Kaufstrecke in Betrieb nehmen
+
+Der Verkauf ist absichtlich **standardmäßig aus**: Ohne aktive Rechtsfassungen und ohne freigeschalteten Verkauf sind Katalog und Checkout gesperrt, statt halbfertig zu verkaufen.
+
+1. Mindestens einen Kurs veröffentlichen (Admin mit `courses.publish`, frische Bestätigung) und ein Produkt anlegen, das diesen Kurs enthält.
+2. Preis anlegen und aktivieren, danach Produkt aktivieren (Admin mit `products.manage`/`prices.manage`). Ein Produkt ohne aktiven, zeitlich gültigen Preis bleibt unsichtbar.
+3. Unter **Mein Konto → Zahlung & Recht** (`settings.manage`, `legal.manage`) Rechnungssteller, Bankverbindung und Zahlungsziel pflegen und je Art eine Fassung von AGB, Widerrufsbelehrung und Datenschutzhinweis **anlegen und aktivieren**. Bestellungen sind erst möglich, wenn alle drei aktiv sind, und werden an genau diese Fassungen gebunden.
+4. Verkauf freischalten (`sales_enabled`). Erst danach erscheinen Produkte unter `/buchen`.
+5. Eingehende Überweisungen unter `/admin/bestellungen` prüfen und die Zahlung mit Referenz bestätigen — erst dann entsteht der Lernzugang und die Rechnung gilt als bezahlt. Stornierungen verlangen einen Grund; aktiver Zugang muss vorher entzogen werden.
+
+Stripe ist optional. Ohne `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` und `STRIPE_PRICE_*`-Zuordnung bleibt die Kartenzahlung deaktiviert und der Webhook antwortet mit `409 STRIPE_UNAVAILABLE`; die Rechnungsstrecke funktioniert unabhängig davon. Nur Testschlüssel verwenden — es werden keine Kartendaten gespeichert oder protokolliert. Der Webhook-Endpunkt ist `POST /api/v1/payments/stripe/webhook`; er braucht den unveränderten Rohkörper zur Signaturprüfung.
 
 ## Tests und Build
 
@@ -75,7 +91,7 @@ npm run typecheck
 npm run build
 ```
 
-Die Integrationstests verlangen `TEST_DATABASE_URL` und `TEST_REDIS_URL` aus `.env`. Sie prüfen, dass der Datenbankname auf `_test` endet und der Redis-Testindex 1–15 ist; dort werden Anwendungsdaten einschließlich Kursen bzw. Rate-Limit-Schlüssel entfernt. **Nur isolierte Testdienste verwenden.** Sie wenden die Migrationen zweimal an und prüfen u. a. Identität, MFA, Rollen, Kurszuordnungen, konkurrierende Änderungen, Fremdzugriffe, Veröffentlichungs- und Aktivierungsregeln samt DB-Triggern. Veröffentlichte Kurse erscheinen im öffentlichen Katalog nur als Kurstext; Modul- und Kapitelstruktur sowie Lehrinhalte bleiben geschützt.
+Die Integrationstests verlangen `TEST_DATABASE_URL` und `TEST_REDIS_URL` aus `.env`. Sie prüfen, dass der Datenbankname auf `_test` endet und der Redis-Testindex 1–15 ist; dort werden Anwendungsdaten einschließlich Kursen bzw. Rate-Limit-Schlüssel entfernt. **Nur isolierte Testdienste verwenden.** Sie wenden die Migrationen zweimal an und prüfen u. a. Identität, MFA, Rollen, Kurszuordnungen, konkurrierende Änderungen, Fremdzugriffe, Veröffentlichungs- und Aktivierungsregeln samt DB-Triggern sowie die Kaufstrecke: Verkaufssperre, Rechtstexte, Bestellung und Idempotenz, Zahlungsbestätigung mit frischer Bestätigung, Lernzugang und Fortschritt, Gutscheine, Stornierung, Stripe-Sperre ohne Schlüssel und manuelle Zugangsvergabe. Veröffentlichte Kurse erscheinen im öffentlichen Katalog nur als Kurstext; Modul- und Kapitelstruktur sowie Lehrinhalte bleiben geschützt.
 
 Für den zusätzlichen Browser-Smoke-Test Web, API, Worker und Mailpit mit einer **isolierten Wegwerf-Entwicklungsdatenbank** starten, bei Bedarf einmalig `npx playwright install chromium` ausführen und dann:
 

@@ -25,6 +25,11 @@ export type Config = {
   smtpPassword?: string;
   commonPasswords: Set<string>;
   trustProxy: string | false;
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  stripePublishableKey?: string;
+  /** Derived from APP_ENV only: a production process never accepts test payments. */
+  paymentEnvironment: 'test' | 'live';
 };
 
 let cached: Config | undefined;
@@ -76,6 +81,19 @@ export function getConfig(): Config {
   const smtpSecure = process.env.SMTP_SECURE === 'true';
   const smtpHost = process.env.SMTP_HOST;
   if (appEnv === 'production' && (!smtpHost || !smtpSecure)) throw new Error('Production SMTP must be configured with TLS.');
+  // Stripe is optional: without both keys the invoice path remains the only
+  // payment method, and the API never pretends a card payment is possible.
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY?.trim() || undefined;
+  const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim() || undefined;
+  const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY?.trim() || undefined;
+  if ((stripeSecretKey || stripeWebhookSecret || stripePublishableKey) &&
+      !(stripeSecretKey && stripeWebhookSecret && stripePublishableKey)) {
+    throw new Error('Stripe needs STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PUBLISHABLE_KEY together.');
+  }
+  if (appEnv === 'production' && stripeSecretKey && !stripeSecretKey.startsWith('sk_live_')) {
+    throw new Error('Production requires live Stripe credentials (sk_live_…).');
+  }
+  const paymentEnvironment: 'test' | 'live' = appEnv === 'production' ? 'live' : 'test';
   cached = {
     appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
     sessionKey: keyValues[0], csrfKey: keyValues[1], tokenKey: keyValues[2],
@@ -83,6 +101,7 @@ export function getConfig(): Config {
     mailFrom: required('MAIL_FROM'), smtpHost, smtpPort, smtpSecure,
     smtpUser: process.env.SMTP_USER || undefined, smtpPassword: process.env.SMTP_PASSWORD || undefined,
     commonPasswords, trustProxy: process.env.TRUST_PROXY_CIDRS || false,
+    stripeSecretKey, stripeWebhookSecret, stripePublishableKey, paymentEnvironment,
   };
   return cached;
 }

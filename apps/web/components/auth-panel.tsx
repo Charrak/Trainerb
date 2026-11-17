@@ -1,13 +1,21 @@
 'use client';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { normalizePersonName } from '@trainerb/contracts';
 import { api, errorMessage } from '../lib/api';
 import { Arrow, Field, Notice } from './site';
 
+/** Only same-origin paths are accepted as a post-login destination. */
+function safeNext(value: string | null): string | null {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null;
+  return value.length <= 200 ? value : null;
+}
+
 export function AuthPanel({ mode, showTestInbox = false }: { mode: 'login' | 'register'; showTestInbox?: boolean }) {
   const router = useRouter();
+  const next = safeNext(useSearchParams().get('weiter'));
+  const destination = mode === 'login' ? next : null;
   const [first, setFirst] = useState(''); const [last, setLast] = useState('');
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [done, setDone] = useState(false);
@@ -26,9 +34,9 @@ export function AuthPanel({ mode, showTestInbox = false }: { mode: 'login' | 're
       } else {
         const result = await api<{ status: string }>('/auth/login', 'POST', { email, password });
         setPassword('');
-        if (result.status === 'authenticated') router.push('/konto');
+        if (result.status === 'authenticated') router.push(destination ?? '/konto');
         else if (result.status === 'mfa_enrollment_required') router.push('/mfa/einrichten');
-        else if (result.status === 'mfa_required') router.push('/mfa');
+        else if (result.status === 'mfa_required') router.push(destination ? `/mfa?weiter=${encodeURIComponent(destination)}` : '/mfa');
         else throw new Error('Unexpected login status');
       }
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); }

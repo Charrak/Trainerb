@@ -15,11 +15,11 @@ export function Shield() {
 }
 export function Header() {
   return <header className="site-header"><div className="header-inner"><Brand/><nav aria-label="Hauptnavigation" className="top-nav">
-    <Link className="catalog-link" href="/kurse">Ausbildungen</Link><Link href="/anmelden">Anmelden</Link><Link className="nav-cta" href="/registrieren">Konto erstellen <Arrow diagonal/></Link>
+    <Link className="catalog-link" href="/kurse">Katalog</Link><Link className="catalog-link" href="/buchen">Buchen</Link><Link href="/anmelden">Anmelden</Link><Link className="nav-cta" href="/registrieren">Konto erstellen <Arrow diagonal/></Link>
   </nav></div></header>;
 }
 export function Footer() {
-  return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note"><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Keine Buchungen oder Zahlungen verfügbar.</span></div></footer>;
+  return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note"><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb. Zugang nach bestätigtem Zahlungseingang.</span></div></footer>;
 }
 export function Shell({ children }: { children: ReactNode }) {
   return <><Header/><main id="inhalt">{children}</main><Footer/></>;

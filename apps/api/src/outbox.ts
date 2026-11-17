@@ -41,12 +41,14 @@ export class Outbox {
       status: 'queued', max_attempts: 8, run_after: now,
     } });
   }
-  async notify(tx: Prisma.TransactionClient, userId: string, toEmail: string, firstName: string, templateKey: string): Promise<void> {
+  async notify(tx: Prisma.TransactionClient, userId: string, toEmail: string, firstName: string, templateKey: string,
+               variables: Record<string, string> = {}): Promise<void> {
     const version = await this.template(tx, templateKey);
     const id = uuidv7(); const now = new Date();
     await tx.emailOutbox.create({ data: {
       id, template_version_id: version.id, purpose: 'transaction', user_id: userId, to_email: toEmail,
-      variables_public: { first_name: firstName }, idempotency_key: `outbox-${id}`, status: 'queued', scheduled_at: now,
+      variables_public: { first_name: firstName, ...variables }, idempotency_key: `outbox-${id}`, status: 'queued',
+      scheduled_at: now,
     } });
     await tx.automationJob.create({ data: {
       id: uuidv7(), kind: 'email.send', ref_type: 'email_outbox', ref_id: id, payload_schema_version: 1,
