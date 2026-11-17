@@ -42,4 +42,5 @@ run(['scripts/migrate.mjs']);
 // to happen; fail the suite before any test runs.
 run(['scripts/check-schema-drift.mjs']);
 run(['--test', '--test-concurrency=1', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
-  'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs']);
+  'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs',
+  'tests/integration/refunds.test.cjs']);

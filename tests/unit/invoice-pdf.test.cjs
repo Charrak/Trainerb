@@ -144,3 +144,42 @@ test('a minimal snapshot renders without inventing data', () => {
   // No tax rate, no net amount, no invented seller or bank data.
   assert.equal(/USt|MwSt|\b19\s*%|\b7\s*%|Netto/i.test(joined), false);
 });
+
+test('a credit note is a correction document, not a second invoice', () => {
+  const creditNote = renderInvoicePdf(invoice({ invoice_number: 'TB-GS-2026-000007',
+    total_gross_cents: 4900n, due_at: null, payment_reference: null,
+    document: { kind: 'credit_note', title: 'Gutschrift',
+      references: [{ label: 'Ursprungsrechnung', value: 'TB-RE-2026-000042' }],
+      note: 'Grund: goodwill' } }));
+  const strings = drawnText(creditNote);
+  const text = decode(Buffer.concat(strings));
+  assert.ok(text.includes('Gutschrift'), 'the heading names the document type');
+  assert.equal(text.includes('Rechnung\n'), false);
+  assert.ok(text.includes('Gutschriftnummer'));
+  assert.ok(text.includes('TB-GS-2026-000007'));
+  // The correction must name what it corrects.
+  assert.ok(text.includes('Ursprungsrechnung'));
+  assert.ok(text.includes('TB-RE-2026-000042'));
+  // It prints the returned amount, never a claim for payment.
+  assert.ok(text.includes('Gutschriftbetrag (brutto): 49,00 €'));
+  assert.equal(text.includes('Gesamtbetrag (brutto)'), false);
+  assert.equal(text.includes('Bitte überweisen Sie'), false);
+  // Wrapped over two lines on purpose: the sentence is part of the document.
+  assert.ok(text.includes('kein neuer'));
+  assert.ok(text.includes('Zahlungsanspruch.'));
+  assert.ok(text.includes('Grund: goodwill'));
+  // The footer still identifies issuer and document.
+  assert.ok(text.includes('TB-GS-2026-000007'));
+  // Deterministic: the same snapshot renders the same bytes.
+  assert.deepEqual(renderInvoicePdf(invoice({ invoice_number: 'TB-GS-2026-000007',
+    total_gross_cents: 4900n, due_at: null, payment_reference: null,
+    document: { kind: 'credit_note', title: 'Gutschrift',
+      references: [{ label: 'Ursprungsrechnung', value: 'TB-RE-2026-000042' }],
+      note: 'Grund: goodwill' } })), creditNote);
+});
+
+test('credit note file names never look like an invoice download', () => {
+  const { creditNoteFileName } = require('../../apps/api/dist/invoice-pdf');
+  assert.equal(creditNoteFileName('TB-GS-2026-000007'), 'Gutschrift-TB-GS-2026-000007.pdf');
+  assert.equal(creditNoteFileName('../../etc/passwd'), 'Gutschrift-etcpasswd.pdf');
+});

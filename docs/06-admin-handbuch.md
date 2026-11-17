@@ -70,6 +70,15 @@ Jeder Benutzer erhält `participant`; Backoffice-Rollen werden zusätzlich zugew
 | `withdrawals.manage` | Superadmin/Admin und für die Fallbearbeitung freigegebener Support; daraus folgt keine Berechtigung zur Erstattung oder Änderung des Zahlungsstatus. |
 | `self.read`, `self.edit`, `learning.use`, `orders.read_own`, `certificates.read_own`, `newsletter.manage_own` | Teilnehmerrolle; immer kombiniert mit der Prüfung der eigenen Identität und bei Lerninhalten eines gültigen Grants. |
 
+### 6.3.1 Erstattungen und Gutschriften
+
+1. **Vorschlag oder Ausführung.** Support mit `refunds.propose` erfasst im Bestellbild einen Erstattungs**vorschlag**: Betrag, Grund und Notiz, aber kein Geldbewegung und kein Beleg. Erst `refunds.manage` (Admin/Superadmin) führt ihn mit frischer Bestätigung aus.
+2. **Vorher prüfen.** Die Bestellansicht zeigt bezahlt, bereits zurückgezahlt und noch erstattbar. Die Summe aller offenen und bestätigten Erstattungen darf den bestätigten Zahlbetrag nie übersteigen — der Datenbank-Trigger lehnt es zusätzlich ab (`REFUND_EXCEEDS_PAYMENT`). Positionen können gezielt erstattet werden; die Aufteilung muss den Betrag ergeben.
+3. **Nach dem Geld.** Eine Überweisungserstattung ist mit dem Ausführen bestätigt, eine Karten-/Providererstattung bleibt `pending`, bis die Anbieter-Referenz vorliegt. Ein Fehlversuch wird als `failed` gebucht und gibt die Kapazität wieder frei; es entsteht kein Beleg.
+4. **Korrekturbeleg.** Je bestätigter Erstattung entsteht genau eine Gutschrift im eigenen Nummernkreis (`TB-GS-JJJJ-NNNNNN`) mit Bezug auf die Ursprungsrechnung. Sie ist ein Dokument aus eingefrorenen Snapshots, enthält ausschließlich Bruttobeträge und ist im Konto („Rechnungen & Gutschriften“) sowie für `orders.read` abrufbar. Die Bestätigungsmail nennt die Gutschriftnummer.
+5. **Zugang ist eine eigene Entscheidung.** Nach der Erstattung wird ausdrücklich entschieden: **behalten** (dokumentierte Kulanz), **vorläufig sperren** (Frage offen; lässt sich zurücknehmen) oder **entziehen** (endgültig). Ohne Entscheidung bleibt der Zugang, wie er ist — die Datenbank verweigert sogar den Entzug ohne dokumentierte Entscheidung. Andere Käufe und manuelle Grants bleiben unberührt.
+6. **Nicht automatisch stornieren.** Eine erstattete Bestellung bleibt mit ihrem Zahlnachweis erhalten (`payment_state = refunded`); die Stornierung ist ein anderer Vorgang und für erstattete Bestellungen nicht der Weg.
+
 Jede dieser Berechtigungen ist ein separater Datenbankeintrag. Der Katalog wird versioniert in Migrationen/Seed-Daten gepflegt; unerkannte Schlüssel sind kein Freifahrtschein. Änderungen der Zuweisungen erfolgen nur durch Superadmins, entziehen betroffenen Sitzungen unverzüglich ihre bisherige Autorisierung und erzeugen ein Audit-Ereignis. Die genaue Datenprojektion für Support und Berichte wird pro Endpunkt festgelegt und negativ getestet.
 
 ## 6.4 Akademieangaben und Website bearbeiten

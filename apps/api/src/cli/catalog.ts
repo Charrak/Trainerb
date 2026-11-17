@@ -3,7 +3,7 @@ import { uuidv7 } from 'uuidv7';
 
 const rights: Record<string, string[]> = {
   participant: ['self.read','self.edit','learning.use','orders.read_own','certificates.read_own','newsletter.manage_own'],
-  support: ['users.read_limited','users.edit_limited','users.block','orders.read_limited','refunds.propose','access.manage','reports.read_basic','withdrawals.manage'],
+  support: ['refunds.propose', 'users.read_limited','users.edit_limited','users.block','orders.read_limited','refunds.propose','access.manage','reports.read_basic','withdrawals.manage'],
   instructor: ['courses.read','courses.edit','media.upload','reports.read_assigned'],
   course_manager: ['courses.read','courses.edit','media.upload','reports.read_assigned','newsletter.draft'],
   admin: ['users.read','users.edit','users.block','courses.read','courses.create','courses.edit','courses.publish','products.manage','prices.manage','coupons.manage','media.upload','orders.read','orders.manage','refunds.manage','access.manage','certificates.manage','cms.edit','legal.manage','newsletter.read','newsletter.edit','newsletter.send','mail.manage','operations.read','operations.retry','audit.read','reports.read_all','data_requests.manage','exports.create','withdrawals.manage'],
@@ -18,6 +18,7 @@ const templates: Record<string,{subject:string;text:string}> = {
   password_changed: { subject:'Dein Passwort wurde geändert', text:'Hallo {{first_name}},\n\ndas Passwort für dein Konto wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
   order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\nvielen Dank für deine Bestellung {{order_number}} über {{total}} EUR.\n\nBitte überweise den Betrag unter Angabe der Referenz {{payment_reference}} auf das im Konto genannte Konto. Sobald der Zahlungseingang gebucht ist, steht dir der Inhalt in deinem Konto zur Verfügung.' },
   order_paid: { subject:'Zahlungseingang zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben deine Zahlung zur Bestellung {{order_number}} verbucht. Dein Zugang ist jetzt in deinem Konto freigeschaltet.' },
+  refund_confirmed: { subject:'Erstattung zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben dir {{total}} EUR zur Bestellung {{order_number}} zurückerstattet. Die Gutschrift {{credit_note_number}} findest du in deinem Konto.\n\nOb ein bereits freigeschalteter Kurszugang bestehen bleibt, entscheidet unser Team und meldet sich bei Bedarf. Andere Kurse sind davon nicht betroffen.' },
   checkout_email_verify: { subject:'Bestätige deine E-Mail-Adresse für die Bestellung', text:'Hallo,\n\nbitte bestätige diese E-Mail-Adresse, damit wir deine Bestellung annehmen können. Öffne dafür diesen Link:\n\n{{verify_url}}\n\nAlternativ kannst du diesen Code eingeben: {{code}}\n\nDer Link ist 30 Minuten gültig. Wenn du nichts bestellt hast, ignoriere diese Nachricht einfach.' },
   email_changed_old: { subject:'Deine Konto-E-Mail-Adresse wurde geändert', text:'Hallo {{first_name}},\n\ndie E-Mail-Adresse deines Kontos wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
 };
@@ -50,7 +51,9 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
             ...(key === 'checkout_email_verify' ? [
               { name:'verify_url', type:'url', secrecy:'secret' },
               { name:'code', type:'text', secrecy:'secret' }] : []),
-            ...(key === 'order_placed' || key === 'order_paid' ? [
+            ...(key === 'refund_confirmed' ? [
+              { name:'credit_note_number', type:'text', secrecy:'public' }] : []),
+            ...(key === 'order_placed' || key === 'order_paid' || key === 'refund_confirmed' ? [
               { name:'order_number', type:'text', secrecy:'public' },
               { name:'total', type:'text', secrecy:'public' },
               { name:'payment_reference', type:'text', secrecy:'public' }] : []),

@@ -368,7 +368,9 @@ export class Shop {
       items: { orderBy: { position: 'asc' }, include: { courses: true } },
       acceptances: { select: { kind: true, wording_snapshot: true, legal_document_version_id: true } },
       invoice: true, attempts: { orderBy: { created_at: 'desc' } }, coupon: { include: { coupon: true } },
-      accesses: { select: { course_id: true, revoked_at: true } } } });
+      accesses: { select: { id: true, course_id: true, revoked_at: true, starts_at: true,
+        suspended_at: true, suspend_reason: true } },
+      refunds: { orderBy: { requested_at: 'asc' } } } });
     if (!order) throw missing();
     const staff = ctx.permissionKeys.has('orders.read') && ctx.session.kind === 'backoffice';
     // An unlinked guest order is only reachable through the buyer cookie (see
@@ -382,7 +384,7 @@ export class Shop {
       payment_method: order.payment_method, payment_state: order.payment_state,
       fulfillment_state: order.fulfillment_state, subtotal_gross_cents: String(order.subtotal_gross_cents),
       discount_cents: String(order.discount_cents), total_gross_cents: String(order.total_gross_cents),
-      currency: order.currency, due_at: order.due_at, paid_at: order.paid_at,
+      currency: order.currency, due_at: order.due_at, paid_at: order.paid_at, refunded_at: order.refunded_at,
       payment_reference: order.payment_reference, billing_snapshot: order.billing_snapshot,
       items: order.items.map(item => ({ product_id: item.product_id, title: item.title_snapshot,
         variant: item.variant_snapshot, unit_gross_cents: String(item.unit_gross_cents),
@@ -400,7 +402,16 @@ export class Shop {
       bank: order.payment_method === 'invoice' && order.payment_state === 'awaiting' && settings ? {
         holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
         bank: settings.bank_name, reference: order.payment_reference } : null,
-      access: order.accesses.map(access => ({ course_id: access.course_id, revoked: access.revoked_at !== null })),
+      access: order.accesses.map(access => ({ id: access.id, course_id: access.course_id,
+        revoked: access.revoked_at !== null, suspended: access.suspended_at !== null,
+        suspend_reason: access.suspend_reason, starts_at: access.starts_at })),
+      // A refund never hides the payment. The order view shows both: what was
+      // paid and what came back, so nobody has to guess from a single state.
+      refunds: staff ? order.refunds.filter(refund => refund.status !== 'cancelled').map(refund => ({
+        id: refund.id, amount_cents: String(refund.amount_cents), status: refund.status,
+        provider: refund.provider, reason_code: refund.reason_code, requested_at: refund.requested_at,
+        confirmed_at: refund.confirmed_at })) : undefined,
+      refundable: staff ? (await this.refundCapacity(order.id)) : undefined,
     };
   }
 
@@ -430,7 +441,7 @@ export class Shop {
     const state = stateInput === undefined || stateInput === '' ? null : String(stateInput);
     // `unlinked` is not a payment state: it filters paid guest orders that still
     // have no account, which is exactly the set a human has to resolve.
-    if (state !== null && !['awaiting', 'paid', 'cancelled', 'review', 'unlinked'].includes(state)) {
+    if (state !== null && !['awaiting', 'paid', 'cancelled', 'review', 'unlinked', 'refunded'].includes(state)) {
       throw apiError(422, 'INVALID_STATE', 'Unbekannter Status.');
     }
     const limit = limitInput === undefined ? 25 : Number(limitInput);
@@ -456,7 +467,23 @@ export class Shop {
       currency: order.currency, items: order.items.map(item => item.title_snapshot) }));
     return { data, next_cursor: rows.length > limit && data.length ? data[data.length - 1].id : null,
       totals: { awaiting: await this.db.order.count({ where: { payment_state: 'awaiting' } }),
-        paid: await this.db.order.count({ where: { payment_state: 'paid' } }) } };
+        paid: await this.db.order.count({ where: { payment_state: 'paid' } }),
+        refunded: await this.db.order.count({ where: { payment_state: 'refunded' } }) } };
+  }
+
+  /**
+   * What is still refundable on this order, for the staff order view. Derived,
+   * never stored: the refund rows are the truth.
+   */
+  private async refundCapacity(orderId: string) {
+    const attempt = await this.db.paymentAttempt.findFirst({ where: { order_id: orderId, status: 'succeeded' },
+      orderBy: { confirmed_at: 'desc' }, select: { amount_cents: true } });
+    if (!attempt) return { paid_cents: '0', refunded_cents: '0', refundable_cents: '0' };
+    const used = await this.db.refund.aggregate({ where: { order_id: orderId,
+      status: { in: ['requested', 'pending', 'succeeded'] } }, _sum: { amount_cents: true } });
+    const refunded = used._sum.amount_cents ?? 0n;
+    return { paid_cents: String(attempt.amount_cents), refunded_cents: String(refunded),
+      refundable_cents: String(attempt.amount_cents > refunded ? attempt.amount_cents - refunded : 0n) };
   }
 
   private async staffActor(tx: Prisma.TransactionClient, ctx: SessionContext, permission: string) {
@@ -538,7 +565,12 @@ export class Shop {
       if (order.payment_state === 'cancelled') return this.orderView(tx, ctx, orderId);
       const now = new Date();
       const accesses = await tx.courseAccess.findMany({ where: { order_id: orderId, revoked_at: null } });
+      // Revoking purchased access requires a decision on record. Cancelling the
+      // order *is* that decision, so it is written here explicitly instead of
+      // being implied by the state change.
       for (const access of accesses) {
+        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: orderId, access_id: access.id,
+          decision: 'revoked', reason: 'order_cancelled', decided_by: ctx.user.id } });
         await tx.courseAccess.update({ where: { id: access.id }, data: { revoked_at: now,
           revoke_reason: `order_cancelled:${reason}` } });
       }

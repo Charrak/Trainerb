@@ -7,9 +7,10 @@ import { StripePayments } from './stripe';
 import { GuestCheckout } from './guest';
 import { RateLimiter } from './limiter';
 import { Invoices } from './invoices';
+import { Refunds } from './refunds';
 import { pdfResponse } from './invoice-response';
 import { Sessions, type ApiRequest } from './sessions';
-import { apiError } from './security';
+import { apiError, requireUuid } from './security';
 import { getConfig } from './config';
 
 // Public commerce is deliberately small: configuration, sellable products and
@@ -19,7 +20,7 @@ export class ShopController {
   constructor(private readonly shop: Shop, private readonly learning: Learning, private readonly accesses: Accesses,
               private readonly commerce: Commerce, private readonly stripe: StripePayments,
               private readonly sessions: Sessions, private readonly limiter: RateLimiter,
-              private readonly invoices: Invoices) {}
+              private readonly invoices: Invoices, private readonly refunds: Refunds) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   @Get('shop/config') async config() { return this.commerce.publicConfig(); }
@@ -68,6 +69,13 @@ export class ShopController {
     return this.shop.orderDetail(ctx, id);
   }
   /** The account's invoice list; the document itself is one link per row. */
+  @Get('credit-notes') @Header('Cache-Control', 'no-store') async myCreditNotes(@Req() req: ApiRequest) {
+    return this.refunds.listMine(await this.sessions.require(req));
+  }
+  @Get('credit-notes/:id/pdf') @Header('Cache-Control', 'no-store')
+  async creditNotePdf(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
+    return pdfResponse(res, await this.refunds.download(await this.sessions.require(req), id));
+  }
   @Get('invoices') @Header('Cache-Control', 'no-store') async myInvoices(@Req() req: ApiRequest) {
     const ctx = await this.sessions.require(req);
     return this.invoices.listMine(ctx);
@@ -126,7 +134,7 @@ export class ShopController {
 export class CommerceAdminController {
   constructor(private readonly shop: Shop, private readonly commerce: Commerce, private readonly accesses: Accesses,
               private readonly sessions: Sessions, private readonly guest: GuestCheckout,
-              private readonly invoices: Invoices) {}
+              private readonly invoices: Invoices, private readonly refunds: Refunds) {}
 
   @Get('admin/orders') async orders(@Req() req: ApiRequest, @Query('state') state: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
@@ -202,6 +210,59 @@ export class CommerceAdminController {
   async revoke(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'access.manage', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.accesses.revoke(ctx, id, body);
+  }
+
+  // ---- Erstattungen -------------------------------------------------------
+  // Money going back is its own permission (`refunds.manage`), so support can
+  // read orders without being able to move money.
+  @Get('admin/refunds') async listRefunds(@Req() req: ApiRequest, @Query('status') status: unknown,
+    @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
+    // Support may see proposals; the order view is guarded by `orders.read`.
+    const ctx = await this.sessions.require(req, { backoffice: true });
+    if (!ctx.permissionKeys.has('refunds.manage') && !ctx.permissionKeys.has('refunds.propose')) {
+      throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    }
+    return this.refunds.list(status, limit, cursor);
+  }
+  /** Support may propose; a proposal moves no money. */
+  @Post('admin/orders/:id/refund-proposals') @HttpCode(201)
+  async proposeRefund(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'refunds.propose' });
+    await this.sessions.verifyCsrf(req, ctx); return this.refunds.propose(ctx, id, body, false);
+  }
+  /** Executing a refund moves money: own permission plus a fresh second factor. */
+  @Post('admin/orders/:id/refunds') @HttpCode(201)
+  async executeRefund(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.refunds.propose(ctx, id, body, true);
+  }
+  @Get('admin/refunds/:id') async refund(@Req() req: ApiRequest, @Param('id') id: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true });
+    if (!ctx.permissionKeys.has('refunds.manage') && !ctx.permissionKeys.has('refunds.propose')) {
+      throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    }
+    return this.refunds.view(this.shop.client, requireUuid(id));
+  }
+  @Post('admin/refunds/:id/confirm') @HttpCode(200)
+  async confirmRefund(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.refunds.confirm(ctx, id, body);
+  }
+  @Post('admin/refunds/:id/fail') @HttpCode(200)
+  async failRefund(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.refunds.fail(ctx, id, body);
+  }
+  /** Does the learner keep the course after the refund? Always an explicit answer. */
+  @Post('admin/refunds/:id/access-decision') @HttpCode(200)
+  async decideAccess(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'access.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.refunds.decideAccess(ctx, id, body);
+  }
+  @Get('admin/credit-notes/:id/pdf') @Header('Cache-Control', 'no-store')
+  async creditNotePdf(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
+    await this.sessions.require(req, { backoffice: true, permission: 'orders.read' });
+    return pdfResponse(res, await this.refunds.downloadForStaff(id));
   }
 }
 

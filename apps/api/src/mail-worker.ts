@@ -95,7 +95,7 @@ export class MailWorker {
     if (!item || item.status !== 'sending') return null;
     if (item.user && !['pending_activation', 'active'].includes(item.user.status)) return null;
     if (!item.user && item.template_version.template.key !== 'checkout_email_verify' &&
-        !['order_placed', 'order_paid'].includes(item.template_version.template.key)) return null;
+        !['order_placed', 'order_paid', 'refund_confirmed'].includes(item.template_version.template.key)) return null;
     const publicVars = item.variables_public;
     if (!publicVars || typeof publicVars !== 'object' || Array.isArray(publicVars) || typeof publicVars.first_name !== 'string') {
       throw new Error('Invalid template variables.');
@@ -116,9 +116,11 @@ export class MailWorker {
       if (to !== (key === 'email_change' ? token.target_email_canonical : item.user.email_canonical)) return null;
       const path = key === 'activation' ? '/konto/aktivieren' : key === 'password_reset' ? '/konto/passwort-zuruecksetzen' : '/konto/email-bestaetigen';
       variables[purposes[key as keyof typeof purposes]] = `${getConfig().publicBaseUrl}${path}#token=${encodeURIComponent(payload.token)}`;
-    } else if (['order_placed', 'order_paid'].includes(key)) {
+    } else if (['order_placed', 'order_paid', 'refund_confirmed'].includes(key)) {
       // Order mails only carry order facts that are already public to the buyer.
-      for (const name of ['order_number', 'total', 'payment_reference']) {
+      const names = key === 'refund_confirmed'
+        ? ['order_number', 'total', 'credit_note_number'] : ['order_number', 'total', 'payment_reference'];
+      for (const name of names) {
         const value = publicVars[name];
         if (typeof value !== 'string' || !/^[A-Za-z0-9 .,:€/-]{1,64}$/.test(value)) throw new Error('Invalid template variables.');
         variables[name] = value;

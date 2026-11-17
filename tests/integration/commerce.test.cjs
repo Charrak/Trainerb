@@ -326,7 +326,10 @@ test('the invoice is an immutable document: issued once, downloaded only by its 
     payment_state: 'awaiting', fulfillment_state: 'waiting', subtotal_gross_cents: 1000n, discount_cents: 0n,
     total_gross_cents: 1000n, billing_snapshot: { first_name: 'Gina', last_name: 'Gast', country: 'DE' },
     due_at: new Date(), created_by: order.user_id } });
-  await db.invoice.create({ data: { id: uuidv7(), order_id: pending.id, invoice_number: `TB-RE-2026-9${Date.now() % 100000}`,
+  // The numbering format is fixed at six digits; `% 100000` alone can produce
+  // fewer and trip the format check on a slow day.
+  await db.invoice.create({ data: { id: uuidv7(), order_id: pending.id,
+    invoice_number: `TB-RE-2026-9${String(Date.now() % 100000).padStart(5, '0')}`,
     seller_snapshot: { name: 'X' }, buyer_snapshot: { first_name: 'Gina' }, lines_snapshot: [], total_gross_cents: 1000n,
     currency: 'EUR' } });
   const pendingView = await buyer.get(`/orders/${pending.id}`); status(pendingView, 200);

@@ -17,6 +17,21 @@
  * `WinAnsiEncoding`, which covers the German characters (ä ö ü ß € – „ “).
  */
 
+/**
+ * What kind of document this is. A credit note (Gutschrift) is the same letter
+ * with a different title, extra references and no payment instruction — keeping
+ * one renderer means an invoice and its correction can never drift apart.
+ */
+export type DocumentMeta = {
+  kind?: 'invoice' | 'credit_note';
+  /** heading on the document; defaults to "Rechnung"/"Gutschrift" */
+  title?: string;
+  /** extra key facts next to number and date, e.g. the original invoice */
+  references?: Array<{ label: string; value: string }>;
+  /** a sentence that belongs on the document itself (e.g. refund route) */
+  note?: string;
+};
+
 export type InvoiceSnapshot = {
   invoice_number: string;
   issued_at: Date;
@@ -28,6 +43,7 @@ export type InvoiceSnapshot = {
   due_at: Date | null;
   payment_reference: string | null;
   recipient_email: string | null;
+  document?: DocumentMeta;
 };
 
 type Seller = {
@@ -238,9 +254,9 @@ function bankLines(seller: Seller): string[] {
 
 const columnX = { title: MARGIN, description: MARGIN + 34, quantity: 330, unit: 405, total: PAGE_WIDTH - MARGIN };
 
-function writeLetterhead(layout: Layout, seller: Seller): void {
+function writeLetterhead(layout: Layout, seller: Seller, title: string): void {
   let y = PAGE_HEIGHT - MARGIN;
-  layout.at(RIGHT_COLUMN_X, y - 10, 'Rechnung', { size: 20, bold: true });
+  layout.at(RIGHT_COLUMN_X, y - 10, title, { size: 20, bold: true });
   for (const line of sellerLines(seller)) {
     layout.at(RIGHT_COLUMN_X, y, line, { size: 9 });
     y -= 11;
@@ -248,9 +264,11 @@ function writeLetterhead(layout: Layout, seller: Seller): void {
 }
 
 function writeFacts(layout: Layout, invoice: InvoiceSnapshot, top: number): number {
+  const creditNote = invoice.document?.kind === 'credit_note';
   const rows: Array<[string, string]> = [
-    ['Rechnungsnummer', clean(invoice.invoice_number, 60)],
-    ['Rechnungsdatum', formatDate(invoice.issued_at)],
+    [creditNote ? 'Gutschriftnummer' : 'Rechnungsnummer', clean(invoice.invoice_number, 60)],
+    [creditNote ? 'Gutschriftdatum' : 'Rechnungsdatum', formatDate(invoice.issued_at)],
+    ...(invoice.document?.references ?? []).map(reference => [clean(reference.label, 60), clean(reference.value, 60)] as [string, string]),
     ['Zahlungsreferenz', clean(invoice.payment_reference, 60)],
     ['Fällig am', formatDate(invoice.due_at)],
   ];
@@ -302,12 +320,21 @@ function writeLineTable(layout: Layout, lines: Line[], currency: string): void {
 
 function writeTotals(layout: Layout, invoice: InvoiceSnapshot, currency: string): void {
   layout.rule(14, 0.9);
-  layout.line(`Gesamtbetrag (brutto): ${formatEuroCents(invoice.total_gross_cents, currency)}`,
+  const label = invoice.document?.kind === 'credit_note' ? 'Gutschriftbetrag (brutto)' : 'Gesamtbetrag (brutto)';
+  layout.line(`${label}: ${formatEuroCents(invoice.total_gross_cents, currency)}`,
     { size: 12, bold: true, gap: 22, alignRightAt: columnX.total });
 }
 
 function writePaymentNotice(layout: Layout, invoice: InvoiceSnapshot, seller: Seller): void {
-  const bank = bankLines(seller);
+  const creditNote = invoice.document?.kind === 'credit_note';
+  const bank = creditNote ? [] : bankLines(seller);
+  if (creditNote) {
+    layout.line('Erstattung', { size: BODY_SIZE, bold: true });
+    layout.paragraph('Der Betrag wurde bzw. wird auf dem ursprünglichen Zahlungsweg zurückgezahlt. ' +
+      'Diese Gutschrift ist kein neuer Zahlungsanspruch.', { size: 9 });
+    if (invoice.document?.note) layout.paragraph(clean(invoice.document.note, 500), { size: 9 });
+    layout.space(6);
+  }
   if (bank.length) {
     layout.line('Zahlung per Überweisung', { size: BODY_SIZE, bold: true });
     for (const line of bank) layout.line(line, { size: 9 });
@@ -405,8 +432,10 @@ export function renderInvoicePdf(invoice: InvoiceSnapshot): Buffer {
   const lines = Array.isArray(invoice.lines_snapshot) ? invoice.lines_snapshot as Line[] : [];
   const currency = invoice.currency || 'EUR';
   const layout = new Layout();
+  const title = clean(invoice.document?.title ?? (invoice.document?.kind === 'credit_note' ? 'Gutschrift' : 'Rechnung'), 40) ||
+    'Rechnung';
 
-  writeLetterhead(layout, seller);
+  writeLetterhead(layout, seller, title);
 
   // Address block (top left) and key facts (top right) share the upper area.
   const blockTop = PAGE_HEIGHT - MARGIN - 46;
@@ -430,4 +459,9 @@ export function renderInvoicePdf(invoice: InvoiceSnapshot): Buffer {
 /** File name for the download; the number is already server-generated. */
 export function invoiceFileName(invoiceNumber: string): string {
   return `Rechnung-${invoiceNumber.replace(/[^A-Za-z0-9-]/g, '')}.pdf`;
+}
+
+/** File name for a credit note; never mistakable for an invoice download. */
+export function creditNoteFileName(documentNumber: string): string {
+  return `Gutschrift-${documentNumber.replace(/[^A-Za-z0-9-]/g, '')}.pdf`;
 }
