@@ -1,0 +1,501 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @db.Uuid
+  email_original    String?   @db.Text
+  email_canonical   String?   @unique @db.Text
+  email_verified_at DateTime? @db.Timestamptz(6)
+  password_hash     String?   @db.Text
+  first_name        String?   @db.Text
+  last_name         String?   @db.Text
+  locale            String    @default("de-DE") @db.Text
+  status            String    @db.Text
+  last_login_at     DateTime? @db.Timestamptz(6)
+  deleted_at        DateTime? @db.Timestamptz(6)
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  billing_profiles BillingProfile[]
+  roles            UserRole[]             @relation("RoleSubject")
+  grants           UserRole[]             @relation("RoleGranter")
+  mfa_factors      UserMfaFactor[]
+  sessions         AuthSession[]
+  tokens           AccountToken[]
+  audit_events     AuditEvent[]           @relation("AuditActor")
+  template_versions EmailTemplateVersion[] @relation("TemplateAuthor")
+  outbox           EmailOutbox[]
+  course_assignments CourseStaff[] @relation("CourseStaffUser")
+  course_assignments_given CourseStaff[] @relation("CourseStaffAssigner")
+  course_versions_created CourseVersion[] @relation("CourseVersionCreator")
+  course_versions_published CourseVersion[] @relation("CourseVersionPublisher")
+  products_created Product[] @relation("ProductCreator")
+  products_activated Product[] @relation("ProductActivator")
+  course_publications CoursePublication[] @relation("PublicationActor")
+  prices_created Price[] @relation("PriceCreator")
+
+  @@map("users")
+}
+
+model BillingProfile {
+  id           String    @id @db.Uuid
+  user_id      String    @db.Uuid
+  company      String?   @db.Text
+  first_name   String    @db.Text
+  last_name    String    @db.Text
+  street       String    @db.Text
+  street_extra String?   @db.Text
+  postal_code  String    @db.Text
+  city         String    @db.Text
+  region       String?   @db.Text
+  country      String    @db.Char(2)
+  vat_id       String?   @db.Text
+  is_default   Boolean   @default(false)
+  archived_at  DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  user         User      @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  @@index([user_id])
+  @@map("billing_profiles")
+}
+
+model Role {
+  id          String           @id @db.Uuid
+  key         String           @unique @db.Text
+  name        String           @db.Text
+  is_system   Boolean          @default(true)
+  created_at  DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+  users       UserRole[]
+  permissions RolePermission[]
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @db.Uuid
+  key         String           @unique @db.Text
+  description String           @db.Text
+  created_at  DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+  roles       RolePermission[]
+  @@map("permissions")
+}
+
+model RolePermission {
+  role_id       String     @db.Uuid
+  permission_id String     @db.Uuid
+  granted_at    DateTime   @default(now()) @db.Timestamptz(6)
+  role          Role       @relation(fields: [role_id], references: [id], onDelete: Restrict)
+  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Restrict)
+  @@id([role_id, permission_id])
+  @@index([permission_id])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  user_id    String   @db.Uuid
+  role_id    String   @db.Uuid
+  granted_by String?  @db.Uuid
+  granted_at DateTime @default(now()) @db.Timestamptz(6)
+  user       User     @relation("RoleSubject", fields: [user_id], references: [id], onDelete: Restrict)
+  role       Role     @relation(fields: [role_id], references: [id], onDelete: Restrict)
+  granter    User?    @relation("RoleGranter", fields: [granted_by], references: [id], onDelete: Restrict)
+  @@id([user_id, role_id])
+  @@index([role_id])
+  @@index([granted_by])
+  @@map("user_roles")
+}
+
+model UserMfaFactor {
+  id                 String    @id @db.Uuid
+  user_id            String    @db.Uuid
+  type               String    @db.Text
+  status             String    @db.Text
+  secret_ciphertext  Bytes
+  key_id             String    @db.Text
+  confirmed_at       DateTime? @db.Timestamptz(6)
+  last_used_at       DateTime? @db.Timestamptz(6)
+  last_accepted_step BigInt?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  recovery_codes     MfaRecoveryCode[]
+  @@index([user_id])
+  @@map("user_mfa_factors")
+}
+
+model MfaRecoveryCode {
+  id         String        @id @db.Uuid
+  factor_id  String        @db.Uuid
+  code_hash  Bytes         @unique
+  used_at    DateTime?     @db.Timestamptz(6)
+  expires_at DateTime?     @db.Timestamptz(6)
+  created_at DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+  factor     UserMfaFactor @relation(fields: [factor_id], references: [id], onDelete: Restrict)
+  @@index([factor_id])
+  @@map("mfa_recovery_codes")
+}
+
+model AuthSession {
+  id                 String    @id @db.Uuid
+  user_id            String    @db.Uuid
+  kind               String    @db.Text
+  token_hash         Bytes     @unique
+  csrf_secret_hash   Bytes
+  mfa_verified_at    DateTime? @db.Timestamptz(6)
+  reauthenticated_at DateTime? @db.Timestamptz(6)
+  last_seen_at       DateTime  @db.Timestamptz(6)
+  expires_at         DateTime  @db.Timestamptz(6)
+  revoked_at         DateTime? @db.Timestamptz(6)
+  ip_hmac            Bytes?
+  user_agent_hmac    Bytes?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  @@index([user_id])
+  @@index([expires_at])
+  @@map("auth_sessions")
+}
+
+model AccountToken {
+  id                     String    @id @db.Uuid
+  user_id                String    @db.Uuid
+  purpose                String    @db.Text
+  token_hash             Bytes     @unique
+  target_email_original  String?   @db.Text
+  target_email_canonical String?   @db.Text
+  expires_at             DateTime  @db.Timestamptz(6)
+  used_at                DateTime? @db.Timestamptz(6)
+  revoked_at             DateTime? @db.Timestamptz(6)
+  created_at             DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  user                   User      @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  @@index([user_id, purpose])
+  @@map("account_tokens")
+}
+
+model AuditEvent {
+  id            String   @id @db.Uuid
+  actor_user_id String?  @db.Uuid
+  origin        String   @db.Text
+  action        String   @db.Text
+  target_type   String   @db.Text
+  target_ref    String   @db.Text
+  before_safe   Json?
+  after_safe    Json?
+  reason_code   String?  @db.Text
+  request_id    String?  @db.Uuid
+  ip_hmac       Bytes?
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  actor         User?    @relation("AuditActor", fields: [actor_user_id], references: [id], onDelete: Restrict)
+  @@index([actor_user_id])
+  @@index([target_type, target_ref])
+  @@map("audit_events")
+}
+
+model EmailTemplate {
+  id         String                 @id @db.Uuid
+  key        String                 @db.Text
+  locale     String                 @db.Text
+  status     String                 @db.Text
+  created_at DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at DateTime               @default(now()) @updatedAt @db.Timestamptz(6)
+  versions   EmailTemplateVersion[]
+  @@unique([key, locale])
+  @@map("email_templates")
+}
+
+model EmailTemplateVersion {
+  id                 String        @id @db.Uuid
+  template_id        String        @db.Uuid
+  version            Int
+  state              String        @db.Text
+  subject_template   String        @db.Text
+  body_html_template String        @db.Text
+  body_text_template String        @db.Text
+  allowed_variables  Json
+  created_by         String?       @db.Uuid
+  published_at       DateTime?     @db.Timestamptz(6)
+  created_at         DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+  template           EmailTemplate @relation(fields: [template_id], references: [id], onDelete: Restrict)
+  author             User?         @relation("TemplateAuthor", fields: [created_by], references: [id], onDelete: Restrict)
+  outbox             EmailOutbox[]
+  @@unique([template_id, version])
+  @@index([created_by])
+  @@map("email_template_versions")
+}
+
+model EmailOutbox {
+  id                          String               @id @db.Uuid
+  template_version_id         String               @db.Uuid
+  purpose                     String               @db.Text
+  user_id                     String?              @db.Uuid
+  to_email                    String               @db.Text
+  variables_public            Json
+  variables_secret_ciphertext Bytes?
+  secret_key_id               String?              @db.Text
+  secret_delete_after         DateTime?            @db.Timestamptz(6)
+  idempotency_key             String               @unique @db.Text
+  status                      String               @db.Text
+  attempts                    Int                  @default(0)
+  scheduled_at                DateTime             @db.Timestamptz(6)
+  sent_at                     DateTime?            @db.Timestamptz(6)
+  provider                    String?              @db.Text
+  provider_message_id         String?              @db.Text
+  last_error_safe             String?              @db.Text
+  created_at                  DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  template_version            EmailTemplateVersion @relation(fields: [template_version_id], references: [id], onDelete: Restrict)
+  user                        User?                @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  @@index([template_version_id])
+  @@index([user_id])
+  @@index([status, scheduled_at])
+  @@map("email_outbox")
+}
+
+model AutomationJob {
+  id                     String    @id @db.Uuid
+  kind                   String    @db.Text
+  ref_type               String    @db.Text
+  ref_id                 String?   @db.Uuid
+  payload_schema_version Int       @db.SmallInt
+  payload                Json
+  idempotency_key        String    @unique @db.Text
+  status                 String    @db.Text
+  wait_reason            String?   @db.Text
+  attempts               Int       @default(0)
+  max_attempts           Int
+  run_after              DateTime  @db.Timestamptz(6)
+  lease_until            DateTime? @db.Timestamptz(6)
+  finished_at            DateTime? @db.Timestamptz(6)
+  last_error_safe        String?   @db.Text
+  created_at             DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  job_attempts           AutomationJobAttempt[]
+  @@index([status, run_after])
+  @@map("automation_jobs")
+}
+
+model AutomationJobAttempt {
+  id                String        @id @db.Uuid
+  automation_job_id String        @db.Uuid
+  attempt_no        Int
+  started_at        DateTime      @db.Timestamptz(6)
+  finished_at       DateTime      @db.Timestamptz(6)
+  result            String        @db.Text
+  error_safe        String?       @db.Text
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  job               AutomationJob @relation(fields: [automation_job_id], references: [id], onDelete: Restrict)
+  @@unique([automation_job_id, attempt_no])
+  @@map("automation_job_attempts")
+}
+
+// Phase 2 foundation. Publishing is deliberately locked in the SQL migration
+// until the corresponding checks and later exam/certificate model exist.
+model Course {
+  id         String          @id @db.Uuid
+  slug       String          @unique @db.Text
+  status     String          @default("draft") @db.Text
+  visibility String          @default("private") @db.Text
+  sort_order Int             @default(0)
+  created_at DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  versions   CourseVersion[]
+  staff      CourseStaff[]
+  products   ProductCourse[]
+  publications CoursePublication[]
+  @@map("courses")
+}
+
+model CourseVersion {
+  id                         String          @id @db.Uuid
+  course_id                  String          @db.Uuid
+  version                    Int
+  state                      String          @default("draft") @db.Text
+  title                      String          @db.Text
+  subtitle                   String?         @db.Text
+  description                Json
+  duration_minutes           Int?
+  default_access_days        Int?
+  chapter_completion_mode    String          @default("self_confirm") @db.Text
+  expected_module_count      Int?
+  expected_chapter_count     Int?
+  expected_exams_per_chapter Int?
+  content_schema_version     Int             @default(1) @db.SmallInt
+  revision                   Int             @default(1)
+  created_by                 String          @db.Uuid
+  published_by               String?         @db.Uuid
+  published_at               DateTime?       @db.Timestamptz(6)
+  created_at                 DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  course                     Course          @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  creator                    User            @relation("CourseVersionCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  publisher                  User?           @relation("CourseVersionPublisher", fields: [published_by], references: [id], onDelete: Restrict)
+  modules                    CourseModule[]
+  chapters                   CourseChapter[]
+  contents                   ChapterContent[]
+  publications               CoursePublication[]
+  @@unique([course_id, version])
+  @@unique([id, course_id])
+  @@index([created_by])
+  @@index([published_by])
+  @@map("course_versions")
+}
+
+model CourseModule {
+  id                String          @id @db.Uuid
+  course_version_id String          @db.Uuid
+  title             String          @db.Text
+  description       String?         @db.Text
+  position          Int
+  revision          Int             @default(1)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  course_version    CourseVersion   @relation(fields: [course_version_id], references: [id], onDelete: Restrict)
+  chapters          CourseChapter[]
+  @@unique([course_version_id, position])
+  @@unique([id, course_version_id])
+  @@map("course_modules")
+}
+
+model CourseChapter {
+  id                String         @id @db.Uuid
+  course_version_id String         @db.Uuid
+  module_id         String         @db.Uuid
+  title             String         @db.Text
+  summary           String?        @db.Text
+  estimated_minutes Int?
+  position          Int
+  revision          Int            @default(1)
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+  course_version    CourseVersion  @relation(fields: [course_version_id], references: [id], onDelete: Restrict)
+  module            CourseModule   @relation(fields: [module_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  contents          ChapterContent[]
+  @@unique([module_id, position])
+  @@unique([id, course_version_id])
+  @@index([course_version_id])
+  @@map("course_chapters")
+}
+
+model ChapterContent {
+  id                String        @id @db.Uuid
+  course_version_id String        @db.Uuid
+  chapter_id        String        @db.Uuid
+  kind              String        @default("text") @db.Text
+  title             String?       @db.Text
+  body              Json
+  position          Int
+  revision          Int           @default(1)
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+  course_version    CourseVersion @relation(fields: [course_version_id], references: [id], onDelete: Restrict)
+  chapter           CourseChapter @relation(fields: [chapter_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  @@unique([chapter_id, position])
+  @@index([course_version_id])
+  @@map("chapter_contents")
+}
+
+model CourseStaff {
+  course_id  String   @db.Uuid
+  user_id    String   @db.Uuid
+  scope_role String   @db.Text
+  assigned_by String  @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  course     Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  user       User     @relation("CourseStaffUser", fields: [user_id], references: [id], onDelete: Restrict)
+  assigner   User     @relation("CourseStaffAssigner", fields: [assigned_by], references: [id], onDelete: Restrict)
+  @@id([course_id, user_id, scope_role])
+  @@index([user_id, scope_role])
+  @@index([assigned_by])
+  @@map("course_staff")
+}
+
+// Private catalog drafts. The SQL migration locks activation and currency.
+model Product {
+  id           String          @id @db.Uuid
+  sku          String          @unique @db.Text
+  type         String          @db.Text
+  title        String          @db.Text
+  variant_name String?         @db.Text
+  description  String?         @db.Text
+  status       String          @default("draft") @db.Text
+  activated_at DateTime?       @db.Timestamptz(6)
+  activated_by String?         @db.Uuid
+  sort_order   Int             @default(0)
+  revision     Int             @default(1)
+  created_by   String          @db.Uuid
+  created_at   DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  creator      User            @relation("ProductCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  activator    User?           @relation("ProductActivator", fields: [activated_by], references: [id], onDelete: Restrict)
+  courses      ProductCourse[]
+  prices       Price[]
+  @@index([created_by])
+  @@index([created_at, id])
+  @@map("products")
+}
+
+model ProductCourse {
+  product_id           String   @db.Uuid
+  course_id            String   @db.Uuid
+  position             Int
+  access_days_override Int?
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  product              Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  course               Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  @@id([product_id, course_id])
+  @@unique([product_id, position])
+  @@index([course_id])
+  @@map("product_courses")
+}
+
+model Price {
+  id               String    @id @db.Uuid
+  product_id       String    @db.Uuid
+  currency         String    @db.Char(3)
+  model            String    @default("one_time") @db.Text
+  gross_cents      BigInt
+  sale_gross_cents BigInt?
+  sale_starts_at   DateTime? @db.Timestamptz(6)
+  sale_ends_at     DateTime? @db.Timestamptz(6)
+  tax_category     String    @db.Text
+  valid_from       DateTime  @db.Timestamptz(6)
+  valid_until      DateTime? @db.Timestamptz(6)
+  status           String    @default("draft") @db.Text
+  revision         Int       @default(1)
+  created_by       String    @db.Uuid
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  product          Product   @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  creator          User      @relation("PriceCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  @@unique([id, product_id])
+  @@index([product_id, created_at, id])
+  @@index([created_by])
+  @@map("prices")
+}
+
+model CoursePublication {
+  id                String        @id @db.Uuid
+  course_id         String        @db.Uuid
+  course_version_id String        @db.Uuid
+  version           Int
+  action            String        @db.Text
+  actor_user_id     String        @db.Uuid
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  course            Course        @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  course_version    CourseVersion @relation(fields: [course_version_id, course_id], references: [id, course_id], onDelete: Restrict)
+  actor             User          @relation("PublicationActor", fields: [actor_user_id], references: [id], onDelete: Restrict)
+  @@index([course_id, created_at, id])
+  @@index([actor_user_id])
+  @@map("course_publications")
+}

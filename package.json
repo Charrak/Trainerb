@@ -1,0 +1,73 @@
+{
+  "name": "trainerb-academy",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/contracts"
+  ],
+  "scripts": {
+    "build:contracts": "npm run build --workspace @trainerb/contracts",
+    "db:generate": "node scripts/generate-client.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:seed": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/seed.ts",
+    "bootstrap": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/bootstrap.ts",
+    "build": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && npm run build --workspace @trainerb/web",
+    "dev:api": "npm run dev --workspace @trainerb/api",
+    "dev:worker": "npm run dev --workspace @trainerb/worker",
+    "dev:web": "npm run dev --workspace @trainerb/web",
+    "test": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && node --test tests/unit/*.test.cjs",
+    "test:integration": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && node scripts/run-integration.mjs",
+    "typecheck": "npm run build:contracts && npm run db:generate && npm run typecheck --workspace @trainerb/api && npm run typecheck --workspace @trainerb/web",
+    "test:e2e": "node --test tests/e2e/*.smoke.cjs",
+    "setup:env": "node scripts/init-env.mjs"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.2.10",
+    "@nestjs/core": "11.2.10",
+    "@nestjs/platform-express": "11.2.10",
+    "@prisma/adapter-pg": "6.19.3",
+    "@prisma/client": "6.19.3",
+    "argon2": "0.45.2",
+    "bullmq": "5.81.5",
+    "cookie-parser": "1.4.7",
+    "dotenv": "17.3.1",
+    "express": "5.2.1",
+    "helmet": "8.3.0",
+    "ioredis": "5.11.1",
+    "next": "16.4.6",
+    "nodemailer": "10.6.0",
+    "otpauth": "9.6.0",
+    "pg": "8.16.3",
+    "qrcode": "1.5.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "uuidv7": "1.2.1"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "1.4.10",
+    "@types/express": "5.0.6",
+    "@types/node": "24.10.9",
+    "@types/nodemailer": "8.0.2",
+    "@types/pg": "8.15.6",
+    "@types/qrcode": "1.5.6",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@types/supertest": "6.0.3",
+    "playwright": "1.65.1",
+    "prisma": "6.19.3",
+    "supertest": "7.2.2",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@prisma/config": {
+      "deepmerge-ts": "8.0.2"
+    }
+  }
+}

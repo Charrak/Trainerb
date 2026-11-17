@@ -1,0 +1,35 @@
+# Development infrastructure only. These credentials and public test mailbox
+# must never be reused for staging or production.
+services:
+  postgres:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: trainerb
+      POSTGRES_PASSWORD: trainerb-local-only
+      POSTGRES_DB: trainerb_dev
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - trainerb_pg:/var/lib/postgresql/data
+      - ./infra/postgres/01-test-db.sql:/docker-entrypoint-initdb.d/01-test-db.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U trainerb -d trainerb_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7.4.6-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    ports:
+      - '127.0.0.1:1025:1025'
+      - '127.0.0.1:8025:8025'
+volumes:
+  trainerb_pg:
