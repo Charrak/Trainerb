@@ -11,9 +11,10 @@ export class IdentityController {
   constructor(private readonly auth: Auth, private readonly mfa: Mfa, private readonly sessions: Sessions, private readonly admin: Admin) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
-  // Publication is available behind an explicit permission; commerce, learning
-  // access, exams and certificates remain unavailable.
-  @Get('health') health() { return { status: 'running', stage: 'phase-2-publication', commerce_enabled: false, publication_enabled: true }; }
+  // Publication, commerce and learning access are available behind explicit
+  // permissions; exams and certificates remain unavailable.
+  @Get('health') health() { return { status: 'running', stage: 'phase-3-commerce', commerce_enabled: true,
+    publication_enabled: true, exams_enabled: false, certificates_enabled: false }; }
   @Get('auth/csrf') async csrf(@Req() req: ApiRequest, @Res({passthrough:true}) res: Response) {
     return { csrf_token: await this.sessions.getCsrf(req, res) };
   }

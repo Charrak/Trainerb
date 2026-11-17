@@ -6,8 +6,8 @@ const rights: Record<string, string[]> = {
   support: ['users.read_limited','users.edit_limited','users.block','orders.read_limited','refunds.propose','access.manage','reports.read_basic','withdrawals.manage'],
   instructor: ['courses.read','courses.edit','media.upload','reports.read_assigned'],
   course_manager: ['courses.read','courses.edit','media.upload','reports.read_assigned','newsletter.draft'],
-  admin: ['users.read','users.edit','users.block','courses.read','courses.create','courses.edit','courses.publish','products.manage','prices.manage','coupons.manage','media.upload','orders.read','refunds.manage','access.manage','certificates.manage','cms.edit','legal.manage','newsletter.read','newsletter.edit','newsletter.send','mail.manage','operations.read','operations.retry','audit.read','reports.read_all','data_requests.manage','exports.create','withdrawals.manage'],
-  superadmin: ['roles.manage','payments.configure','settings.manage'],
+  admin: ['users.read','users.edit','users.block','courses.read','courses.create','courses.edit','courses.publish','products.manage','prices.manage','coupons.manage','media.upload','orders.read','orders.manage','refunds.manage','access.manage','certificates.manage','cms.edit','legal.manage','newsletter.read','newsletter.edit','newsletter.send','mail.manage','operations.read','operations.retry','audit.read','reports.read_all','data_requests.manage','exports.create','withdrawals.manage'],
+  superadmin: ['roles.manage','payments.configure','settings.manage','legal.manage'],
 };
 rights.superadmin = [...new Set(Object.values(rights).flat())];
 const names: Record<string,string> = { participant:'Teilnehmer', support:'Kundenservice', instructor:'Dozent', course_manager:'Kursmanager', admin:'Administrator', superadmin:'Superadministrator' };
@@ -16,6 +16,8 @@ const templates: Record<string,{subject:string;text:string}> = {
   password_reset: { subject:'Passwort zurücksetzen', text:'Hallo {{first_name}},\n\nüber diesen Link kannst du dein Passwort zurücksetzen:\n{{reset_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden. Falls du das nicht angefordert hast, ignoriere diese Nachricht.' },
   email_change: { subject:'Neue E-Mail-Adresse bestätigen', text:'Hallo {{first_name}},\n\nbitte bestätige deine neue E-Mail-Adresse über diesen Link:\n{{email_change_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden.' },
   password_changed: { subject:'Dein Passwort wurde geändert', text:'Hallo {{first_name}},\n\ndas Passwort für dein Konto wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
+  order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\nvielen Dank für deine Bestellung {{order_number}} über {{total}} EUR.\n\nBitte überweise den Betrag unter Angabe der Referenz {{payment_reference}} auf das im Konto genannte Konto. Sobald der Zahlungseingang gebucht ist, steht dir der Inhalt in deinem Konto zur Verfügung.' },
+  order_paid: { subject:'Zahlungseingang zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben deine Zahlung zur Bestellung {{order_number}} verbucht. Dein Zugang ist jetzt in deinem Konto freigeschaltet.' },
   email_changed_old: { subject:'Deine Konto-E-Mail-Adresse wurde geändert', text:'Hallo {{first_name}},\n\ndie E-Mail-Adresse deines Kontos wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
 };
 
@@ -44,6 +46,10 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
             ...(key === 'activation' ? [{ name:'activation_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'password_reset' ? [{ name:'reset_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'email_change' ? [{ name:'email_change_url', type:'url', secrecy:'secret' }] : []),
+            ...(key === 'order_placed' || key === 'order_paid' ? [
+              { name:'order_number', type:'text', secrecy:'public' },
+              { name:'total', type:'text', secrecy:'public' },
+              { name:'payment_reference', type:'text', secrecy:'public' }] : []),
           ],
         } });
         await tx.auditEvent.create({ data: { id: uuidv7(), origin:'bootstrap', action:'mail_template.seeded', target_type:'email_template', target_ref:template.id } });

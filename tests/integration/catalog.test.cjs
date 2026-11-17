@@ -145,9 +145,13 @@ test('drafts remain private; public routes and backoffice require correct permis
   status(await admin.change('post', '/admin/courses', { slug: 'wrong-origin', title: 'Test' }, { origin: 'https://attacker.invalid' }), 403);
   status(await manager.change('post', '/admin/courses', { slug: 'no-create', title: 'Test' }), 403);
   status(await admin.get('/admin/courses?limit=101'), 422);
-  assert.equal((await admin.get('/health')).body.commerce_enabled, false);
+  // Commerce exists, but the catalogue of sellable products stays empty while
+  // the operator has not enabled sales.
+  assert.equal((await admin.get('/health')).body.commerce_enabled, true);
   assert.equal((await admin.get('/health')).body.publication_enabled, true);
-  assert.equal((await admin.get('/health')).body.commerce_enabled, false);
+  assert.equal((await admin.get('/health')).body.exams_enabled, false);
+  assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
+  status(await new Browser().get('/cart'), 401);
 });
 
 test('strict validation, unique positions and simultaneous creation preserve invariants and audit', async () => {

@@ -59,7 +59,7 @@ export function AdminProducts() {
   }
   return <div className="account-page content-width">
     <div className="dashboard-title"><div><span className="eyebrow"><span className="eyebrow-line"/> GESCHÜTZTE VERWALTUNG</span>
-      <h1>Produktentwürfe<span className="accent-dot">.</span></h1><p>Preise vorbereiten, ohne zu veröffentlichen oder zu verkaufen.</p></div>
+      <h1>Produktentwürfe<span className="accent-dot">.</span></h1><p>Produkte und Preise vorbereiten. Buchbar wird ein Produkt erst nach Aktivierung.</p></div>
       <div className="title-actions"><Link className="button button-secondary" href="/admin/kurse">Kursverwaltung <Arrow/></Link>
         <Link className="button button-outline" href="/admin">← Nutzerverwaltung</Link></div></div>
     <div className="course-feedback"><Notice message={error}/></div>
@@ -74,7 +74,7 @@ export function AdminProducts() {
         {!hasLoaded && error && <button className="button button-secondary" disabled={busy} onClick={() => void load()}>Erneut laden</button>}
       </section>
       <section className="dashboard-card" id="neu"><div className="section-heading"><div><span className="section-kicker">NEUER ENTWURF</span><h2>Produkt anlegen</h2>
-        <p>Ein Entwurf ist weder aktiv noch kaufbar. Anzahlung, Checkout und Zahlungen sind nicht implementiert.</p></div></div>
+        <p>Ein Entwurf ist weder aktiv noch kaufbar. Erst Aktivierung und ein aktiver Preis machen ihn im Shop buchbar.</p></div></div>
         <Notice message={optionsError} kind="info"/>
         <form onSubmit={create} className="stack-form">
           <div className="field-row"><Field label="SKU" id="new-product-sku" hint="Nur Großbuchstaben, Zahlen, Bindestriche und Unterstriche."><input id="new-product-sku" name="sku" value={sku} onChange={e => setSku(e.target.value)} maxLength={64} pattern="[A-Za-z0-9]+([-_][A-Za-z0-9]+)*" aria-describedby="new-product-sku-hint" required/></Field>

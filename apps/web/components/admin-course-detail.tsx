@@ -76,8 +76,8 @@ export function AdminCourseDetail({ id }: { id: string }) {
       <div className="future-note"><span>{course.status === 'published' ? 'VERÖFFENTLICHT' : 'NICHT VERÖFFENTLICHT'}{version ? ` · VERSION ${version.version}` : ''}</span>
         <strong>{course.status === 'published' ? 'Im Katalog sichtbar, noch nicht verkäuflich.' : 'Ein sicherer Platz zum Vorbereiten.'}</strong>
         <p>{course.status === 'published'
-          ? 'Die veröffentlichte Fassung ist unveränderlich. Änderungen laufen über eine neue Entwurfsversion. Verkauf, Lernzugang, Prüfungen und Zertifikate sind weiterhin nicht verfügbar.'
-          : version ? 'Veröffentlichung ist nach erfüllten Voraussetzungen und frischer Bestätigung möglich; Verkauf, Lernzugang, Prüfungen und Zertifikate bleiben nicht verfügbar.'
+          ? 'Die veröffentlichte Fassung ist unveränderlich. Änderungen laufen über eine neue Entwurfsversion. Verkauf und Lernzugang hängen an Produkten; Prüfungen und Zertifikate sind noch nicht verfügbar.'
+          : version ? 'Veröffentlichung ist nach erfüllten Voraussetzungen und frischer Bestätigung möglich; Prüfungen und Zertifikate sind noch nicht verfügbar.'
             : 'Es gibt derzeit keine bearbeitbare Entwurfsversion. Lege im Freigabebereich eine neue Entwurfsversion an.'}</p></div>
       {version ? <>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">GRUNDLAGEN</span><h2>Kursangaben</h2>

@@ -310,6 +310,8 @@ Die folgende feste Regel gilt für Vor- und Nachnamen bei Registrierung, Gastkau
 
 ## 2.5 Lernfortschritt und Prüfungen
 
+> **Umsetzungsstand (Migration `202611150006_phase3_commerce`):** Angelegt sind `commerce_settings`, `carts`, `cart_items`, `legal_documents`, `legal_document_versions`, `orders`, `order_items`, `order_item_courses`, `order_acceptances`, `coupons`, `coupon_reservations`, `payment_attempts`, `invoices`, `course_access` und `chapter_progress`. Prüfungen, Fragen, Versuche und Zertifikate fehlen weiterhin; `chapter_progress` speichert vorerst nur den Abschlusszeitpunkt je Zugang und Kapitel (eindeutig über `access_id, chapter_id`, Fremdschlüssel auf die Zugangsversion, damit ein Kapitel nur in der freigeschalteten Version abgeschlossen werden kann).
+
 ### `chapter_progress` – S
 
 - `enrollment_id:uuid`, `course_version_id:uuid → course_versions`, `chapter_id:uuid`, `status:text{not_started|in_progress|completed}`, `last_position:jsonb?`, `time_spent_seconds:bigint=0`, `revision:integer=0`, `started_at:timestamptz?`, `completed_at:timestamptz?`.

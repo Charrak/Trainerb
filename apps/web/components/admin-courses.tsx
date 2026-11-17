@@ -75,7 +75,7 @@ export function AdminCourses() {
         {!hasLoaded && error && <button className="button button-secondary" disabled={busy} onClick={() => void load()}>Erneut laden</button>}
       </section>
       {canCreate && <section className="dashboard-card" id="neu"><div className="section-heading"><div><span className="section-kicker">NEUER ENTWURF</span><h2>Ausbildung anlegen</h2>
-        <p>Ein Entwurf ist nicht öffentlich. Freigeben lässt er sich erst nach vollständiger Struktur im Kursdetail; Verkauf und Prüfungen bleiben nicht verfügbar.</p></div></div>
+        <p>Ein Entwurf ist nicht öffentlich. Freigeben lässt er sich erst nach vollständiger Struktur im Kursdetail; Verkauf und Prüfungen sind eigene Schritte.</p></div></div>
         <button type="button" className="button button-secondary preset-button" disabled={busy} onClick={firstCoursePreset}>Vorgaben für Fitnesstrainer B-Lizenz übernehmen</button>
         <p className="muted">Übernimmt ausschließlich den bekannten Titel und die geplanten Anzahlen 14 / 42 / 2. Es werden keine Module, Lehrinhalte oder Prüfungen erzeugt.</p>
         <form onSubmit={create} className="stack-form"><div className="field-row"><Field label="Titel" id="new-course-title"><input id="new-course-title" name="title" value={title} onChange={e => setTitle(e.target.value)} maxLength={160} required/></Field>

@@ -13,6 +13,13 @@ import { Products } from './products';
 import { ProductController } from './product-controller';
 import { Publication } from './publication';
 import { PublicationController } from './publication-controller';
+import { Shop } from './shop';
+import { ShopController, CommerceAdminController } from './shop-controller';
+import { Learning, Accesses } from './learning';
+import { Commerce } from './commerce';
+import { StripePayments } from './stripe';
 
-@Module({ controllers:[IdentityController, CatalogController, ProductController, PublicationController], providers:[Database, RateLimiter, Sessions, Outbox, Auth, Mfa, Admin, Catalog, Products, Publication] })
+@Module({ controllers:[IdentityController, CatalogController, ProductController, PublicationController,
+  ShopController, CommerceAdminController], providers:[Database, RateLimiter, Sessions, Outbox, Auth, Mfa, Admin,
+  Catalog, Products, Publication, Shop, Learning, Accesses, Commerce, StripePayments] })
 export class AppModule {}

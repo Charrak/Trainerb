@@ -56,7 +56,28 @@ Der erste Superadmin entsteht **nicht** über einen öffentlichen Endpunkt: Ein 
 
 CSRF-Ausgestaltung: Beim Sitzungserstellen wird ein zufälliger CSRF-Wert gesetzt; die Datenbank hält nur seinen Hash, der Browser erhält ihn im separaten `__Host-`-CSRF-Cookie. Der API-Client sendet ihn im Header; Origin und Hash müssen übereinstimmen. Für anonyme Formulare wird ein signierter, an den anonymen Kontext gebundener Double-Submit-Wert verwendet. Der normale Sitzungscookie bleibt `HttpOnly`. Nach Login und Rechteerhöhung werden beide Werte rotiert.
 
+### Phase-3-Vertrag: Kaufstrecke (umgesetzt)
+
+Die folgenden Routen sind implementiert und getestet. Der Verkauf ist nur bei freigeschaltetem `sales_enabled` möglich; Bestellungen erfordern zusätzlich je Art eine aktive Rechtsfassung.
+
+| Methode und Pfad | Eingabe / Berechtigung | Erfolg und wesentliche Regeln |
+|---|---|---|
+| `GET /shop/config` | öffentlich | `200` mit `sales_enabled`, `stripe_enabled`, Zahlungsziel und den aktiven Rechtsfassungen (ID, Art, Fassung, Wortlaut). |
+| `GET /shop/products`, `GET /shop/products/{id}` | öffentlich | Nur bei freigeschaltetem Verkauf; nur aktive Produkte mit aktivem, zeitlich gültigem Preis. Ohne Freischaltung leere Liste bzw. `404`. |
+| `GET/POST/DELETE /cart`, `POST/DELETE /cart/items`, `POST /cart/coupon` | Teilnehmersitzung, CSRF | Warenkorb gilt 24 Stunden; Positionen nur für kaufbare Produkte; Preis wird beim Bestellen erneut aufgelöst (`PRICE_CHANGED`). Ein Gutschein je Bestellung. |
+| `POST /orders` | Sitzung, CSRF, `idempotency_key`, Rechnungsadresse, `payment_method` (`invoice`/`stripe`), `legal_versions`, drei Einwilligungen | `201` mit Bestellung, Positions-/Preis-Snapshot, Rechnungsnummer und ggf. Bankdaten. Gleicher Idempotenzschlüssel liefert dieselbe Bestellung. `409 SALES_DISABLED`/`PRODUCT_NOT_SELLABLE`/`ALREADY_OWNED`/`LEGAL_CHANGED`, `422 LEGAL_REQUIRED`/`INVALID_CHECKOUT_FIELD`. |
+| `GET /orders`, `GET /orders/{id}` | eigener Datensatz | `200`; fremde Bestellungen `404`. Enthält Akzeptanz-Historie und Rechnungssnapshot. |
+| `POST /orders/{id}/pay` | eigener Datensatz, nur `payment_method=stripe` | `200` mit Checkout-URL; ohne konfigurierte Testschlüssel `409 STRIPE_UNAVAILABLE`. Der Redirect allein schaltet nichts frei. |
+| `POST /payments/stripe/webhook` | keine Sitzung, Rohkörper, Signatur | Signatur, Ereignis-ID, Betrag und Währung werden geprüft; Verarbeitung ist idempotent. Ungültige Signatur `400 INVALID_SIGNATURE`. |
+| `GET /me/courses`, `GET /me/courses/{slug}`, `GET …/chapters/{id}`, `POST …/complete` | gültiger Zugang, veröffentlichte Version | Zugang wird je Anfrage geprüft; Abschluss ist idempotent. Kein Zugang zu fremden oder unveröffentlichten Versionen. |
+| `GET /admin/orders[/{id}]` | `orders.read` | Alle Bestellungen mit Filtersicht; keine Kartendaten. |
+| `POST /admin/orders/{id}/confirm-payment`, `POST /admin/orders/{id}/cancel` | `orders.manage`, frische Bestätigung | Bestätigung mit Referenz schaltet Zahlung, Zugang und Mail frei; Stornieren verlangt einen Grund und gibt Gutscheine frei. Beides wird auditiert. |
+| `GET/POST /admin/commerce/settings`, `POST /admin/commerce/legal`, `POST /admin/commerce/legal/{id}/activate`, `GET/POST /admin/coupons`, `POST /admin/coupons/{id}/active` | `settings.manage`, `legal.manage`, `coupons.manage`; Schreibzugriffe mit frischer Bestätigung | Verkaufssperre, Rechnungssteller, Bankverbindung, Zahlungsziel, Rechtsfassungen und Gutscheine. Nur eine aktive Fassung je Art. |
+| `POST /admin/accesses`, `POST /admin/accesses/{id}/revoke` | `access.manage`, frische Bestätigung | Manuelle Freischaltung/Widerruf, auditiert, ohne Bestellung und ohne Rechnung. |
+
 ## 3.3 Warenkorb, Gutschein und Bestellung
+
+> **Umsetzungsstand:** Die Abschnitte 3.3 und 3.4 beschreiben den Zielzustand einschließlich Gastkauf, Steuerlogik und Providerkonten. Umgesetzt ist zunächst der oben stehende Phase-3-Vertrag: **kein Gast-Checkout**, Rechnung/Überweisung als Standardweg mit Bestätigung durch die Verwaltung und optionale Kartenzahlung über Stripe im Testmodus. Steuer- und Rechtsfreigabe sowie der vollständige Providerabgleich stehen weiterhin aus.
 
 1. Der Kunde wählt ein aktives Produkt und sieht Kursumfang, Laufzeit, Gesamtpreis einschließlich Steuern und gegebenenfalls Aktionspreis. Varianten und Pakete verwenden dieselbe Produktstruktur. Das System weist auf Kursüberschneidungen im Warenkorb hin; wenn sie bewusst gekauft werden, erhält jede Position eine eigene Zugangsquelle.
 2. Ein angemeldeter Kunde verwendet seine bestätigte Kontoadresse. Ein Gast weist vor der Bestellung den Besitz seiner E-Mail-Adresse mit einem einmaligen, an den Warenkorb gebundenen Link nach. Der Link darf auch auf einem anderen Gerät bestätigt werden; die ursprüngliche, durch das Warenkorbgeheimnis geschützte Sitzung kann den Nachweisstatus abfragen. Die bestätigende Seite erhält weder Warenkorbdetails noch eine angemeldete Sitzung. Dies legt **noch kein Kundenkonto und keine Sitzung für ein etwa bestehendes Konto** an. Öffentliche Antworten verraten nicht, ob ein Konto existiert. Ein bereits vorhandenes Konto wird nach erfolgreichem Nachweis intern an der Bestellung hinterlegt; ansonsten bleibt der Kontobezug bis zur Zahlung leer. Der bei Bestellung gültige Nachweis bleibt auch bei erst Tage später bestätigter SEPA-Zahlung nachvollziehbar. So können bezahlte Gastbestellungen dem richtigen Konto zugeordnet werden, ohne eine fremde Adresse ungeprüft zu übernehmen.

@@ -111,7 +111,7 @@ export function AdminProductDetail({ id }: { id: string }) {
     {product && <div className="admin-grid">
       {canRelease && <ProductActivation productId={product.id} revision={product.revision} canManage={canRelease} onChanged={() => void reload()}/>}
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">STAMMDATEN</span><h2>Produktangaben</h2>
-        <p>SKU und Produktart sind nach dem Anlegen unverändert. Es gibt keine Veröffentlichung, keinen Warenkorb und keine Zahlung.</p></div></div>
+        <p>SKU und Produktart sind nach dem Anlegen unverändert. Ein aktives Produkt mit aktivem Preis ist im Shop buchbar.</p></div></div>
         <form onSubmit={saveProduct} className="stack-form">
           <Field label="Titel" id="product-title"><input id="product-title" value={title} onChange={e => setTitle(e.target.value)} maxLength={160} disabled={!canEditProducts} required/></Field>
           <Field label="Variante (optional)" id="product-variant"><input id="product-variant" value={variant} onChange={e => setVariant(e.target.value)} maxLength={160} disabled={!canEditProducts}/></Field>
