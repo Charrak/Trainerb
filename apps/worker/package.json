@@ -1,0 +1,9 @@
+{
+  "name": "@trainerb/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node --project ../api/tsconfig.json ../api/src/worker.ts",
+    "start": "node ../api/dist/worker.js"
+  }
+}

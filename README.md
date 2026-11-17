@@ -1,1 +1,127 @@
-# Trainerb
+# Online-Akademie – Konzept und Entwicklungsstand
+
+**Stand: 15.11.2026 · Phase 1 und erster Teil von Phase 2 in Entwicklung · nicht produktionsreif**
+
+Verantwortlich: Soufian Charrak
+
+Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die erste Umsetzung der Benutzerverwaltung und eine geschützte Verwaltung für Kursentwürfe. Kursbetrieb, Prüfungen, Shop, Zahlungsanbindung und Zertifikate sind noch **nicht** implementiert; aktivierte Produkte sind katalogfähig, aber nicht kaufbar. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Es gibt keine Kauf- oder Zahlungsfunktion. Ein späterer Kaufzugang setzt gemäß Konzept einen signaturgeprüften, idempotent verarbeiteten Erfolgswebhook voraus.
+
+## Bereits umgesetzt
+
+- Node-24-/TypeScript-Monorepo mit Next.js-Weboberfläche, NestJS-API, PostgreSQL 16, Prisma-Adapter, Redis/BullMQ und Mail-Worker.
+- Versionierte SQL-Migration für Konten, Rollen/Rechte, MFA, Sitzungen, Einmaltokens, Audit, Mailvorlagen und dauerhafte Aufträge.
+- Registrierung **nur mit Vor- und Nachname und E-Mail**; dieselbe Unicode-Namensregel wird in Formular, API und Datenbank geprüft. Aktivierung per einmaligem E-Mail-Link, selbst gewähltes Passwort, Login/Logout, Profil, Passwortreset und bestätigter E-Mail-Wechsel.
+- Für Backoffice-Rollen TOTP mit Wiederherstellungscodes, kurzlebige Voranmeldung, rollenbasierte Berechtigungen und nachvollziehbare Rollenänderung. Der erste Superadmin wird ausschließlich über einen ausdrücklich autorisierten lokalen Bootstrap angelegt – ohne voreingestelltes Passwort.
+- Verschlüsselte Token in der Mail-Outbox, HMACs für Sitzung und Einmaltokens, CSRF-/Origin-Prüfung und Redis-Ratenlimits. PostgreSQL ist die dauerhafte Quelle für Mailaufträge; BullMQ dient als Transport und ein Abgleich stellt verlorene Queue-Einträge wieder her.
+- Öffentliche Katalogansicht unter `/kurse` sowie MFA-geschützte Kursverwaltung unter `/admin/kurse`: globale Administratoren legen Entwürfe an; zugewiesene Kursmanager und Dozenten bearbeiten deren Angaben, Module und Kapitel. Die Anmeldung und die Einzelrechte werden serverseitig geprüft. Mitarbeiterzuordnungen erfordern frische Bestätigung; Rollenentzug entfernt die zugehörigen Kurszuordnungen.
+- Kapitel können geschützte **Entwurfsbausteine** für Textabsätze, Überschriften, Aufzählungen und Links enthalten. Die Vorschau zeigt Text ohne HTML-Ausführung; Links werden dort nicht geöffnet. Medien und ein Teilnehmer-Lernzugang fehlen weiterhin.
+- Revisionsprüfung gegen überschreibende parallele Bearbeitung, eindeutige Positionen, nachvollziehbare Änderungsereignisse ohne Lehrtexte und Datenbank-Fremdschlüssel. Kapitel mit Inhalten und Module mit Kapiteln können nicht versehentlich gelöscht werden. Der Kurs selbst kann in diesem Teilumfang noch nicht gelöscht oder veröffentlicht werden. Die Vorlage für die erste Fitnesstrainer-B-Lizenz übernimmt nur Titel und geplante Anzahlen 14 / 42 / 2 – keine erfundenen Inhalte oder Prüfungen.
+- Automatisierte Unit- und Datenbank-/API-Integrationstests sowie lokale Browser-Smoke-Tests für Identität, Kursentwürfe und Produkt-/Preisentwürfe.
+
+**Keine Freigabe für echte Kundendaten oder den Produktivbetrieb:** Betriebs- und Sicherheitsabnahme, vollständige Datenschutzprozesse, Schlüsselrotation, Aufbewahrungs-/Löschjobs, restriktive Datenbankrollen, Überwachung, Backup-Restore, CSP und rechtliche Prüfung stehen noch aus. Der Browser-Smoke-Test ersetzt keine vollständige Accessibility- oder Sicherheitsprüfung. SMTP-Status `accepted` bedeutet Anbieterannahme, nicht garantierte Zustellung; bei einem Absturz nach Annahme kann eine Mail erneut gesendet werden. Es gibt keine Zusicherung eines Exactly-once-Mailversands.
+
+## Lokal starten
+
+Voraussetzungen: **Node.js 24**, npm, Docker mit Compose und freie lokale Ports 3000, 4000, 5432, 6379, 1025 und 8025. Die Compose-Datei ist nur für synthetische Entwicklungsdaten gedacht; ihre Zugangsdaten und Images sind kein Produktionssetup. Die Datenbank-Initialisierung legt die Entwicklungs- und Testdatenbank nur beim ersten Erstellen des Docker-Volumes an.
+
+```bash
+npm ci
+npm run setup:env       # erstellt .env und ergänzt fehlende unabhängige Zufallsschlüssel
+
+docker compose up -d
+npm run build:contracts
+npm run db:generate
+npm run db:migrate
+npm run db:seed
+```
+
+Danach in drei Terminals:
+
+```bash
+npm run dev:api
+npm run dev:worker
+npm run dev:web
+```
+
+Weboberfläche: <http://localhost:3000> · lokales Mailpit-Testpostfach: <http://localhost:8025>. Die Web-App ruft die API über `/api/v1` auf; nur der Next.js-Server verbindet sich intern mit der API. `PUBLIC_BASE_URL` muss exakt zur Browser-Origin passen. Die HTTP-Ausnahme und Secure-Cookies sind nur für `localhost`/`127.0.0.1` im lokalen Entwicklungsmodus vorgesehen; für andere Domains ist HTTPS erforderlich. Web und API binden für Entwicklungs- und Vorschauzwecke an `0.0.0.0`: Netzwerkzugriff lokal einschränken. Mailpit enthält Aktivierungslinks und darf niemals öffentlich oder für echte Daten betrieben werden.
+
+Die `.env` ist ignoriert und darf nicht eingecheckt werden. `npm run setup:env` ersetzt **keine** vorhandenen Schlüssel; gehen Schlüssel verloren oder werden sie unkoordiniert geändert, lassen sich bestehende Geheimdaten nicht mehr entschlüsseln. Die mitgelieferte Passwortliste ist bewusst klein und nur für Entwicklung geeignet; die Produktionskonfiguration verlangt eine unabhängig gepflegte Liste mit mindestens 10.000 Einträgen.
+
+### Optionale geschützte Entwicklungsvorschau
+
+Für eine eingebettete **HTTPS-Entwicklungsvorschau** müssen Umgebung und Testdatenbank isoliert sowie der Zugriff auf die Vorschau separat abgesichert sein. `APP_ENV=development` und `PUBLIC_BASE_URL` müssen in der API auf die genaue HTTPS-Browser-Origin eingestellt sein. Nur dann kann die API mit `TRAINERB_EMBEDDED_PREVIEW_COOKIES=true npm run dev:api` gestartet werden. Die Cookies sind in diesem Modus `Secure`, `SameSite=None` und `Partitioned`; die Origin- und CSRF-Prüfung bleiben aktiv. Der Browser muss partitionierte Cookies unterstützen. Ohne diese explizite Option gilt `SameSite=Lax`; in Produktion oder bei HTTP wird die Option abgelehnt.
+
+Optional zeigt `TRAINERB_TEST_INBOX=true npm run dev:web` in der Entwicklungsansicht `/test-postfach` an. Der Webserver liest dafür das Testpostfach ausschließlich über `127.0.0.1:8025`; Mailpit selbst darf nicht öffentlich erreichbar sein. **Die Seite hat keinen eigenen Zugangsschutz**: Jede Person mit Zugriff auf die Vorschau kann alle abgefangenen Nachrichten und Aktivierungs-/Resetlinks lesen. Deshalb nur hinter bereits abgesichertem Zugriff und ausschließlich mit erfundenen Daten und Testpasswörtern verwenden. Standardmäßig und im Produktionsmodus ist die Seite nicht verfügbar. Die Optionen sind keine Produktionskonfiguration; Vorschau und Testdaten sind temporär.
+
+### Ersten Superadmin lokal einrichten
+
+Nach Migration und Seed die drei Variablen mit **eigenen synthetischen Testdaten** setzen und den Bootstrap einmalig lokal ausführen:
+
+```bash
+BOOTSTRAP_ADMIN_EMAIL=admin@example.invalid \
+BOOTSTRAP_ADMIN_FIRST_NAME=Test \
+BOOTSTRAP_ADMIN_LAST_NAME=Admin \
+npm run bootstrap
+```
+
+Alle drei Angaben sind Pflicht. Die Aktivierungsmail erscheint im lokalen Mailpit; nach Passwortvergabe folgt beim ersten Login die TOTP-Einrichtung. Wiederholung mit denselben Angaben erzeugt kein Duplikat, ein zweiter unbeaufsichtigter Bootstrap wird abgelehnt. Das obige Beispiel legt keine mitgelieferten Zugangsdaten oder ein Standardpasswort fest. Nach Anmeldung und MFA führt **Mein Konto → Kursverwaltung** zu den Entwürfen; weitere Mitarbeiter erhalten zuerst ihre Rolle in der Nutzerverwaltung und danach eine Kurszuordnung. **Mein Konto → Produkte** (nur Admin/Superadmin mit `products.manage`) führt zu privaten Produkt- und Preisentwürfen. Produkte sind weder aktiv noch kaufbar; es gibt keine öffentliche Produktseite, keinen Checkout und keine Zahlung.
+
+## Tests und Build
+
+```bash
+npm test                 # Unit-Tests; baut zuerst Contracts und API
+npm run test:integration # löscht Anwendungsdaten in der dedizierten *_test-Datenbank!
+npm run typecheck
+npm run build
+```
+
+Die Integrationstests verlangen `TEST_DATABASE_URL` und `TEST_REDIS_URL` aus `.env`. Sie prüfen, dass der Datenbankname auf `_test` endet und der Redis-Testindex 1–15 ist; dort werden Anwendungsdaten einschließlich Kursen bzw. Rate-Limit-Schlüssel entfernt. **Nur isolierte Testdienste verwenden.** Sie wenden die Migrationen zweimal an und prüfen u. a. Identität, MFA, Rollen, Kurszuordnungen, konkurrierende Änderungen, Fremdzugriffe, Veröffentlichungs- und Aktivierungsregeln samt DB-Triggern. Veröffentlichte Kurse erscheinen im öffentlichen Katalog nur als Kurstext; Modul- und Kapitelstruktur sowie Lehrinhalte bleiben geschützt.
+
+Für den zusätzlichen Browser-Smoke-Test Web, API, Worker und Mailpit mit einer **isolierten Wegwerf-Entwicklungsdatenbank** starten, bei Bedarf einmalig `npx playwright install chromium` ausführen und dann:
+
+```bash
+E2E_ALLOW_TEST_DATA=yes E2E_BASE_URL=http://localhost:3000 \
+E2E_MAILPIT_URL=http://localhost:8025 npm run test:e2e
+```
+
+Der Smoke-Test legt ein synthetisches Konto an und entfernt es nicht automatisch. Er akzeptiert nur lokale Adressen; Web-Origin und `PUBLIC_BASE_URL` müssen übereinstimmen. Die Beispiele nutzen keine echten E-Mails, Anbieter oder Zahlungen.
+
+Der zusätzliche Iframe-Smoke-Test prüft Registrierung, Testpostfach, Aktivierung, Anmeldung und Abmeldung in Chromium. Voraussetzung sind OpenSSL, eine isolierte Wegwerfdatenbank, ein laufender Mail-Worker, die beiden oben genannten Preview-Optionen und dieselbe HTTPS-Origin in `PUBLIC_BASE_URL` und `E2E_PREVIEW_ORIGIN`. Ein lokales TLS-Gateway simuliert die HTTPS-Origin, ohne deren echten Host aufzurufen. Auch dieser Test legt ein synthetisches Konto an und löscht es nicht automatisch:
+
+```bash
+E2E_ALLOW_TEST_DATA=yes E2E_EMBEDDED_PREVIEW=yes \
+E2E_BASE_URL=http://127.0.0.1:3000 E2E_PREVIEW_ORIGIN=https://academy.test \
+node --test tests/e2e/preview-embedded.smoke.cjs
+```
+
+Mit `E2E_BLOCK_HMR=yes` wird zusätzlich eine Vorschau ohne durchgereichten HMR-WebSocket simuliert. Für die eingebettete Vorschau ist der optionale React-Debugkanal deaktiviert, damit die erstmalige Darstellung nicht von dieser Verbindung abhängt.
+
+### Browser-Smoke-Test der Kursverwaltung
+
+Für `tests/e2e/catalog.smoke.cjs` eine **neue, leere, lokale Wegwerf-Datenbank** mit Namen `*_e2e_test` und einen separaten Redis-Testindex verwenden. Diese Datenbank ist nicht die Anwendungs- oder Integrationstestdatenbank. Den Mail-Worker für diese Datenbank nicht starten: Der Test liest die synthetischen Aktivierungstokens direkt aus ihrer verschlüsselten Outbox. API und Test müssen dieselben Entwicklungsschlüssel aus `.env` verwenden; Web und API müssen genau auf diese Testumgebung zeigen. Beispiel nach dem einmaligen Anlegen von `trainerb_catalog_e2e_test` und mit laufendem lokalen PostgreSQL/Redis:
+
+```bash
+export E2E_CATALOG_DATABASE_URL='postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/trainerb_catalog_e2e_test'
+DATABASE_MIGRATION_URL="$E2E_CATALOG_DATABASE_URL" npm run db:migrate
+# Separates Terminal: ausschließlich für diesen Test
+APP_ENV=development DATABASE_URL="$E2E_CATALOG_DATABASE_URL" REDIS_URL=redis://127.0.0.1:6379/14 \
+  PUBLIC_BASE_URL=http://localhost:3000 ALLOW_INSECURE_LOCAL_HTTP=true \
+  TRAINERB_EMBEDDED_PREVIEW_COOKIES=false npm run dev:api
+# Weiteres Terminal: npm run dev:web (ggf. API_INTERNAL_ORIGIN passend setzen)
+E2E_CATALOG_SMOKE=yes E2E_ALLOW_TEST_DATA=yes E2E_BASE_URL=http://localhost:3000 \
+  node --test tests/e2e/catalog.smoke.cjs
+```
+
+Der Test richtet synthetische Administrator- und Mitarbeiterkonten ein und legt Entwürfe an; er löscht diese Daten nicht automatisch. Vor einer Wiederholung eine neue leere Testdatenbank verwenden oder die dedizierte Wegwerfdatenbank bewusst zurücksetzen. Er prüft u. a. MFA, Rollenvergabe, Zuordnung/Entzug, Inhaltsbausteine mit Konflikt- und Zugriffsschutz, Pagination sowie einen mobilen leeren Katalog. Er ersetzt keine vollständige Sicherheits- oder Barrierefreiheitsprüfung.
+
+## Konzeptdokumente
+
+1. [Technische Architektur und Leitentscheidungen](docs/01-architektur.md)
+2. [Relationales Datenbankschema und Datenwörterbuch](docs/02-datenmodell.md)
+3. [Geschäftsabläufe und API-Schnittstellen](docs/03-ablaeufe-und-api.md)
+4. [Sicherheit, Datenschutz, Betrieb und Wiederherstellung](docs/04-sicherheit-und-betrieb.md)
+5. [Entwicklungsphasen, Abhängigkeiten und Testplan](docs/05-phasen-und-tests.md)
+6. [Geplante Administration und Bedienungsanleitung](docs/06-admin-handbuch.md)
+7. [Entwicklungs- und Betriebshinweise zum aktuellen Teilumfang](docs/07-entwicklung.md)
+
+Die Dokumente beschreiben den **Zielzustand**, nicht automatisch vorhandene Funktionen. Preise, Lehrinhalte, Bewertungen und rechtlich geprüfte Anbieterangaben werden nicht erfunden. Die Klärung von FernUSG/ZFU, Widerruf, Datenschutz und Steuern sowie eine fachliche und rechtliche Freigabe sind vor einem kommerziellen Start erforderlich.

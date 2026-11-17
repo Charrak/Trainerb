@@ -1,0 +1,116 @@
+# 4. Sicherheit, Datenschutz, Betrieb und Wiederherstellung
+
+**Version 1.0 · 15.11.2026 · Sollkonzept**
+
+Die Maßnahmen sind ab der ersten Entwicklungsphase zu berücksichtigen, nicht erst kurz vor Veröffentlichung. Rechtliche Einordnung, Aufbewahrungsfristen, Dienstleisterverträge und steuerliche Pflichten muss der Betreiber mit geeigneter Fachberatung für das konkrete Angebot festlegen. Dieses Dokument ist keine Rechtsberatung und bestätigt keine Zertifizierung oder DSGVO-Konformität.
+
+## 4.1 Schutzziele und Bedrohungen
+
+| Risiko | Verbindliche Gegenmaßnahmen |
+|---|---|
+| Gefälschter oder wiederholter Zahlungswebhook | Provider-Signatur auf Raw-Body, Konten-/Modustrennung, Betrag/Währung/Status abgleichen; dauerhafte Event-IDs, Sperren und Idempotenz pro Geschäftsaktion. |
+| Offene Zahlung, manipulierte Erfolgsseite | Statusseite ist lesend; nur ein signaturgeprüfter und erfolgreich verarbeiteter Zahlungs-Erfolgswebhook erzeugt einen Kaufzugang. |
+| Kontenübernahme über eine fremde Käuferadresse | Bei Gastkauf E-Mail vor Bestellung nachweisen; Eindeutigkeit serverseitig; Kauf erzeugt keine Sitzung für ein Bestandskonto. |
+| Übernahme eines Admin-Kontos | MFA-Pflicht für Backoffice, enge Preauth-Sitzung, zeitlich begrenzte Sitzungen, Reauth bei kritischen Aktionen, Ratenlimits, Audit. |
+| Unzulässiger Kurs- oder Rechnungszugriff | Serverseitige Prüfung von Nutzer, Ressource, Kursversion und gültiger Zugangsquelle; private Objekte erst nach Autorisierung signieren. |
+| Prüfungslösungen vor Bestehen | Serverseitige Bewertung, gezielte Ausgabe-DTOs und Tests aller Fehler-/Netzwerkantworten; fremde und fehlgeschlagene Versuche bleiben verborgen. |
+| SQL-Injection / XSS / CSRF | Parametrisierte Datenbankzugriffe, strikte DTOs, Sanitizing und kontextbezogenes Escaping, CSP, CSRF-Token und Origin-Prüfung. |
+| Schadhafte Medien oder PDF-Vorlagen | Quarantäne, Größen-/Typprüfung, Virenscan, sichere Schlüssel und minimale Rechte; Vorlagen dürfen keine Skripte oder beliebigen Netzwerkzugriffe ausführen. |
+| Verlust eines Redis-Jobs | PostgreSQL enthält dauerhafte fachliche Aufträge; Dispatcher und periodischer Abgleich stellen Jobs wieder her. |
+| Datenschutzkonflikt mit Aufbewahrung | Minimierte Daten, definierte Fristen und Rechtsgrundlagen, Trennung aufbewahrungspflichtiger Belege von übrigen Profildaten, dokumentierte Lösch- und Restore-Prozesse. |
+| Server-/Speicherausfall | Verschlüsselte Backups außerhalb des Produktivsystems, kontinuierliches Datenbank-WAL, Speicher-Versionierung und regelmäßige Wiederherstellungstests. |
+| Falsche rechtliche oder fachliche Behauptung | Texte, Aussagen zu Zertifikaten und ZFU-Status sind belegbar, versioniert und fachlich freizugeben; keine erfundenen Bewertungen oder Zulassungen. |
+
+## 4.2 Identität und sichere Sitzungen
+
+- Passwörter mit Argon2id hashen; Startkonfiguration `memory=65536 KiB`, `iterations=3`, `parallelism=1`, auf Produktionshardware messen und gegebenenfalls erhöhen. Salt pro Passwort zufällig, Parameter im Hash gespeichert. Bei Anmeldung veraltete Parameter kontrolliert erneuern. Keine reversibel gespeicherten Passwörter.
+- Mindestens 12 Zeichen, maximal 1.024 UTF-8-Bytes; lange Passphrasen und Unicode zulassen. Verbreitete/kompromittierte Passwörter gegen eine lokal verwaltete Liste prüfen, ohne das Klartextpasswort an einen externen Dienst zu senden. Keine erfundenen Komplexitätsregeln oder regelmäßigen Zwangswechsel ohne Anlass.
+- Sitzungs- und Einmaltokens durch den kryptografischen Zufallsgenerator erzeugen; mindestens 32 zufällige Bytes. In der Datenbank nur Hash bzw. HMAC speichern. Tokenvergleich und einmaliger Verbrauch sind atomar. Links enthalten keine Passwörter und werden nicht geloggt.
+- Login-Drosselung als Startkonfiguration: höchstens fünf Fehlversuche je Kombination aus kanonischer Adresse und IP in 15 Minuten, zusätzlich höchstens 50 Loginversuche je IP in 15 Minuten. Aktivierungs-/Resetanfragen pro Adresse und IP ebenfalls begrenzen. Danach temporär verzögern/`429`; keine dauerhafte globale Kontosperre, die ein Angreifer durch fremde Fehlversuche auslösen kann. Werte nach Betriebserfahrung und Datenschutzprüfung anpassen.
+- Redis speichert technische Ratenlimits; ist es für kritische Authentifizierungs-/Tokenoperationen nicht erreichbar, wird kontrolliert geschlossen bzw. ein gleichwertiger sicherer Fallback genutzt. Benutzer erhalten eine neutrale Fehlermeldung. Keine Enumeration über Texte, Status oder offensichtlich unterschiedliche Antwortzeiten.
+- Alle Backoffice-Nutzer benötigen bestätigtes TOTP. Faktor-Geheimnisse sind mit einem getrennt verwalteten, rotierbaren Schlüssel authentifiziert verschlüsselt; Wiederherstellungscodes sind zufällig, gehasht und einmalig. TOTP-Replay innerhalb desselben Zeitschritts verhindern. Wiederherstellung durch einen autorisierten zweiten Superadmin oder dokumentierten Offline-Prozess; kein ungeschützter E-Mail-Bypass.
+- Sitzungscookies `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, `__Host-`-Präfix; kein `Domain`-Attribut. Authentifizierung, MFA-Abschluss und Rechteänderung rotieren die Sitzung. Sperrung, Passwortreset und sicherheitsrelevante Rollenänderung widerrufen betroffene Sitzungen. Ein dedizierter CSRF-Wert und Origin-Prüfung schützen verändernde Browseranfragen.
+- Berechtigung: Standardverweigerung, serverseitige Einzelrechte, Eigentums- und Kurszuordnungsprüfung. Admin-Zugriff ist weder durch das Verstecken einer Route noch durch einen Frontend-Rollenwert geschützt. Kursmanager dürfen weder globale Zahlungsanbieter noch Rollen ändern.
+
+## 4.3 Web-, API- und Datensicherheit
+
+- HTTPS überall, automatische Zertifikatserneuerung und HSTS nach erfolgreicher Inbetriebnahme. Reverse Proxy ist öffentlich; PostgreSQL, Redis, Worker und Verwaltungsports liegen in privaten Netzen. Keine ungeschützten Admin- oder Datenbankports. Nur explizit vertrauenswürdige Proxys dürfen Client-IP-Header setzen; fremde Forwarded-Header werden entfernt. Aktivierungs- und Resetlinks werden aus der konfigurierten erlaubten `PUBLIC_BASE_URL` erzeugt, nicht aus ungeprüften Host-Headern.
+- CSP mit eng begrenzten Quellen, Nonces/Hashes für notwendige Skripte, `frame-ancestors` nach Bedarf, `X-Content-Type-Options: nosniff`, restriktiver `Referrer-Policy` und geeigneter `Permissions-Policy`. Payment-/Video-Domains nur nach tatsächlich erforderlicher Integration ergänzen. Kein Drittanbieter-Tracking vor erforderlicher Einwilligung. Extern eingebettete Videos erst nach der jeweils rechtlich erforderlichen Nutzerentscheidung laden; bis dahin eine zugängliche lokale Vorschau anzeigen.
+- Eingaben mit strikten Schemas und Größenlimits validieren. HTML/Links auf erlaubte Elemente, Protokolle und Attribute reduzieren; bei Ausgabe kontextgerecht escapen. Keine ungeprüften Rich-Text-HTMLs oder JavaScript-Vorlagen aus dem Admin rendern.
+- CSRF-Schutz und Origin-Prüfung für schreibende Browseranfragen; Provider-Webhooks werden kryptografisch statt mit Browser-CSRF geprüft. Link-Scanner dürfen durch `GET` weder Newsletter bestätigen noch abmelden oder Konten aktivieren.
+- Datenbankzugriff ausschließlich über parametrisierte Abfragen. Anwendung, Migrationen, Backups und Betrieb bekommen getrennte, minimale Datenbankrollen; keine produktive Anwendung als Superuser. Datenbankdatenträger und Objektspeicher sind im Ruhezustand verschlüsselt. Für Admin-Exporte gelten separate Rechte, Audit und begrenzte Downloadgültigkeit; CSV-Inhalte werden gegen Tabellenkalkulations-Formelinjektion abgesichert.
+- Bei append-only Nachweisen besitzt die Laufzeitrolle grundsätzlich nur `INSERT`/`SELECT`; Änderungen oder Löschung erfolgen ausschließlich über einen gesondert berechtigten, dokumentierten Aufbewahrungsprozess. Audit-Ereignisse werden zusätzlich manipulationserschwerend an ein getrenntes Logziel übertragen und dort nach Richtlinie geschützt. Das erhöht Nachvollziehbarkeit, ist für sich allein aber keine zugesicherte rechtliche Revisionssicherheit.
+- Uploads nur für berechtigte Nutzer; maximale Größen je Typ, Dateisignatur und erkannten MIME-Typ prüfen, Dateiname nicht als Pfad verwenden, MIME/Suffix nicht blind vertrauen. Neue Objekte zunächst privat in Quarantäne, nach Scan erst `ready`. Keine Ausführung hochgeladener Dateien. Bildmetadaten soweit möglich entfernen. PDFs und Archivformate gegen übermäßige Ressourcenbeanspruchung begrenzen.
+- HTML-zu-PDF-Prozesse in isoliertem Container mit Zeit-, CPU- und Speicherlimit; keine lokalen Secrets, kein Zugriff auf interne Netze oder beliebige URLs, keine Skriptausführung. Externe Links, Video-URLs und Importe gegen SSRF und unerlaubte Umleitungen schützen; nur freigegebene Anbieter zulassen.
+- Private Dateien nicht über erratbare öffentliche URLs ausliefern. Signierte Links sind kurzlebig, zweckgebunden und nach Autorisierung erstellt; Videokopien lassen sich damit erschweren, nicht technisch vollständig verhindern.
+- Secrets in geschützten Umgebungsvariablen oder Secret-Store; getrennte Schlüssel für Sitzung/CSRF, Token-HMAC, Datenverschlüsselung, Pseudonymisierung und Backups. Schlüssel nicht mit verschlüsselten Daten zusammen sichern; Rotation, Eigentümer und Zugriff nachvollziehbar dokumentieren.
+- Logs enthalten Request-ID, Zeit, Modul und ungefährlichen Fehlercode, aber keine Passwörter, Tokens, vollständigen Zahlungsdaten, Newsletterinhalte oder Webhook-Rohdaten. Aktivierungs-, Reset- und Bestätigungsseiten übertragen den Einmalwert vorzugsweise im URL-Fragment, entfernen ihn anschließend aus der Browserhistorie und senden ihn nur im POST-Body; Linktracking für Transaktionsmails ist aus. `Referrer-Policy: no-referrer` und tokenfreie bzw. fragmentbasierte Links reduzieren URL-Leaks; Reverse Proxy und Monitoring sind entsprechend zu konfigurieren.
+- Abhängigkeiten per Lockfile und Image-Digest fixieren, signierte/vertrauenswürdige Quellen verwenden, automatisierte Dependency- und Secret-Scans, Sicherheitsupdates, Review von Migrationen und regelmäßige Wiederherstellungstests. Ein ORM ist kein Ersatz für Autorisierung oder Sicherheitstests.
+
+## 4.4 Datenschutz und rechtliche Vorbereitungen
+
+| Datenverarbeitung | Technische Maßnahme und vor Livegang zu klären |
+|---|---|
+| Konten und Lernstand | Nur erforderliche Stammdaten und für Leistung/Fortschritt nötige Ereignisse; Zugriff auf eigene Daten beschränken. Zweck, Rechtsgrundlage, Fristen und Auskunft dokumentieren. |
+| Bestellung, Rechnungen, Steuern | Mindestangaben und eingefrorene Belege; Aufbewahrungsfrist je Belegart von Steuer-/Rechtsberatung festlegen. Nicht einfach das vollständige Kundenkonto für immer behalten. |
+| Newsletter | Double-Opt-in, Beleg von Wortlaut/Zeitpunkt, getrennte Abmeldung, Versandstopp bei Widerruf; Kauf ist kein Opt-in. Einwilligungsnachweis nur so lange aufbewahren, wie fachlich begründet. |
+| Analyse-/Marketingtracking | Standardmäßig deaktiviert; vor Laden entsprechender Skripte oder Erhebung gesonderte Einwilligung, Widerruf und Dokumentation prüfen. |
+| Kontakt und Betroffenenrechte | Identitätsprüfung je Risiko, Status und Fristen überwachen, Datenexport und Lösch-/Korrekturvorgänge nachvollziehbar durchführen. |
+| Zahlungs-, Mail-, Video- und Hostinganbieter | Tatsächliche Rollen der Dienstleister, AV-Verträge oder andere erforderliche Vereinbarungen, Standort und ggf. Drittlandtransfer prüfen; Zahlungsanbieter verarbeitet Zahlungen eigenständig nach seinen Bedingungen. |
+| Medien und Testimonials | Nutzungsrechte und notwendige Einwilligung nachweisen; Widerruf und erneute Publikation berücksichtigen. |
+| Widerruf und digitaler Leistungsbeginn | Rechtsnatur des konkreten Angebots, Informationspflichten, vorzeitigen Beginn, getrennte Erklärungen, Bestätigung auf dauerhaftem Datenträger und ggf. erforderliche Online-Widerrufsfunktion vor Start prüfen. Kein pauschal voreingestellter Widerrufsverzicht. |
+| Fernunterricht | Je Ausbildung Anwendbarkeit von FernUSG und etwaiger ZFU-Zulassung mit zuständiger Stelle/Rechtsberatung vor Vertrieb klären und Belege dokumentieren. Veröffentlichung einer Info-Seite ist keine Zulassung. |
+| Barrierefreiheit | Anwendbarkeit von BFSG und anderen Vorgaben prüfen; technisch WCAG 2.2 AA anstreben und mit Menschen sowie unterstützenden Technologien testen. |
+
+**Betroffenenprozess:** Anfrage erfassen, bei Bedarf angemessen identifizieren, Zugriff auf personenbezogene Daten aller Module und beauftragten Dienstleister ermitteln, Daten in lesbarem Format exportieren bzw. korrigieren/löschen, gesetzliche Aufbewahrung und Sperren prüfen, Entscheidung und Abschluss protokollieren. Bei Löschung laufende Sitzungen und Token widerrufen, Medienzugang entfernen, Newsletter abmelden, nicht mehr erforderliche Felder anonymisieren und Dienstleister einbeziehen. Für das Konto erfolgen `status=deleted`, das Entfernen beider Profilnamen und der Sitzungswiderruf atomar; die Namenspflicht gilt weiter für alle anderen Kontostatus. Getrennt gespeicherte Gast-Teilnehmernamen und Rechnungsprofile sind bei der Erforderlichkeits-/Löschprüfung einzubeziehen. Rechnungs-, Prüfungs- und Zertifikatssnapshots werden nur bei konkretem Aufbewahrungsgrund weiter zweckgebunden und zugriffsbeschränkt vorgehalten; ansonsten nach der freigegebenen Regel entfernt oder anonymisiert.
+
+### Aufbewahrungsplan als Ausgangspunkt, nicht als Rechtsentscheidung
+
+| Kategorie | Technischer Startvorschlag / Bedingung |
+|---|---|
+| Abgelaufene Voranmeldungen und ungenutzte Einmaltokens | Nach Ablauf zeitnah, spätestens nach 7 Tagen entfernen; nutzbares geheimes Outbox-Material nach erfolgreicher Zustellung bzw. Ablauf entfernen. |
+| Abgelaufene Sitzungen | Spätestens 30 Tage nach Ablauf/Widerruf entfernen, sofern keine gesonderte dokumentierte Sicherheitsaufbewahrung besteht. |
+| Kontaktanfragen | Löschtermin nach Bearbeitung gemäß vorab freigegebener Richtlinie setzen; keine unbegrenzte Ablage. |
+| Technische Logs/Audit | Zugriffsbeschränkt und datensparsam; konkrete Fristen je Ereignistyp vor Livegang begründen und als automatisierte Richtlinie umsetzen. |
+| Newsletter-Nachweise | Einwilligung und Widerruf angemessen beweisbar halten; Dauer, Sperrliste und Löschung vor Livegang rechtlich festlegen. |
+| Rechnungen, Steuer- und Vertragsbelege | Gesetzlich einschlägige Fristen und Beginn individuell bestimmen; gesperrt aufbewahren, danach kontrolliert löschen. |
+| Backups | Technischer Zielwert 30 Tage, verschlüsselt und getrennt; bei Löschung verfallen Sicherungen nach Ablauf, Ausnahmen und Wiederherstellungsvorkehrungen dokumentieren. |
+
+Ein HMAC einer E-Mail kann weiterhin personenbezogen sein. Pseudonymisierung ersetzt keine Rechtsgrundlage, Löschregel oder Zugriffskontrolle.
+
+## 4.5 Betriebsumgebungen und Überwachung
+
+- **Lokal:** isolierte Entwicklungsdatenbank, Redis und lokaler Mailfänger; ausschließlich synthetische Daten und Stripe-Testmodus. Keine echten Testkunden im Produktivsystem.
+- **Staging:** produktionsähnliche Konfiguration, getrennte Secrets/Datenbanken/Buckets und Provider-Sandbox; keine Produktivmails und keine Produktions-Webhooks. Testdaten mit geregelter Lebensdauer.
+- **Produktion:** EU-Betriebsstandort und geprüfte Datenflüsse, TLS, minimale Rechte, Backups und Überwachung. Geplante Updates werden zuerst auf Staging und an einer anonymisierten Wiederherstellung getestet.
+
+Überwachung und Alarme mindestens für: externe Erreichbarkeit, TLS-Ablauf, Ressourcen, Datenbankverbindungen/Speicherplatz, Backup- und WAL-Alter, Redis-Ausfall, fällige/fehlgeschlagene Jobs, verzögerte E-Mail-Outbox, fehlgeschlagene oder ungeordnete Zahlungsereignisse, unerfüllte bezahlte Bestellungen, doppelte Zahlungen, überfällige Gutscheinreservierungen, fehlende Rechnung/PDF und Newsletter-Bounce-/Complaint-Raten. Kritische Vorgänge sind mit verantwortlicher Person und Eskalationsweg zu versehen.
+
+Regelmäßiger Abgleich: offene Zahlungen gegen Providerstatus, Provider-Erfolge gegen erfüllte Bestellungen, Erstattungen/Streitfälle gegen lokale Datensätze, bezahlte Bestellungen gegen Zugangsquellen und Rechnungsdokumente, fällige Jobs gegen Queue. Die Abgleiche sind wiederholbar und schreiben selbst keine Zahlungsbestätigungen oder Kauf-Grant-Freigaben: Dafür ist ein zugeordneter signaturgeprüfter Erfolgswebhook erforderlich. Fehlende Ereignisse werden zur erneuten signierten Zustellung angefordert oder bleiben zur manuellen Klärung offen.
+
+**Betriebsziele für die erste Ausbaustufe, keine zugesicherte SLA:** monatliche Verfügbarkeit 99,5 %; Datenbank-RPO maximal 15 Minuten bei funktionierendem kontinuierlichem WAL-Archiv; RTO maximal 8 Stunden ab Beginn einer Wiederherstellung mit verfügbaren Backups. Objektdateien haben ohne kontinuierliche Replikation nur ein RPO von bis zu 24 Stunden; dies ist getrennt auszuweisen. Ziele sind erst nach gemessenen Tests belastbar. Ein einzelner Compose-Host ist ein Single Point of Failure.
+
+## 4.6 Backup- und Wiederherstellungskonzept
+
+### Sicherungsumfang
+
+1. **PostgreSQL:** täglich konsistentes physisches Basisbackup und kontinuierliche WAL-Archivierung für Point-in-Time-Recovery; Integrität, Alter und vollständige WAL-Kette überwachen. Eine einfache tägliche SQL-Datei allein erfüllt das 15-Minuten-RPO nicht. Die Aufbewahrung umfasst mindestens das konfigurierte 30-Tage-Fenster inklusive nutzbarer Basisbackups und WAL.
+2. **Objektspeicher:** Versionierung, unveränderliche zufällige Objektschlüssel und tägliche verschlüsselte Sicherung bzw. geprüfte Replikation an einen unabhängigen EU-Standort; private Lernmedien, Dokumente, Rechnungs- und Zertifikats-PDFs einschließen. DB-Datensätze und Objektversionen müssen gemeinsam zu einem Wiederherstellungszeitpunkt passen.
+3. **Konfiguration und Schlüssel:** versionierte nicht geheime Betriebsdefinition, Migrationsstand und Image-Digests sichern; Schlüssel/Recovery-Material getrennt, verschlüsselt und mit getrennten Berechtigungen hinterlegen. Wer sowohl Sicherung als auch Schlüssel kontrolliert, wird beschränkt und auditiert.
+4. **Redis:** kein Geschäfts-Backup als einzige Wahrheit. Fällige BullMQ-Jobs lassen sich aus `automation_jobs` und Fachzuständen rekonstruieren. Anbieterinformationen, die ausschließlich bei einem Video- oder Maildienst liegen, werden vertraglich und technisch gesondert abgesichert.
+5. Backups verschlüsseln, Integrität prüfen, räumlich/getrennt vom Server speichern und durch separate Zugangsdaten gegen versehentliches Überschreiben/Löschen schützen. Immutable-Speicherfristen mit Löschpflichten abstimmen.
+
+### Wiederherstellungsablauf
+
+1. Vorfall dokumentieren, Verantwortliche informieren, betroffene Dienste isolieren und ggf. externe Kommunikation gemäß Incident-Plan veranlassen. Keine unkontrollierten Neustarts, die Beweise zerstören.
+2. In einer **isolierten** Umgebung einen sauberen Server mit geprüften Images aufbauen. Ausgewähltes Basisbackup und vollständige WAL-Kette auf Zeitpunkt T wiederherstellen; passende Objektversionen bereitstellen und Migrationen nur nach Prüfung anwenden.
+3. Ausgehenden Mail-/Newsletterversand, Provider-Schreibzugriffe und eingehende Webhooks bis zur Freigabe deaktivieren. Integritätsprüfungen, Stichproben für Konten, Kursversionen, Zugangsquellen, Belege und private Dateien durchführen.
+4. Seit T erfasste Lösch-/Sperrentscheidungen aus einem getrennt geschützten, rechtskonform aufbewahrten Nachweis erneut anwenden, damit eine Wiederherstellung nicht gelöschte Personen oder widerrufene Einwilligungen wieder aktiviert. Datenminimierung und Ablauf dieser Nachweise rechtlich festlegen.
+5. Stripe/andere Provider für den Zeitraum seit T **lesend** abgleichen und bereits signaturgeprüft gespeicherte Erfolgswebhooks idempotent nachverarbeiten. Fehlende Erfolgswebhooks nach kontrollierter Freigabe des Webhook-Eingangs nach Möglichkeit erneut signiert vom Provider zustellen und beim Eingang erneut prüfen lassen; der lesende Abgleich allein setzt weder `paid` noch Kaufzugang. Ohne überprüfbaren Erfolgswebhook bleibt der Fall alarmiert und offen. Fehlen wegen des RPO ganze nach T angelegte Bestellungen oder Daten, diese nicht aus unzureichenden Provider-Metadaten erfinden: manuelle Klärung mit vorhandenen Nachweisen/Kundenkontakt. Zusätzlich Erstattungen, Streitfälle, bereits versendete Mails und offene Gutscheinreservierungen prüfen.
+6. Redis und dauerhafte Jobs aus PostgreSQL rekonstruieren, Doppelzustellung und abgelaufene Tokens prüfen, ausgehende Dienste schrittweise wieder aktivieren, DNS/Proxy umschalten und Ergebnisse überwachen. Den tatsächlichen Datenverlust und die benötigte Zeit dokumentieren.
+
+**Testfrequenz:** mindestens monatlich vollständiger Restore in isoliertes Staging mit DB, Objekten und mindestens einem privaten Dokument; vierteljährlich ein dokumentierter Durchlauf des vollständigen Notfallplans einschließlich Provider-Abgleich und Schlüsselzugriff. Fehlende Backups oder unerfüllte RPO-/RTO-Ziele sind kritische Alarme und verhindern einen Produktionsstart.
+
+## 4.7 Barrierefreiheit und mobile Nutzung
+
+Öffentliche Website, Checkout, Lernbereich, Prüfungen und Admin-Grundfunktionen werden mit Tastatur, Screenreader, Zoom, kleinen Viewports und Touch bedient. Formulare haben Labels, verständliche Fehler und logisch erreichbare Fokusreihenfolge; Prüfungsoptionen sind als zusammengehörige Radiogruppen gekennzeichnet. Kontrast, Fokus, Umbruch, 200-%-Zoom und Nutzbarkeit bei 320 CSS-Pixeln werden geprüft. Videos benötigen freigegebene Untertitel/Transkripte; Animationen respektieren reduzierte Bewegung. Technische Tests ergänzen, ersetzen aber keine manuelle Barrierefreiheitsprüfung und keine rechtliche Anwendbarkeitsprüfung.
