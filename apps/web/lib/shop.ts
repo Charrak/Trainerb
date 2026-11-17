@@ -26,12 +26,16 @@ export type OrderDetail = OrderSummary & { identity_kind?: 'account' | 'guest'; 
   invoice: { id: string; invoice_number: string; issued_at: string; seller: Record<string, string | null>;
     buyer: Record<string, string | null>; lines: { position: number; title: string; quantity: number;
       unit_gross_cents: string; total_gross_cents: string }[]; total_gross_cents: string; due_at: string | null;
-    payment_reference: string | null } | null;
+    payment_reference: string | null; /** null while the order is not paid */ pdf_href: string | null } | null;
   bank: { holder: string; iban: string; bic: string | null; bank: string | null; reference: string | null } | null;
   access: { course_id: string; revoked: boolean }[] };
 export type MyCourse = { course_id: string; slug: string; title: string; subtitle: string | null;
   duration_minutes: number | null; starts_at: string; ends_at: string | null; chapter_count: number;
   completed_count: number };
+/** An issued invoice in the account overview; the document is one link away. */
+export type InvoiceSummary = { id: string; invoice_number: string; issued_at: string; order_id: string;
+  order_number: string; total_gross_cents: string; currency: string; payment_state: string };
+
 export type AdminOrder = { id: string; order_number: string; placed_at: string; identity_kind: 'account' | 'guest';
   buyer: { name: string; email: string | null; has_account: boolean };
   payment_method: string; payment_state: string; fulfillment_state: string; total_gross_cents: string; currency: string;

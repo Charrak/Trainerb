@@ -1,10 +1,13 @@
-import { Body, Controller, Delete, Get, Header, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpCode, Param, Post, Query, Req, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { Shop } from './shop';
 import { Learning, Accesses } from './learning';
 import { Commerce } from './commerce';
 import { StripePayments } from './stripe';
 import { GuestCheckout } from './guest';
 import { RateLimiter } from './limiter';
+import { Invoices } from './invoices';
+import { pdfResponse } from './invoice-response';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError } from './security';
 import { getConfig } from './config';
@@ -15,7 +18,8 @@ import { getConfig } from './config';
 export class ShopController {
   constructor(private readonly shop: Shop, private readonly learning: Learning, private readonly accesses: Accesses,
               private readonly commerce: Commerce, private readonly stripe: StripePayments,
-              private readonly sessions: Sessions, private readonly limiter: RateLimiter) {}
+              private readonly sessions: Sessions, private readonly limiter: RateLimiter,
+              private readonly invoices: Invoices) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   @Get('shop/config') async config() { return this.commerce.publicConfig(); }
@@ -63,6 +67,22 @@ export class ShopController {
     const ctx = await this.sessions.require(req);
     return this.shop.orderDetail(ctx, id);
   }
+  /** The account's invoice list; the document itself is one link per row. */
+  @Get('invoices') @Header('Cache-Control', 'no-store') async myInvoices(@Req() req: ApiRequest) {
+    const ctx = await this.sessions.require(req);
+    return this.invoices.listMine(ctx);
+  }
+
+  /**
+   * Invoice download for the buyer. Wrong owner, unknown id and a guest invoice
+   * all produce the same `404` — the answer never reveals that an invoice exists.
+   */
+  @Get('invoices/:id/pdf') @Header('Cache-Control', 'no-store')
+  async invoicePdf(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
+    const ctx = await this.sessions.require(req);
+    return pdfResponse(res, await this.invoices.download(ctx, id));
+  }
+
   @Post('orders/:id/pay') @HttpCode(200) async pay(@Req() req: ApiRequest, @Param('id') id: string) {
     const ctx = await this.sessions.require(req);
     await this.sessions.verifyCsrf(req, ctx);
@@ -105,7 +125,8 @@ export class ShopController {
 @Controller()
 export class CommerceAdminController {
   constructor(private readonly shop: Shop, private readonly commerce: Commerce, private readonly accesses: Accesses,
-              private readonly sessions: Sessions, private readonly guest: GuestCheckout) {}
+              private readonly sessions: Sessions, private readonly guest: GuestCheckout,
+              private readonly invoices: Invoices) {}
 
   @Get('admin/orders') async orders(@Req() req: ApiRequest, @Query('state') state: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
@@ -116,6 +137,13 @@ export class CommerceAdminController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'orders.read' });
     return this.shop.orderDetail(ctx, id);
   }
+  /** Support download: staff with `orders.read` may fetch any invoice document. */
+  @Get('admin/invoices/:id/pdf') @Header('Cache-Control', 'no-store')
+  async invoicePdf(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
+    await this.sessions.require(req, { backoffice: true, permission: 'orders.read' });
+    return pdfResponse(res, await this.invoices.downloadForStaff(id));
+  }
+
   @Post('admin/orders/:id/confirm-payment') @HttpCode(200)
   async confirm(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'orders.manage', fresh: true });
