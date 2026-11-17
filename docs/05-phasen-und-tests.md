@@ -68,6 +68,10 @@ Die Tabelle beschreibt die geplanten vollständigen Phasen. Phase 2 ist in einem
 - Strukturierte, geheimnisfreie Logs und sinnvolle Fehler-/Alarmbehandlung vorhanden.
 - Die Phase ist vor der nächsten fachlich vorgeführt und freigegeben; nicht fertige Funktionen werden nicht als produktionsbereit vermarktet.
 
+### 5.3.4 Ausführung in der CI
+
+`.github/workflows/ci.yml` führt bei Push und Pull Request gegen `main` dieselben Befehle aus, die lokal gelten: `npm run typecheck`, `npm test`, `npm run test:integration`, `npm run build` — mit PostgreSQL 16 und Redis als Diensten, einer angelegten `trainerb_test`-Datenbank und einer aus `.env.example` erzeugten `.env` mit fünf unabhängigen Zufallsschlüsseln. Damit läuft die Prüfung gegen echte Datenbank-Trigger und echte Migrationen, nicht gegen Attrappen. Die Browser-Smoke-Tests bleiben außerhalb der CI (Playwright/Chromium und eine vollständige lokale Umgebung mit Mailpit sind dort nicht vorhanden); sie ersetzen die hier geforderte manuelle Abnahme nicht. Eine `deno.yml` aus der Projektvorlage wurde entfernt, weil sie Node-Quellen und generierten Prisma-Code mit `deno lint`/`deno test` prüfte und deshalb strukturell nicht grün werden konnte.
+
 ## 5.4 Automatisierte Testmatrix
 
 | Kennung | Szenario / erwartetes Ergebnis |

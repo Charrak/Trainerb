@@ -91,6 +91,12 @@ npm run typecheck
 npm run build
 ```
 
+### Continuous Integration
+
+`.github/workflows/ci.yml` startet für Pushes und Pull Requests gegen `main` PostgreSQL 16 und Redis als Dienste, legt die `trainerb_test`-Datenbank an, erzeugt eine lokale `.env` mit fünf unabhängigen Zufallsschlüsseln (wie `npm run setup:env`) und führt `npm run typecheck`, `npm test`, `npm run test:integration` und `npm run build` aus. Die Browser-Smoke-Tests sind **nicht** Teil der CI, weil sie Playwright/Chromium und eine laufende Web-/API-/Mailpit-Umgebung brauchen; der Workflow weist per Notice darauf hin.
+
+Die frühere `deno.yml` war GitHubs Deno-Standardvorlage und konnte für dieses Projekt nie grün werden: Sie prüfte Node-/TypeScript-Quellen, CommonJS-Integrationstests (`Buffer`, `process`) und den generierten Prisma-Client mit `deno lint`/`deno test` und meldete entsprechend mehrere hundert Befunde. Sie wurde entfernt; Deno ist hier keine Laufzeit.
+
 Die Integrationstests verlangen `TEST_DATABASE_URL` und `TEST_REDIS_URL` aus `.env`. Sie prüfen, dass der Datenbankname auf `_test` endet und der Redis-Testindex 1–15 ist; dort werden Anwendungsdaten einschließlich Kursen bzw. Rate-Limit-Schlüssel entfernt. **Nur isolierte Testdienste verwenden.** Sie wenden die Migrationen zweimal an und prüfen u. a. Identität, MFA, Rollen, Kurszuordnungen, konkurrierende Änderungen, Fremdzugriffe, Veröffentlichungs- und Aktivierungsregeln samt DB-Triggern sowie die Kaufstrecke: Verkaufssperre, Rechtstexte, Bestellung und Idempotenz, Zahlungsbestätigung mit frischer Bestätigung, Lernzugang und Fortschritt, Gutscheine, Stornierung, Stripe-Sperre ohne Schlüssel und manuelle Zugangsvergabe. Veröffentlichte Kurse erscheinen im öffentlichen Katalog nur als Kurstext; Modul- und Kapitelstruktur sowie Lehrinhalte bleiben geschützt.
 
 Für den zusätzlichen Browser-Smoke-Test Web, API, Worker und Mailpit mit einer **isolierten Wegwerf-Entwicklungsdatenbank** starten, bei Bedarf einmalig `npx playwright install chromium` ausführen und dann:
