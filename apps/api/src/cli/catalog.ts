@@ -23,6 +23,7 @@ const templates: Record<string,{subject:string;text:string}> = {
   withdrawal_verify: { subject:'Bestätige deine Adresse für den Widerruf', text:'Hallo {{first_name}},\n\nbitte bestätige über diesen Link die Adresse, von der der Widerruf eingegangen ist:\n\n{{verification_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden. Erst danach kann der Vorgang {{request_reference}} einer Bestellung zugeordnet werden. Falls du keinen Widerruf erklärt hast, ignoriere diese Nachricht.' },
   withdrawal_decided: { subject:'Ergebnis zu deinem Widerruf', text:'Hallo {{first_name}},\n\nzu deinem Widerruf liegt jetzt eine Entscheidung vor: {{decision}}.\n\nFalls eine Erstattung erfolgt ist, findest du die Gutschrift in deinem Konto. Bei Rückfragen antworte einfach auf diese Nachricht.' },
   checkout_email_verify: { subject:'Bestätige deine E-Mail-Adresse für die Bestellung', text:'Hallo,\n\nbitte bestätige diese E-Mail-Adresse, damit wir deine Bestellung annehmen können. Öffne dafür diesen Link:\n\n{{verify_url}}\n\nAlternativ kannst du diesen Code eingeben: {{code}}\n\nDer Link ist 30 Minuten gültig. Wenn du nichts bestellt hast, ignoriere diese Nachricht einfach.' },
+  dispute_opened: { subject:'Rückbuchung zu {{order_number}} – Frist prüfen', text:'Hallo {{first_name}},\n\nzu Bestellung {{order_number}} hat der Zahlungsanbieter eine Rückbuchung gemeldet: {{amount}} EUR, Grund {{reason}}, Stand {{status}}.\n\nBitte prüfe den Fall im Backoffice unter Streitfälle. Der Zugang wurde nicht automatisch entzogen; über den Zugang entscheidet ein Mensch.\n\nDiese Nachricht ist eine interne Meldung, keine Kundenmail.' },
   email_changed_old: { subject:'Deine Konto-E-Mail-Adresse wurde geändert', text:'Hallo {{first_name}},\n\ndie E-Mail-Adresse deines Kontos wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
 };
 
@@ -64,6 +65,11 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
               { name:'request_reference', type:'text', secrecy:'public' }] : []),
             ...(key === 'withdrawal_decided' ? [
               { name:'decision', type:'text', secrecy:'public' }] : []),
+            ...(key === 'dispute_opened' ? [
+              { name:'order_number', type:'text', secrecy:'public' },
+              { name:'amount', type:'text', secrecy:'public' },
+              { name:'reason', type:'text', secrecy:'public' },
+              { name:'status', type:'text', secrecy:'public' }] : []),
             ...(key === 'order_placed' || key === 'order_paid' || key === 'refund_confirmed' ? [
               { name:'order_number', type:'text', secrecy:'public' },
               { name:'total', type:'text', secrecy:'public' },

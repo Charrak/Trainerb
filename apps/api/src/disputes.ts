@@ -234,6 +234,11 @@ export class Disputes {
             data: { payment_state: 'paid', charged_back_at: null } });
         }
       }
+      // One mail per case, not per provider event, and only to the people who
+      // can actually do something about it.
+      if (!existing) {
+        await this.notifyStaff(tx, order, { amount_cents: amount, reason_code: reasonCode, status });
+      }
       await tx.auditEvent.create({ data: { id: uuidv7(), actor_user_id: ctx?.user.id ?? null, origin: 'user',
         action: existing ? 'dispute.updated' : 'dispute.opened', target_type: 'dispute', target_ref: disputeId,
         after_safe: { order_id: orderId, status, amount_cents: amountText, reason_code: reasonCode,
@@ -242,6 +247,35 @@ export class Disputes {
       if (resolvedAt) await this.releaseBlockedOrder(tx, orderId);
       return this.view(tx, disputeId);
     });
+  }
+
+  /**
+   * Tell the people who can act on a case that it exists.
+   *
+   * A chargeback has a bank deadline, and nobody watches a list they were never
+   * told about. The mail goes to every active backoffice account holding
+   * `refunds.manage` — the same permission the case list requires — through the
+   * ordinary outbox, so a delivery failure is retried like any other mail.
+   *
+   * Only the *opening* of a case mails: an update to an open dispute would
+   * otherwise send a message per provider event. The money facts travel, never
+   * the buyer's address.
+   */
+  private async notifyStaff(tx: Prisma.TransactionClient, order: { order_number: string },
+                             dispute: { amount_cents: bigint; reason_code: string | null; status: string }) {
+    const recipients = await tx.user.findMany({ where: { status: 'active',
+      email_original: { not: null },
+      roles: { some: { role: { permissions: { some: { permission: { key: 'refunds.manage' } } } } } } },
+      select: { id: true, email_original: true, first_name: true } });
+    const reason = dispute.reason_code ? dispute.reason_code.replace(/_/g, ' ') : 'ohne Angabe';
+    for (const recipient of recipients) {
+      // A staff account may have lost its first name (deletion process); the mail
+      // still has to reach the person, so fall back to a neutral salutation.
+      await this.outbox.notify(tx, recipient.id, recipient.email_original!, recipient.first_name ?? 'Team',
+        'dispute_opened', { order_number: order.order_number,
+          amount: (Number(dispute.amount_cents) / 100).toFixed(2).replace('.', ','),
+          reason, status: dispute.status });
+    }
   }
 
   /** The open cases that need a human, newest first. */
