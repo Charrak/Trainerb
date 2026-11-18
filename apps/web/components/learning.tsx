@@ -6,7 +6,7 @@ import { dateOnly, type MyCourse } from '../lib/shop';
 import { Arrow, Notice } from './site';
 
 type Block = { id: string; kind: string; text?: string; level?: number; items?: string[]; href?: string };
-type Content = { id: string; kind: string; title: string | null; body: { schema_version: number; blocks: Block[] } };
+type Content = { id: string; kind: string; title: string | null; media_available?: boolean; body: { schema_version: number; blocks: Block[] } | null };
 type Chapter = { id: string; title: string; summary: string | null; module_title: string; estimated_minutes: number | null;
   completed_at: string | null; contents: Content[] };
 type Course = { course_id: string; slug: string; title: string; subtitle: string | null; duration_minutes: number | null;
@@ -27,6 +27,13 @@ function BlockView({ block }: { block: Block }) {
     return <p><a className="text-link" href={block.href} rel="noopener noreferrer nofollow" target="_blank">{block.text} <Arrow diagonal/></a></p>;
   }
   return <p className="lesson-paragraph">{block.text}</p>;
+}
+
+function LessonMedia({ content, src }: { content: Content; src: string }) {
+  if (!content.media_available) return <p>Dieses Medium ist derzeit nicht verfügbar.</p>;
+  if (content.kind === 'image') return <img src={src} alt={content.title || 'Abbildung zum Kapitel'} style={{ maxWidth: '100%' }}/>;
+  if (content.kind === 'video') return <video controls preload="none" src={src} aria-label={content.title || 'Kapitelvideo'} style={{ maxWidth: '100%' }}/>;
+  return <a className="text-link" href={src}>Datei herunterladen</a>;
 }
 
 export function MyLearning() {
@@ -109,6 +116,7 @@ export function CoursePlayer({ slug }: { slug: string }) {
           {chapter.estimated_minutes && <p className="muted">Richtwert: {chapter.estimated_minutes} Minuten</p>}
           <div className="lesson-body">{chapter.contents.map(content => <div key={content.id} className="lesson-block">
             {content.title && <h3 className="lesson-heading">{content.title}</h3>}
+            {content.kind !== 'text' && <LessonMedia content={content} src={`/api/v1/me/courses/${encodeURIComponent(slug)}/chapters/${chapter.id}/media/${content.id}`}/>}
             {content.body?.blocks?.map(block => <BlockView key={block.id} block={block}/>)}
           </div>)}</div>
           <div className="release-actions">

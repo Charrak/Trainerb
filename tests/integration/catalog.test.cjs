@@ -98,6 +98,9 @@ const rejectedStatus = expected => error => error.getStatus?.() === expected;
 before(async () => {
   assert.equal(process.env.TRAINERB_DESTRUCTIVE_TEST_DATABASE, 'confirmed');
   assert.match(new URL(process.env.DATABASE_URL).pathname, /_test$/);
+  // Signing tests use synthetic credentials only; never contact a real bucket.
+  Object.assign(process.env, { MEDIA_S3_ENDPOINT: 'https://objects.example.invalid', MEDIA_S3_BUCKET: 'trainerb-test',
+    MEDIA_S3_REGION: 'eu-central-1', MEDIA_S3_ACCESS_KEY_ID: 'synthetic', MEDIA_S3_SECRET_ACCESS_KEY: 'synthetic-only' });
   app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
@@ -658,9 +661,16 @@ test('publication requires a fresh admin and a complete draft; published version
   await assert.rejects(db.chapterContent.create({ data: { ...mediaRow, kind: 'video' } }), /COURSE_MEDIA_UNAVAILABLE/);
   await assert.rejects(db.chapterContent.create({ data: { ...mediaRow, media_asset_id: cover.id } }), /COURSE_MEDIA_UNAVAILABLE/);
   await db.chapterContent.create({ data: mediaRow });
-  assert.ok((await releaseAdmin.get(`/admin/courses/${course.id}/publication`)).body.readiness
-    .some(reason => reason.code === 'MEDIA_DELIVERY_NOT_IMPLEMENTED'));
-  await db.chapterContent.delete({ where: { id: mediaRow.id } });
+  const cfg = require('../../apps/api/dist/config').getConfig(), store = cfg.mediaStore;
+  try {
+    cfg.mediaStore = undefined;
+    assert.ok((await releaseAdmin.get(`/admin/courses/${course.id}/publication`)).body.readiness
+      .some(reason => reason.code === 'MEDIA_STORAGE_UNAVAILABLE'));
+  } finally { cfg.mediaStore = store; }
+  await db.mediaAsset.update({ where: { id: lesson.id }, data: { status: 'quarantined' } });
+  const notReady = await releaseAdmin.change('post', `/admin/courses/${course.id}/publish`, { version_id: course.version_id, revision: 2 });
+  status(notReady, 409); assert.ok(notReady.body.details.CHAPTER_MEDIA_UNAVAILABLE);
+  await db.mediaAsset.update({ where: { id: lesson.id }, data: { status: 'ready' } });
   assert.deepEqual((await releaseAdmin.get(`/admin/courses/${course.id}/publication`)).body.readiness, []);
   status(await releaseAdmin.change('post', '/auth/reauth', { password, recovery_code: releaseRecovery[1] }), 204);
   const published = await releaseAdmin.change('post', `/admin/courses/${course.id}/publish`,
@@ -685,10 +695,31 @@ test('publication requires a fresh admin and a complete draft; published version
 
   // A new draft is copied from the published version and stays editable.
   status(await releaseAdmin.change('post', '/auth/reauth', { password, recovery_code: releaseRecovery[3] }), 204);
-  // Simulate a published media row; the current release API deliberately
-  // cannot publish chapter media until there is an authorized learner route.
-  await db.chapterContent.create({ data: mediaRow });
+  const chapterPath = `/me/courses/release-ready/chapters/${chapterResponse.body.id}`;
+  const mediaPath = `${chapterPath}/media/${mediaRow.id}`;
+  status(await new Browser().get(mediaPath), 401);
+  status(await participant.get(mediaPath), 404);
+  const access = await db.courseAccess.create({ data: { id: uuidv7(), user_id: (await contextFor(participant)).user.id,
+    course_id: course.id, course_version_id: course.version_id, source: 'manual', granted_by: releaseAdminUser.id,
+    starts_at: new Date(Date.now() - 60_000), ends_at: new Date(Date.now() + 40_000) } });
+  const chapterView = await participant.get(chapterPath); status(chapterView, 200);
+  assert.equal(chapterView.body.contents.find(c => c.id === mediaRow.id).media_available, true);
+  assert.ok(!JSON.stringify(chapterView.body).includes(lesson.storage_key));
+  const link = await participant.get(mediaPath); status(link, 302); assert.equal(link.headers['cache-control'], 'no-store');
+  const signed = new URL(link.headers.location);
+  assert.equal(signed.origin, store.origin); assert.equal(signed.pathname, `/${store.bucket}/${lesson.storage_key}`);
+  assert.match(signed.searchParams.get('X-Amz-Signature'), /^[0-9a-f]{64}$/);
+  assert.ok(Number(signed.searchParams.get('X-Amz-Expires')) > 0 && Number(signed.searchParams.get('X-Amz-Expires')) <= 40);
+  status(await participant.get(mediaPath.replace(chapterResponse.body.id, uuidv7())), 404);
+  status(await participant.get(`${chapterPath}/media/${lesson.id}`), 404); // an asset ID is not an authorization
+  await db.courseAccess.update({ where: { id: access.id }, data: { suspended_at: new Date(), suspend_reason: 'review' } });
+  const suspended = await participant.get(mediaPath); status(suspended, 403); assert.equal(suspended.body.code, 'ACCESS_SUSPENDED');
+  await db.courseAccess.update({ where: { id: access.id }, data: { suspended_at: null, suspend_reason: null,
+    ends_at: new Date(Date.now() - 1000) } });
+  status(await participant.get(mediaPath), 403);
+  await db.courseAccess.update({ where: { id: access.id }, data: { ends_at: null } });
   await db.mediaAsset.update({ where: { id: lesson.id }, data: { status: 'quarantined' } });
+  const denied = await participant.get(mediaPath); status(denied, 404); assert.equal(denied.headers.location, undefined);
   const failedCopy = await releaseAdmin.change('post', `/admin/courses/${course.id}/versions`, {});
   status(failedCopy, 409); assert.equal(failedCopy.body.code, 'COURSE_MEDIA_UNAVAILABLE');
   assert.equal(await db.courseVersion.count({ where: { course_id: course.id, state: 'draft' } }), 0);
@@ -700,6 +731,7 @@ test('publication requires a fresh admin and a complete draft; published version
   assert.equal(copy.modules.length, 1); assert.equal(copy.modules[0].chapters[0]._count.contents, 2);
   assert.equal((await db.courseVersion.findUniqueOrThrow({ where: { id: copy.id } })).cover_media_id, cover.id);
   const copiedMedia = await db.chapterContent.findFirstOrThrow({ where: { course_version_id: copy.id, kind: 'image' } });
+  status(await participant.get(`/me/courses/release-ready/chapters/${copiedMedia.chapter_id}/media/${copiedMedia.id}`), 404);
   assert.equal(copiedMedia.media_asset_id, lesson.id); assert.notEqual(copiedMedia.id, mediaRow.id);
   assert.equal(copiedMedia.body, null); assert.equal(copiedMedia.position, mediaRow.position);
   const copiedText = await releaseAdmin.get(`/admin/course-chapters/${copy.modules[0].chapters[0].id}/contents`);

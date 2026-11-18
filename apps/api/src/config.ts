@@ -25,6 +25,7 @@ export type Config = {
   smtpPassword?: string;
   commonPasswords: Set<string>;
   trustProxy: string | false;
+  mediaStore?: { origin: string; bucket: string; region: string; accessKeyId: string; secretAccessKey: string };
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   stripePublishableKey?: string;
@@ -93,6 +94,17 @@ export function getConfig(): Config {
   if (appEnv === 'production' && stripeSecretKey && !stripeSecretKey.startsWith('sk_live_')) {
     throw new Error('Production requires live Stripe credentials (sk_live_…).');
   }
+  let mediaStore: Config['mediaStore'];
+  if (['ENDPOINT', 'BUCKET', 'REGION', 'ACCESS_KEY_ID', 'SECRET_ACCESS_KEY'].some(k => process.env[`MEDIA_S3_${k}`])) {
+    const origin = new URL(required('MEDIA_S3_ENDPOINT'));
+    const bucket = required('MEDIA_S3_BUCKET'), region = required('MEDIA_S3_REGION');
+    if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash ||
+        origin.origin === publicUrl.origin || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) || !/^[a-z0-9-]+$/.test(region)) {
+      throw new Error('Configure a separate HTTPS media storage origin, bucket and region.');
+    }
+    mediaStore = { origin: origin.origin, bucket, region, accessKeyId: required('MEDIA_S3_ACCESS_KEY_ID'),
+      secretAccessKey: required('MEDIA_S3_SECRET_ACCESS_KEY') };
+  }
   const paymentEnvironment: 'test' | 'live' = appEnv === 'production' ? 'live' : 'test';
   cached = {
     appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
@@ -101,7 +113,7 @@ export function getConfig(): Config {
     mailFrom: required('MAIL_FROM'), smtpHost, smtpPort, smtpSecure,
     smtpUser: process.env.SMTP_USER || undefined, smtpPassword: process.env.SMTP_PASSWORD || undefined,
     commonPasswords, trustProxy: process.env.TRUST_PROXY_CIDRS || false,
-    stripeSecretKey, stripeWebhookSecret, stripePublishableKey, paymentEnvironment,
+    stripeSecretKey, stripeWebhookSecret, stripePublishableKey, paymentEnvironment, mediaStore,
   };
   return cached;
 }

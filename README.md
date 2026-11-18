@@ -154,3 +154,11 @@ Der Test richtet synthetische Administrator- und Mitarbeiterkonten ein und legt 
 7. [Entwicklungs- und Betriebshinweise zum aktuellen Teilumfang](docs/07-entwicklung.md)
 
 Die Dokumente beschreiben den **Zielzustand**, nicht automatisch vorhandene Funktionen. Preise, Lehrinhalte, Bewertungen und rechtlich geprüfte Anbieterangaben werden nicht erfunden. Die Klärung von FernUSG/ZFU, Widerruf, Datenschutz und Steuern sowie eine fachliche und rechtliche Freigabe sind vor einem kommerziellen Start erforderlich.
+
+### Private Kapitelmedien aus S3 (optional)
+
+Für bereits geprüfte, einem Kapitel zugeordnete Objekte die fünf `MEDIA_S3_*`-Werte aus `.env.example` setzen. Der Browser muss den separaten HTTPS-Endpunkt erreichen können. Benötigt werden ein privater Bucket mit Path-Style-Zugriff und ein eigener Schlüssel mit ausschließlich `GetObject` für diese Lernmedien. Ohne Konfiguration bleiben Textkurse unverändert nutzbar; Entwürfe mit Kapitelmedien sind nicht veröffentlichbar.
+
+`GET /api/v1/me/courses/:slug/chapters/:chapterId/media/:contentId` prüft Sitzung, persönlichen Kurszugang, Version, Kapitel und aktuellen Assetstatus. Erst dann folgt ein Redirect auf einen signierten GET für genau ein Objekt (maximal 60 Sekunden, nie länger als die verbleibende Zugangsdauer). Bereits ausgestellte Links bleiben bis zu ihrem Ablauf nutzbar; eine Sperre verhindert neue Links. Signierte URLs nicht protokollieren oder cachen, auch nicht im Speicher-/Proxy-Logging. Vor Einsatz Abruf, Ablauf und Cache-Verhalten am gewählten S3-Dienst testen.
+
+JPEG, PNG, WebP, GIF sowie MP4 und WebM werden im Lernbereich angezeigt, Dateien als Download ausgeliefert. Externe Videoanbieter, Upload, Scan und redaktionelle Zuordnung sind nicht Teil dieser Funktion. Ein `ready`-Eintrag ersetzt keine tatsächliche Prüfung der Datei.

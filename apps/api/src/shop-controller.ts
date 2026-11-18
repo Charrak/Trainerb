@@ -124,6 +124,12 @@ export class ShopController {
     const ctx = await this.sessions.require(req);
     return this.learning.chapter(ctx, slug, chapterId);
   }
+  @Get('me/courses/:slug/chapters/:chapterId/media/:contentId')
+  async media(@Req() req: ApiRequest, @Res() res: Response, @Param('slug') slug: string,
+    @Param('chapterId') chapterId: string, @Param('contentId') contentId: string) {
+    const ctx = await this.sessions.require(req);
+    res.status(302).set('Location', await this.learning.mediaLink(ctx, slug, chapterId, contentId)).end();
+  }
   @Post('me/courses/:slug/chapters/:chapterId/complete') @HttpCode(200)
   async complete(@Req() req: ApiRequest, @Param('slug') slug: string, @Param('chapterId') chapterId: string) {
     const ctx = await this.sessions.require(req);
