@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
+import { deliverable, deliveryFields, signLessonGet } from './lesson-media';
+import { getConfig } from './config';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { apiError, requireUuid } from './security';
@@ -76,14 +78,27 @@ export class Learning {
     const chapterId = requireUuid(chapterIdInput);
     const access = await this.activeAccess(ctx.user.id, slug);
     const chapter = await this.db.courseChapter.findFirst({ where: { id: chapterId,
-      course_version_id: access.course_version_id }, include: { contents: { orderBy: { position: 'asc' } },
+      course_version_id: access.course_version_id }, include: { contents: { orderBy: { position: 'asc' },
+        include: { media_asset: { select: deliveryFields } } },
       module: { select: { title: true } } } });
     if (!chapter) throw missing();
     const progress = await this.db.chapterProgress.findFirst({ where: { access_id: access.id, chapter_id: chapterId } });
     return { id: chapter.id, title: chapter.title, summary: chapter.summary, module_title: chapter.module.title,
       estimated_minutes: chapter.estimated_minutes, completed_at: progress?.completed_at ?? null,
       contents: chapter.contents.map(content => ({ id: content.id, kind: content.kind, title: content.title,
-        body: content.body })) };
+        body: content.body, ...(content.media_asset_id ? { media_available: !!getConfig().mediaStore && deliverable(content.kind, content.media_asset) } : {}) })) };
+  }
+
+  async mediaLink(ctx: SessionContext, slug: string, chapterId: string, contentId: string) {
+    const access = await this.activeAccess(ctx.user.id, slug);
+    const row = await this.db.chapterContent.findFirst({ where: { id: requireUuid(contentId), chapter_id: requireUuid(chapterId),
+      course_version_id: access.course_version_id }, select: { kind: true, media_asset: { select: deliveryFields } } });
+    if (!row || !deliverable(row.kind, row.media_asset)) throw missing();
+    const store = getConfig().mediaStore;
+    if (!store) throw apiError(503, 'MEDIA_STORAGE_UNAVAILABLE', 'Der Medienspeicher ist nicht verfügbar.');
+    const ttl = access.ends_at ? Math.min(60, Math.floor((access.ends_at.getTime() - Date.now()) / 1000)) : 60;
+    if (ttl < 1) throw apiError(403, 'ACCESS_EXPIRED', 'Der Zugang zu dieser Ausbildung ist abgelaufen.');
+    return signLessonGet(store, row.media_asset.storage_key, row.kind, row.media_asset.mime_detected, ttl);
   }
 
   /** Completing a chapter is idempotent per access row. */

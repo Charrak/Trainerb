@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
+import { deliverable, type DeliveryAsset } from './lesson-media';
+import { getConfig } from './config';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { apiError, bodyObject, requireUuid } from './security';
@@ -76,8 +78,16 @@ export class Publication {
       status: 'ready', visibility: 'public', mime_detected: { startsWith: 'image/' } } })) {
       blockers.push({ code: 'COURSE_MEDIA_UNAVAILABLE', message: 'Das Cover ist nicht als öffentliches Bild freigegeben.' });
     }
-    if (await tx.chapterContent.count({ where: { course_version_id: versionId, media_asset_id: { not: null } } })) {
-      blockers.push({ code: 'MEDIA_DELIVERY_NOT_IMPLEMENTED', message: 'Kapitelmedien können noch nicht im Lernbereich ausgeliefert werden.' });
+    // Hold the referenced assets stable through the publication transaction;
+    // quarantine afterwards still stops new learner requests immediately.
+    const media = await tx.$queryRaw<(DeliveryAsset & { kind: string })[]>`SELECT c.kind, a.source, a.storage_key,
+      a.status, a.visibility, a.mime_detected FROM chapter_contents c JOIN media_assets a ON a.id = c.media_asset_id
+      WHERE c.course_version_id = ${versionId}::uuid ORDER BY a.id FOR SHARE OF a`;
+    if (media.length && !getConfig().mediaStore) {
+      blockers.push({ code: 'MEDIA_STORAGE_UNAVAILABLE', message: 'Der private Medienspeicher ist nicht eingerichtet.' });
+    }
+    if (media.some(item => !deliverable(item.kind, item))) {
+      blockers.push({ code: 'CHAPTER_MEDIA_UNAVAILABLE', message: 'Ein Kapitelmedium ist nicht freigegeben oder wird nicht unterstützt.' });
     }
     const modules = version.modules.length;
     const chapters = version.modules.reduce((sum, module) => sum + module.chapters.length, 0);
