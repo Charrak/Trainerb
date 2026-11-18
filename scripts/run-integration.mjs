@@ -43,4 +43,5 @@ run(['scripts/migrate.mjs']);
 run(['scripts/check-schema-drift.mjs']);
 run(['--test', '--test-concurrency=1', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
   'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs',
-  'tests/integration/refunds.test.cjs', 'tests/integration/retention.test.cjs']);
+  'tests/integration/refunds.test.cjs', 'tests/integration/retention.test.cjs',
+  'tests/integration/stripe-webhook.test.cjs']);

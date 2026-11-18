@@ -44,6 +44,13 @@ export class StripePayments {
       status: { in: ['created', 'pending'] } }, orderBy: { created_at: 'desc' } });
     if (open?.provider_session_id) {
       const session = await this.client.checkout.sessions.retrieve(open.provider_session_id);
+      // `complete` means the customer finished the form — the money may still be
+      // on its way (SEPA and other delayed methods). Starting a second session
+      // here would invite a second payment for one order.
+      if (session.status === 'complete') {
+        throw apiError(409, 'PAYMENT_IN_PROGRESS',
+          'Die Zahlung ist bereits abgeschlossen und wird noch bestätigt. Bitte warte auf die Bestätigung.');
+      }
       if (session.status === 'open' && session.url) return { url: session.url };
     }
     const attemptId = uuidv7();
@@ -51,7 +58,9 @@ export class StripePayments {
       mode: 'payment',
       customer_email: userEmail,
       client_reference_id: orderId,
-      line_items: order.items.map(item => ({ quantity: 1, price_data: { currency: 'eur',
+      // The session must bill in the order's currency, not a hardcoded one: the
+      // webhook compares the reported currency with `orders.currency`.
+      line_items: order.items.map(item => ({ quantity: 1, price_data: { currency: order.currency.toLowerCase(),
         unit_amount: Number(item.total_gross_cents),
         product_data: { name: item.title_snapshot } } })),
       metadata: { order_id: orderId, order_number: order.order_number, attempt_id: attemptId },
@@ -61,7 +70,11 @@ export class StripePayments {
     }, { idempotencyKey: `checkout-${orderId}-${attemptId}` });
     await this.db.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      await tx.paymentAttempt.updateMany({ where: { order_id: orderId, provider: 'stripe', status: 'created' },
+      // `payment_attempts_one_open` allows exactly one open attempt per order, and
+      // a replaced attempt is usually `pending`, not `created`. Superseding only
+      // `created` rows therefore made the new row fail the unique index.
+      await tx.paymentAttempt.updateMany({ where: { order_id: orderId, provider: 'stripe',
+        status: { in: ['created', 'pending'] } },
         data: { status: 'cancelled', failure_code: 'superseded' } });
       await tx.paymentAttempt.create({ data: { id: attemptId, order_id: orderId, provider: 'stripe',
         environment: getConfig().paymentEnvironment, provider_session_id: session.id,
@@ -147,6 +160,35 @@ export class StripePayments {
     }
   }
 
+  /**
+   * Money that arrived without a matching open order.
+   *
+   * Two shapes, both needing a human: a second payment for something already
+   * paid (a customer clicked twice, or paid a second session), and a payment for
+   * a cancelled or otherwise closed order. The order is parked in `review` —
+   * *except* where that would rewrite an already settled state (`paid`,
+   * `refunded`, `charged_back`) — and an audit event with origin `provider`
+   * names the provider facts, so the case is visible instead of silent. The
+   * money is never refunded automatically; that stays a `refunds.manage` action.
+   */
+  private async reportSurplus(tx: Prisma.TransactionClient,
+                              order: { id: string; order_number: string; payment_state: string;
+                                total_gross_cents: bigint; currency: string },
+                              facts: StripeSessionFacts, eventId: string, eventType: string,
+                              reason: 'amount_mismatch' | 'duplicate_payment' | 'payment_after_cancellation') {
+    const settled = ['paid', 'refunded', 'charged_back'].includes(order.payment_state);
+    if (!settled && order.payment_state !== 'review') {
+      await tx.order.update({ where: { id: order.id }, data: { payment_state: 'review' } });
+    }
+    await tx.auditEvent.create({ data: { id: uuidv7(), actor_user_id: null, origin: 'provider',
+      action: 'payment.unmatched', target_type: 'order', target_ref: order.id,
+      after_safe: { reason, order_number: order.order_number, previous_payment_state: order.payment_state,
+        session_id: facts.id, payment_intent_id: facts.paymentIntentId,
+        amount_cents: facts.amount.toString(), currency: facts.currency,
+        expected_amount_cents: order.total_gross_cents.toString(), expected_currency: order.currency,
+        provider_event_id: eventId, provider_event_type: eventType } } });
+  }
+
   private async applyPaidEvent(facts: StripeSessionFacts, eventId: string, eventType: string): Promise<void> {
     await this.db.$transaction(async tx => {
       // Replay protection: the provider event id is unique.
@@ -159,18 +201,35 @@ export class StripePayments {
       if (order.payment_method !== 'stripe') throw apiError(409, 'WRONG_PAYMENT_METHOD', 'Zahlungsart passt nicht zur Bestellung.');
       if (facts.amount !== order.total_gross_cents || facts.currency !== order.currency) {
         // An amount mismatch is never auto-accepted: it needs a human decision.
-        await tx.order.update({ where: { id: order.id }, data: { payment_state: 'review' } });
+        // But a *later* mismatching delivery must not pull an order that is
+        // already settled back into review — money that arrived once does not
+        // become doubtful because a second event reports another amount.
         await tx.paymentEvent.create({ data: { id: uuidv7(), order_id: order.id, provider: 'stripe',
           environment: getConfig().paymentEnvironment, provider_event_id: eventId, event_type: eventType,
           amount_cents: facts.amount, currency: facts.currency } });
+        await this.reportSurplus(tx, order, facts, eventId, eventType, 'amount_mismatch');
         return;
       }
       await tx.paymentEvent.create({ data: { id: uuidv7(), order_id: order.id, provider: 'stripe',
         environment: getConfig().paymentEnvironment, provider_event_id: eventId, event_type: eventType,
         amount_cents: facts.amount, currency: facts.currency } });
-      // Ignore a late duplicate success for an already paid order.
-      if (order.payment_state === 'paid') return;
-      if (order.payment_state !== 'awaiting') return;
+      // A payment that arrives for an order which is no longer awaiting is never
+      // simply dropped: the customer paid, so either this is a duplicate of the
+      // payment we already booked, or real money arrived that nothing accounts
+      // for. Both are written down; the second one parks the order in `review`.
+      if (order.payment_state === 'paid' || order.payment_state === 'refunded'
+          || order.payment_state === 'charged_back' || order.payment_state === 'cancelled'
+          || order.payment_state === 'review') {
+        // Was this payment already booked for this order? Then the delivery is a
+        // late duplicate and there is nothing to do.
+        const booked = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',
+          status: 'succeeded', OR: [{ provider_payment_id: facts.paymentIntentId ?? '__none__' },
+            { provider_session_id: facts.id }] }, select: { id: true } });
+        if (booked) return;
+        await this.reportSurplus(tx, order, facts, eventId, eventType,
+          order.payment_state === 'cancelled' ? 'payment_after_cancellation' : 'duplicate_payment');
+        return;
+      }
       const now = new Date();
       const attempt = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',
         OR: [{ provider_session_id: facts.id }, { provider_payment_id: facts.paymentIntentId ?? '__none__' }] },
