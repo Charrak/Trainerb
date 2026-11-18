@@ -52,6 +52,7 @@ model User {
   commerce_settings CommerceSettings[] @relation("CommerceSettingsEditor")
   refunds_requested Refund[] @relation("RefundRequester")
   access_decisions  OrderAccessDecision[] @relation("AccessDecisionMaker")
+  withdrawal_requests_processed WithdrawalRequest[] @relation("WithdrawalProcessor")
 
   @@map("users")
 }
@@ -268,6 +269,7 @@ model EmailOutbox {
   updated_at                  DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
   template_version            EmailTemplateVersion @relation(fields: [template_version_id], references: [id], onDelete: Restrict)
   user                        User?                @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  withdrawal_requests         WithdrawalRequest[]
   @@index([template_version_id])
   @@index([user_id])
   @@index([status, scheduled_at])
@@ -658,6 +660,7 @@ model Order {
   cancelled_at             DateTime? @db.Timestamptz(6)
   cancelled_reason         String?   @db.Text
   refunded_at              DateTime? @db.Timestamptz(6)
+  charged_back_at          DateTime? @db.Timestamptz(6)
   created_by               String?   @db.Uuid
   updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   user                     User?     @relation("OrderBuyer", fields: [user_id], references: [id], onDelete: Restrict)
@@ -675,6 +678,8 @@ model Order {
   refunds                  Refund[]
   access_decisions         OrderAccessDecision[]
   credit_notes             CreditNote[]
+  disputes                 Dispute[]
+  withdrawal_requests      WithdrawalRequest[]
   @@unique([user_id, checkout_idempotency_key])
   @@unique([checkout_email_verification_id, checkout_idempotency_key])
   @@index([user_id, placed_at])
@@ -752,6 +757,7 @@ model PaymentAttempt {
   updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   order                    Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
   refunds                  Refund[]
+  disputes                 Dispute[]
   @@unique([id, order_id])
   @@index([order_id])
   @@map("payment_attempts")
@@ -901,6 +907,7 @@ model Refund {
   allocations              RefundAllocation[]
   access_decisions         OrderAccessDecision[]
   credit_notes             CreditNote[]
+  withdrawal_requests      WithdrawalRequest[]
   @@index([order_id, status])
   @@index([payment_attempt_id, status])
   @@map("refunds")
@@ -924,6 +931,7 @@ model OrderAccessDecision {
   id         String   @id @db.Uuid
   order_id   String   @db.Uuid
   refund_id  String?  @db.Uuid
+  dispute_id String?  @db.Uuid
   access_id  String?  @db.Uuid
   decision   String   @db.Text
   reason     String   @db.Text
@@ -932,10 +940,12 @@ model OrderAccessDecision {
   created_at DateTime @default(now()) @db.Timestamptz(6)
   order      Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
   refund     Refund?  @relation(fields: [refund_id], references: [id], onDelete: Restrict)
+  dispute    Dispute? @relation(fields: [dispute_id], references: [id], onDelete: Restrict)
   access     CourseAccess? @relation(fields: [access_id], references: [id], onDelete: Restrict)
   decider    User     @relation("AccessDecisionMaker", fields: [decided_by], references: [id], onDelete: Restrict)
   @@index([order_id, decided_at])
   @@index([refund_id])
+  @@index([dispute_id])
   @@map("order_access_decisions")
 }
 
@@ -960,4 +970,67 @@ model CreditNote {
   original_invoice    Invoice  @relation(fields: [original_invoice_id], references: [id], onDelete: Restrict)
   @@index([order_id, issued_at])
   @@map("credit_notes")
+}
+
+model Dispute {
+  id                  String    @id @db.Uuid
+  order_id            String    @db.Uuid
+  payment_attempt_id  String    @db.Uuid
+  provider            String    @db.Text
+  environment         String    @db.Text
+  provider_dispute_id String    @db.Text
+  amount_cents        BigInt
+  currency            String    @db.Char(3)
+  status              String    @db.Text
+  reason_code         String?   @db.Text
+  opened_at           DateTime  @default(now()) @db.Timestamptz(6)
+  resolved_at         DateTime? @db.Timestamptz(6)
+  order               Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  attempt             PaymentAttempt @relation(fields: [payment_attempt_id, order_id], references: [id, order_id], onDelete: Restrict)
+  access_decisions    OrderAccessDecision[]
+  @@unique([provider, environment, provider_dispute_id])
+  @@index([order_id, status])
+  @@index([payment_attempt_id, status])
+  @@map("disputes")
+}
+
+model WithdrawalRequest {
+  id                     String    @id @db.Uuid
+  submitted_order_number String?   @db.Text
+  contact_email          String    @db.Text
+  contact_email_hmac     Bytes     @db.ByteA
+  customer_name          String?   @db.Text
+  message                String?   @db.Text
+  status                 String    @default("received") @db.Text
+  submitted_at           DateTime  @default(now()) @db.Timestamptz(6)
+  order_id               String?   @db.Uuid
+  identity_verified_at   DateTime? @db.Timestamptz(6)
+  processed_by           String?   @db.Uuid
+  processed_at           DateTime? @db.Timestamptz(6)
+  decision_reason        String?   @db.Text
+  refund_id              String?   @db.Uuid
+  confirmation_outbox_id String?   @db.Uuid
+  order                  Order?    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  processor              User?     @relation("WithdrawalProcessor", fields: [processed_by], references: [id], onDelete: Restrict)
+  refund                 Refund?   @relation(fields: [refund_id], references: [id], onDelete: Restrict)
+  confirmation_outbox    EmailOutbox? @relation(fields: [confirmation_outbox_id], references: [id], onDelete: Restrict)
+  verifications          WithdrawalVerification[]
+  @@index([status, submitted_at])
+  @@index([contact_email_hmac, submitted_at])
+  @@index([order_id])
+  @@map("withdrawal_requests")
+}
+
+model WithdrawalVerification {
+  id          String    @id @db.Uuid
+  request_id  String    @db.Uuid
+  token_hash  Bytes     @unique @db.ByteA
+  attempts    Int       @default(0) @db.SmallInt
+  expires_at  DateTime  @db.Timestamptz(6)
+  verified_at DateTime? @db.Timestamptz(6)
+  consumed_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  request     WithdrawalRequest @relation(fields: [request_id], references: [id], onDelete: Restrict)
+  @@index([request_id])
+  @@map("withdrawal_verifications")
 }

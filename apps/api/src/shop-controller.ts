@@ -8,6 +8,8 @@ import { GuestCheckout } from './guest';
 import { RateLimiter } from './limiter';
 import { Invoices } from './invoices';
 import { Refunds } from './refunds';
+import { Disputes } from './disputes';
+import { Withdrawals } from './withdrawals';
 import { pdfResponse } from './invoice-response';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError, requireUuid } from './security';
@@ -20,7 +22,8 @@ export class ShopController {
   constructor(private readonly shop: Shop, private readonly learning: Learning, private readonly accesses: Accesses,
               private readonly commerce: Commerce, private readonly stripe: StripePayments,
               private readonly sessions: Sessions, private readonly limiter: RateLimiter,
-              private readonly invoices: Invoices, private readonly refunds: Refunds) {}
+              private readonly invoices: Invoices, private readonly refunds: Refunds,
+              private readonly disputes: Disputes, private readonly withdrawals: Withdrawals) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   @Get('shop/config') async config() { return this.commerce.publicConfig(); }
@@ -134,7 +137,8 @@ export class ShopController {
 export class CommerceAdminController {
   constructor(private readonly shop: Shop, private readonly commerce: Commerce, private readonly accesses: Accesses,
               private readonly sessions: Sessions, private readonly guest: GuestCheckout,
-              private readonly invoices: Invoices, private readonly refunds: Refunds) {}
+              private readonly invoices: Invoices, private readonly refunds: Refunds,
+              private readonly disputes: Disputes, private readonly withdrawals: Withdrawals) {}
 
   @Get('admin/orders') async orders(@Req() req: ApiRequest, @Query('state') state: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
@@ -259,6 +263,58 @@ export class CommerceAdminController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'access.manage', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.refunds.decideAccess(ctx, id, body);
   }
+  // ---- Streitfälle (Rückbuchungen) ---------------------------------------
+  // A chargeback is reported by the provider; staff may record a case that was
+  // announced by mail, but the state changes are the same ones a webhook makes.
+  @Get('admin/disputes') async listDisputes(@Req() req: ApiRequest, @Query('status') status: unknown,
+    @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
+    await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage' });
+    return this.disputes.list(status, limit, cursor);
+  }
+  @Get('admin/disputes/:id') async dispute(@Req() req: ApiRequest, @Param('id') id: string) {
+    await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage' });
+    return this.disputes.view(this.shop.client, requireUuid(id));
+  }
+  @Post('admin/orders/:id/disputes') @HttpCode(201) @Header('Cache-Control', 'no-store')
+  async recordDispute(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response,
+                      @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'refunds.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx);
+    const meta = { created: false };
+    const result = await this.disputes.record(ctx, id, body, {}, meta);
+    // Recording the same provider case again is an update, and says so.
+    if (!meta.created) res.status(200);
+    return result;
+  }
+  /** The bank's outcome never revokes access by itself — a human decides. */
+  @Post('admin/disputes/:id/access-decision') @HttpCode(200)
+  async decideDisputeAccess(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'access.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.disputes.decideAccess(ctx, id, body);
+  }
+
+  // ---- Widerrufsvorgänge -------------------------------------------------
+  @Get('admin/withdrawal-requests') async listWithdrawals(@Req() req: ApiRequest, @Query('status') status: unknown,
+    @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
+    await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage' });
+    return this.withdrawals.list(status, limit, cursor);
+  }
+  @Get('admin/withdrawal-requests/:id') async withdrawal(@Req() req: ApiRequest, @Param('id') id: string) {
+    await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage' });
+    return this.withdrawals.view(requireUuid(id));
+  }
+  /** Sends the one-time proof link to the address the sender entered. */
+  @Post('admin/withdrawal-requests/:id/identity-code') @HttpCode(201)
+  async withdrawalIdentityCode(@Req() req: ApiRequest, @Param('id') id: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.withdrawals.sendIdentityCode(ctx, id);
+  }
+  @Post('admin/withdrawal-requests/:id') @HttpCode(200)
+  async updateWithdrawal(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.withdrawals.update(ctx, id, body);
+  }
+
   @Get('admin/credit-notes/:id/pdf') @Header('Cache-Control', 'no-store')
   async creditNotePdf(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
     await this.sessions.require(req, { backoffice: true, permission: 'orders.read' });

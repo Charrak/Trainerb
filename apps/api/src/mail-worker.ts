@@ -95,7 +95,8 @@ export class MailWorker {
     if (!item || item.status !== 'sending') return null;
     if (item.user && !['pending_activation', 'active'].includes(item.user.status)) return null;
     if (!item.user && item.template_version.template.key !== 'checkout_email_verify' &&
-        !['order_placed', 'order_paid', 'refund_confirmed'].includes(item.template_version.template.key)) return null;
+        !['order_placed', 'order_paid', 'refund_confirmed',
+          'withdrawal_received', 'withdrawal_decided', 'withdrawal_verify'].includes(item.template_version.template.key)) return null;
     const publicVars = item.variables_public;
     if (!publicVars || typeof publicVars !== 'object' || Array.isArray(publicVars) || typeof publicVars.first_name !== 'string') {
       throw new Error('Invalid template variables.');
@@ -125,6 +126,31 @@ export class MailWorker {
         if (typeof value !== 'string' || !/^[A-Za-z0-9 .,:€/-]{1,64}$/.test(value)) throw new Error('Invalid template variables.');
         variables[name] = value;
       }
+    } else if (key === 'withdrawal_verify') {
+      // The link is built here from the sealed token, never stored in clear.
+      if (!item.variables_secret_ciphertext || !item.secret_key_id || !item.secret_delete_after ||
+          item.secret_delete_after <= new Date()) return null;
+      const payload = unseal<{ token: string; purpose: string }>(item.variables_secret_ciphertext,
+        `outbox:${item.id}`, item.secret_key_id);
+      if (payload.purpose !== 'withdrawal' || !/^[A-Za-z0-9_-]{43}$/.test(payload.token)) {
+        throw new Error('Invalid secret payload.');
+      }
+      const proof = await this.db.withdrawalVerification.findUnique({
+        where: { token_hash: keyedHash(getConfig().tokenKey, 'withdrawal-verify', payload.token) } });
+      if (!proof || proof.consumed_at || proof.verified_at || proof.expires_at <= new Date()) return null;
+      variables.verification_url = `${getConfig().publicBaseUrl}/widerruf/bestaetigen#token=${encodeURIComponent(payload.token)}`;
+    } else if (key === 'withdrawal_received') {
+      // The receipt is the proof of the deadline, so its timestamp is the one
+      // stored at submission — not the time the mail happened to be sent.
+      for (const name of ['received_date', 'received_time']) {
+        const value = publicVars[name];
+        if (typeof value !== 'string' || !/^[0-9.:]{4,5}$/.test(value)) throw new Error('Invalid template variables.');
+        variables[name] = value;
+      }
+    } else if (key === 'withdrawal_decided') {
+      const decision = publicVars.decision;
+      if (decision !== 'angenommen' && decision !== 'abgelehnt') throw new Error('Invalid template variables.');
+      variables.decision = decision;
     } else if (key === 'checkout_email_verify') {
       // Guest checkout proof: the six-digit code is public, the link token is
       // sealed. A proof that already expired or was consumed is not re-sent —

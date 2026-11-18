@@ -48,9 +48,12 @@ export class Outbox {
     await this.issueToken(tx, user, 'activation');
   }
 
-  /** Transactional mail for a recipient without (or before) an account. */
+  /**
+   * Transactional mail for a recipient without (or before) an account.
+   * Returns the outbox id, so the caller can reference the queued mail.
+   */
   async notifyGuest(tx: Prisma.TransactionClient, toEmail: string, firstName: string, templateKey: string,
-                    variables: Record<string, string> = {}): Promise<void> {
+                    variables: Record<string, string> = {}): Promise<string> {
     const version = await this.template(tx, templateKey);
     const id = uuidv7(); const now = new Date();
     await tx.emailOutbox.create({ data: { id, template_version_id: version.id, purpose: 'transaction',
@@ -59,6 +62,31 @@ export class Outbox {
     await tx.automationJob.create({ data: { id: uuidv7(), kind: 'email.send', ref_type: 'email_outbox',
       ref_id: id, payload_schema_version: 1, payload: { schema_version: 1 }, idempotency_key: `email-${id}`,
       status: 'queued', max_attempts: 8, run_after: now } });
+    return id;
+  }
+
+  /**
+   * Guest mail with a sealed secret (a one-time link).
+   *
+   * The token never appears in `variables_public`: it is sealed with the outbox
+   * id as associated data and removed by the worker after delivery, exactly like
+   * the activation link. A row that outlives its purpose is unreadable.
+   */
+  async notifyGuestCoded(tx: Prisma.TransactionClient, toEmail: string, firstName: string,
+                         templateKey: string, variables: Record<string, string>,
+                         token: string, secret: Record<string, string>): Promise<string> {
+    const version = await this.template(tx, templateKey);
+    const id = uuidv7(); const now = new Date();
+    const expiresAt = new Date(now.getTime() + 30 * 60_000);
+    await tx.emailOutbox.create({ data: { id, template_version_id: version.id, purpose: 'transaction',
+      user_id: null, to_email: toEmail, variables_public: { first_name: firstName, ...variables },
+      variables_secret_ciphertext: seal({ token, ...secret }, `outbox:${id}`),
+      secret_key_id: getConfig().encryptionKeyId, secret_delete_after: expiresAt,
+      idempotency_key: `outbox-${id}`, status: 'queued', scheduled_at: now } });
+    await tx.automationJob.create({ data: { id: uuidv7(), kind: 'email.send', ref_type: 'email_outbox',
+      ref_id: id, payload_schema_version: 1, payload: { schema_version: 1 }, idempotency_key: `email-${id}`,
+      status: 'queued', max_attempts: 8, run_after: now } });
+    return id;
   }
 
   async notify(tx: Prisma.TransactionClient, userId: string, toEmail: string, firstName: string, templateKey: string,

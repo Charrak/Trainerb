@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, errorMessage, type Profile } from '../lib/api';
 import { dateTime, euro, paymentStateLabels, fulfillmentLabels, refundStatusLabels, refundReasons,
+  disputeStatusLabels,
   type AdminOrder, type OrderDetail } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 import { InvoiceDownload } from './invoices';
@@ -17,6 +18,7 @@ const canRefund = (profile: Profile) => profile.permissions.includes('refunds.ma
 const canPropose = (profile: Profile) => profile.permissions.includes('refunds.propose') ||
   profile.permissions.includes('refunds.manage');
 const canDecideAccess = (profile: Profile) => profile.permissions.includes('access.manage');
+const canHandleDisputes = (profile: Profile) => profile.permissions.includes('refunds.manage');
 
 export function StaffInvoiceDownload({ invoiceId }: { invoiceId: string }) {
   // The staff route enforces `orders.read` on the server; the button only asks.
@@ -190,6 +192,8 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
           : <p className="muted">Noch kein Zugang vergeben.</p>}
         <RefundPanel order={order} profile={profile!} busy={busy} setBusy={setBusy}
           setError={setError} setSuccess={setSuccess} reload={() => void load()} setReauthNeeded={setReauthNeeded}/>
+        <DisputePanel order={order} profile={profile!} busy={busy} setBusy={setBusy}
+          setError={setError} setSuccess={setSuccess} reload={() => void load()} setReauthNeeded={setReauthNeeded}/>
       </section>
     </div>}
   </div>;
@@ -234,8 +238,9 @@ function RefundPanel({ order, profile, busy, setBusy, setError, setSuccess, relo
   return <>
     <div className="inner-divider"/>
     <h3>Erstattung</h3>
-    {refundable && <p className="muted">Bezahlt {euro(refundable.paid_cents)} · zurück {euro(refundable.refunded_cents)} ·
-      {' '}noch erstattbar <strong>{euro(refundable.refundable_cents)}</strong></p>}
+    {refundable && <p className="muted">Bezahlt {euro(refundable.paid_cents)} · erstattet {euro(refundable.refunded_cents)}
+      {BigInt(refundable.charged_back_cents) > 0n && <> · zurückgebucht {euro(refundable.charged_back_cents)}</>}
+      {' '}· noch erstattbar <strong>{euro(refundable.refundable_cents)}</strong></p>}
     {!!order.refunds?.length && <ul className="plain-list">{order.refunds.map(refund => <li key={refund.id}>
       {euro(refund.amount_cents)} · {refundStatusLabels[refund.status] ?? refund.status}
       {' '}· {refund.reason_code}{refund.confirmed_at ? ` · bestätigt ${dateTime(refund.confirmed_at)}` : ''}</li>)}</ul>}
@@ -277,6 +282,99 @@ function RefundPanel({ order, profile, busy, setBusy, setError, setSuccess, relo
         onClick={() => void send('decision', `/admin/refunds/${settled[settled.length - 1].id}/access-decision`,
           { decision, reason: decisionReason }, 'Entscheidung zum Zugang festgehalten.')}>
         {busy === 'decision' ? 'Bitte warten …' : 'Entscheidung festhalten'}</button>
+    </div>}
+  </>;
+}
+
+/**
+ * Chargebacks for one order.
+ *
+ * A chargeback is not a refund: the bank moves the money, we only record what
+ * happened. Recording the same provider case twice updates it, so the form asks
+ * for the provider's reference and its amount — the pair that identifies a case.
+ * A decided case is history and is only listed, never edited.
+ */
+function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, reload, setReauthNeeded }: {
+  order: OrderDetail; profile: Profile; busy: string;
+  setBusy: (value: string) => void; setError: (value: string) => void; setSuccess: (value: string) => void;
+  reload: () => void; setReauthNeeded: (value: boolean) => void;
+}) {
+  const [providerDisputeId, setProviderDisputeId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [status, setStatus] = useState<'warning' | 'open' | 'won' | 'lost' | 'closed'>('open');
+  const [reasonCode, setReasonCode] = useState('product_not_received');
+  const [decision, setDecision] = useState<'kept' | 'revoked'>('kept');
+  const [decisionReason, setDecisionReason] = useState('chargeback_lost');
+  if (!canHandleDisputes(profile)) return null;
+  const disputes = order.disputes ?? [];
+  const open = disputes.filter(dispute => !['won', 'lost', 'closed'].includes(dispute.status));
+  async function send(label: string, path: string, payload: unknown, message: string) {
+    setBusy(label); setError(''); setSuccess('');
+    try {
+      await api(path, 'POST', payload); setSuccess(message); reload();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403 && e.code === 'REAUTH_REQUIRED') setReauthNeeded(true);
+      setError(errorMessage(e));
+    } finally { setBusy(''); }
+  }
+  return <>
+    <div className="inner-divider"/>
+    <h3>Rückbuchung (Streitfall)</h3>
+    <p className="muted">Eine Rückbuchung nimmt das Geld über die Bank zurück. Sie ist keine Erstattung von uns:
+      es entsteht keine Gutschrift, und der Zugang wird nie automatisch entzogen.</p>
+    {disputes.length ? <ul className="plain-list">{disputes.map(dispute => <li key={dispute.id}>
+      {euro(dispute.amount_cents)} · {disputeStatusLabels[dispute.status] ?? dispute.status}
+      {' '}· {dispute.provider_dispute_id}{dispute.reason_code ? ` · ${dispute.reason_code}` : ''}
+      {dispute.resolved_at ? ` · entschieden ${dateTime(dispute.resolved_at)}` : ''}</li>)}</ul>
+      : <p className="muted">Kein Streitfall gemeldet.</p>}
+    <form className="stack-form" onSubmit={event => { event.preventDefault();
+      void send('dispute', `/admin/orders/${order.id}/disputes`,
+        { provider_dispute_id: providerDisputeId, amount_cents: amount, status, reason_code: reasonCode },
+        status === 'lost' ? 'Rückbuchung erfasst; die Bestellung gilt als zurückgebucht.'
+          : 'Streitfall gespeichert.'); }}>
+      <div className="field-row">
+        <Field label="Referenz beim Anbieter" id="dispute-ref" hint="Die Kennung aus dem Streitfall-Bescheid.">
+          <input id="dispute-ref" value={providerDisputeId} onChange={e => setProviderDisputeId(e.target.value.trim())}
+            maxLength={120} required/></Field>
+        <Field label="Betrag in Cent" id="dispute-amount"><input id="dispute-amount" inputMode="numeric" value={amount}
+          onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} required/></Field>
+      </div>
+      <div className="field-row">
+        <Field label="Stand" id="dispute-status"><select id="dispute-status" value={status}
+          onChange={e => setStatus(e.target.value as typeof status)}>
+          <option value="warning">Angekündigt</option><option value="open">Offen</option>
+          <option value="won">Gewonnen</option><option value="lost">Verloren (Geld zurückgebucht)</option>
+          <option value="closed">Geschlossen</option></select></Field>
+        <Field label="Grund" id="dispute-reason"><select id="dispute-reason" value={reasonCode}
+          onChange={e => setReasonCode(e.target.value)}>
+          <option value="product_not_received">Ware nicht erhalten</option>
+          <option value="unauthorized">Nicht autorisiert</option>
+          <option value="fraudulent">Betrugsverdacht</option>
+          <option value="duplicate">Doppelbuchung</option>
+          <option value="other">Sonstiges</option></select></Field>
+      </div>
+      <button className="button button-secondary" disabled={!!busy || !providerDisputeId || !amount}>
+        {busy === 'dispute' ? 'Bitte warten …' : 'Streitfall erfassen'}</button>
+    </form>
+    {canDecideAccess(profile) && disputes.some(dispute => ['won', 'lost', 'closed'].includes(dispute.status)) &&
+      <div className="stack-form">
+      <h4 className="detail-subheading">Zugang nach Rückbuchung</h4>
+      <p className="muted">Der Ausgang des Falls entscheidet nichts über den Zugang. {open.length
+        ? 'Solange ein Fall offen ist, lässt sich hier nichts festhalten.'
+        : 'Ein gewonnener Fall erlaubt keinen Entzug.'}</p>
+      <Field label="Entscheidung" id="dispute-decision"><select id="dispute-decision" value={decision}
+        onChange={e => setDecision(e.target.value as typeof decision)}>
+        <option value="kept">Zugang bleibt bestehen</option>
+        <option value="revoked">Zugang entziehen</option></select></Field>
+      <Field label="Begründung" id="dispute-decision-reason"><input id="dispute-decision-reason"
+        value={decisionReason} onChange={e => setDecisionReason(e.target.value)} maxLength={60}
+        pattern="[a-z_]{3,60}" required/></Field>
+      {['won', 'lost', 'closed'].map(value => { const settled = disputes.filter(dispute => dispute.status === value);
+        if (!settled.length) return null;
+        return <button key={value} type="button" className="button button-secondary" disabled={!!busy}
+          onClick={() => void send('dispute-decision', `/admin/disputes/${settled[settled.length - 1].id}/access-decision`,
+            { decision, reason: decisionReason }, 'Entscheidung zum Zugang festgehalten.')}>
+          {busy === 'dispute-decision' ? 'Bitte warten …' : `Entscheidung festhalten (${disputeStatusLabels[value]})`}</button>; })}
     </div>}
   </>;
 }
