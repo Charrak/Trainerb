@@ -35,11 +35,11 @@ export class Learning {
     return access;
   }
 
-  /** Overview of everything the account may currently learn. */
+  /** In-range grants stay visible while suspended; content still requires activeAccess. */
   async myCourses(ctx: SessionContext) {
     const now = new Date();
     const accesses = await this.db.courseAccess.findMany({ where: { user_id: ctx.user.id, revoked_at: null,
-      suspended_at: null, starts_at: { lte: now }, OR: [{ ends_at: null }, { ends_at: { gt: now } }] },
+      starts_at: { lte: now }, OR: [{ ends_at: null }, { ends_at: { gt: now } }] },
       orderBy: { created_at: 'desc' }, include: { course: true, version: true,
         progress: { select: { chapter_id: true } } } });
     const data = [];
@@ -48,7 +48,7 @@ export class Learning {
       data.push({ course_id: access.course_id, slug: access.course.slug, title: access.version.title,
         subtitle: access.version.subtitle, duration_minutes: access.version.duration_minutes,
         starts_at: access.starts_at, ends_at: access.ends_at, chapter_count: chapters,
-        completed_count: access.progress.length, suspended: false });
+        completed_count: access.progress.length, suspended: access.suspended_at !== null });
     }
     return { data };
   }

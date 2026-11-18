@@ -42,7 +42,7 @@ export function MyLearning() {
   }, []);
   return <div className="account-page content-width">
     <div className="dashboard-title"><div><span className="eyebrow"><span className="eyebrow-line"/> DEIN LERNBEREICH</span>
-      <h1>Meine Ausbildungen<span className="accent-dot">.</span></h1><p>Alle Ausbildungen, für die dein Zugang freigeschaltet ist.</p></div>
+      <h1>Meine Ausbildungen<span className="accent-dot">.</span></h1><p>Deine Ausbildungen und der aktuelle Stand deines Zugangs.</p></div>
       <Link className="button button-secondary" href="/konto">← Zum Konto</Link></div>
     <Notice message={error}/>
     {loading ? <p className="muted">Deine Ausbildungen werden geladen …</p> : !courses.length && !error ?
@@ -52,10 +52,11 @@ export function MyLearning() {
       <div className="course-grid">{courses.map(course => {
         const percent = course.chapter_count ? Math.round((course.completed_count / course.chapter_count) * 100) : 0;
         return <article className="course-tile" key={course.course_id}>
-          <span className="section-kicker">{course.ends_at ? `ZUGANG BIS ${dateOnly(course.ends_at).toUpperCase()}` : 'UNBEFRISTETER ZUGANG'}</span>
+          <span className="section-kicker">{course.suspended ? 'ZUGANG VORÜBERGEHEND GESPERRT' : course.ends_at ? `ZUGANG BIS ${dateOnly(course.ends_at).toUpperCase()}` : 'UNBEFRISTETER ZUGANG'}</span>
           <h2>{course.title}</h2>{course.subtitle && <p>{course.subtitle}</p>}
           <p className="course-duration">{course.completed_count} von {course.chapter_count} Kapiteln abgeschlossen ({percent} %)</p>
-          <Link className="text-link" href={`/lernen/${encodeURIComponent(course.slug)}`}>Weiterlernen <Arrow/></Link>
+          {course.suspended ? <p className="muted">Sobald die Sperre aufgehoben ist, kannst du hier weiterlernen.</p> :
+            <Link className="text-link" href={`/lernen/${encodeURIComponent(course.slug)}`}>Weiterlernen <Arrow/></Link>}
         </article>;
       })}</div>}
   </div>;
