@@ -34,7 +34,12 @@ export type OrderDetail = OrderSummary & { identity_kind?: 'account' | 'guest'; 
   refunded_at?: string | null;
   refunds?: { id: string; amount_cents: string; status: string; provider: string; reason_code: string;
     requested_at: string; confirmed_at: string | null }[];
-  refundable?: { paid_cents: string; refunded_cents: string; refundable_cents: string } };
+  refundable?: { paid_cents: string; refunded_cents: string; refundable_cents: string;
+    charged_back_cents: string };
+  /** staff only: chargebacks reported by the provider */
+  disputes?: { id: string; provider: string; provider_dispute_id: string; amount_cents: string;
+    currency: string; status: string; reason_code: string | null; opened_at: string;
+    resolved_at: string | null }[] };
 export type MyCourse = { course_id: string; slug: string; title: string; subtitle: string | null;
   duration_minutes: number | null; starts_at: string; ends_at: string | null; chapter_count: number;
   completed_count: number };
@@ -67,7 +72,19 @@ export function dateOnly(value: string | null): string {
 }
 export const paymentStateLabels: Record<string, string> = {
   awaiting: 'Zahlung offen', paid: 'Bezahlt', cancelled: 'Storniert', review: 'Prüfung nötig',
-  refunded: 'Erstattet',
+  refunded: 'Erstattet', charged_back: 'Zurückgebucht',
+};
+export const withdrawalStatusLabels: Record<string, string> = {
+  received: 'Eingegangen', identity_check: 'Adresse prüfen', in_progress: 'In Bearbeitung',
+  completed: 'Angenommen', rejected: 'Abgelehnt',
+};
+export type AdminWithdrawal = { id: string; contact_email: string; customer_name: string | null;
+  status: string; submitted_at: string; submitted_order_number: string | null;
+  order_number: string | null; identity_verified_at: string | null; processed_at: string | null;
+  decision_reason: string | null };
+
+export const disputeStatusLabels: Record<string, string> = {
+  warning: 'Angekündigt', open: 'Offen', won: 'Gewonnen', lost: 'Verloren', closed: 'Geschlossen',
 };
 export const refundStatusLabels: Record<string, string> = {
   requested: 'Vorschlag offen', pending: 'Beim Anbieter offen', succeeded: 'Erstattet',

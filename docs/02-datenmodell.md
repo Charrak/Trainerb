@@ -269,15 +269,18 @@ Die folgende feste Regel gilt für Vor- und Nachnamen bei Registrierung, Gastkau
 - `refund_id:uuid`, `order_id:uuid → orders`, `order_item_id:uuid`, `gross_cents:bigint`, `net_cents:bigint`, `tax_cents:bigint`, `created_at:timestamptz`; `PK(refund_id, order_item_id)`.
 - FK `(refund_id, order_id) → refunds(id, order_id)` und `(order_item_id, order_id) → order_items(id, order_id)`; dazu `U(id, order_id)` auf `order_items`. Beträge nicht negativ, `gross_cents = net_cents + tax_cents`; bei bestätigter/freigegebener Aufteilung ergeben die Zuordnungen insgesamt den Erstattungsbetrag und überschreiten unter Sperre nicht die noch erstattbaren Positionsbeträge. Bei extern ausgelöster Erstattung ohne Zuordnung wird der Korrekturbeleg erst nach fachlicher Klärung erzeugt.
 
-### `disputes` – S
+### `disputes` – S (umgesetzt)
 
-- `payment_attempt_id:uuid`, `provider:text{stripe|paypal}`, `provider_account_id:text`, `environment:text{test|live}`, `provider_dispute_id:text`, `amount_cents:bigint`, `status:text{warning|open|won|lost|closed}`, `reason_code:text?`, `opened_at:timestamptz`, `resolved_at:timestamptz?`.
-- FK `(payment_attempt_id, provider, provider_account_id, environment) → payment_attempts(id, provider, provider_account_id, environment)` und `U(provider, provider_account_id, environment, provider_dispute_id)`. Offene Rückbuchungen lösen eine Prüfung aus. Zugangsmaßnahmen und steuerliche Belegfolgen werden getrennt entschieden.
+- `order_id:uuid → orders`, `payment_attempt_id:uuid`, `provider:text{stripe|invoice}`, `environment:text{test|live}`, `provider_dispute_id:text`, `amount_cents:bigint`, `currency:char(3)`, `status:text{warning|open|won|lost|closed}`, `reason_code:text?`, `opened_at:timestamptz`, `resolved_at:timestamptz?`.
+- FK `(payment_attempt_id, order_id) → payment_attempts(id, order_id)`; `U(provider, environment, provider_dispute_id)` macht das wiederholte Zustellen desselben Anbieterfalls zu einem Update statt zu einer zweiten Zeile. `resolved_at` ist genau bei `won|lost|closed` gesetzt. Ein offener Index trägt die Prüfliste.
+- Ein Streitfall ist **keine** Erstattung: er erzeugt keine Gutschrift und keine `refund`-Zeile. Trigger `trainerb_check_dispute_amount` verweigert Fälle über dem bestätigten Zahlbetrag (`DISPUTE_EXCEEDS_PAYMENT`). Ein `lost`-Fall setzt `orders.payment_state='charged_back'` und `charged_back_at`, senkt `refundable_cents` und ist unumkehrbar; ein späterer `won` (erfolgreicher Widerspruch) stellt `paid` nur wieder her, wenn kein anderer `lost`-Fall die Lücke erklärt. Trigger `trainerb_check_refund_amount` rechnet `lost`-Fälle gegen den erstattbaren Betrag, sodass dasselbe Geld nicht zweimal das Konto verlässt. Eine zurückgebuchte Bestellung lässt sich nicht stornieren (`ORDER_CHARGED_BACK`).
 
-### `withdrawal_requests` – S
+### `withdrawal_requests` – S (umgesetzt)
 
-- `order_id:uuid? → orders`, `submitted_order_number:text?`, `contact_email:text`, `customer_name:text?`, `message:text?`, `status:text{received|identity_check|in_progress|completed|rejected}`, `submitted_at:timestamptz`, `identity_verified_at:timestamptz?`, `processed_by:uuid? → users`, `processed_at:timestamptz?`, `confirmation_outbox_id:uuid? → email_outbox`, `refund_id:uuid? → refunds`.
-- Ein auch ohne Login zugänglicher, gedrosselter Vorgang wird neutral bestätigt und erst nach Identitätsprüfung einer Bestellung zugeordnet; er löst keine automatische Rückerstattung aus. Eingang und bestätigende Nachricht werden dauerhaft und nachvollziehbar gemäß freigegebener Aufbewahrungsregel dokumentiert. Die konkrete Ausgestaltung wird rechtlich geprüft.
+- `submitted_order_number:text?`, `contact_email:text`, `contact_email_hmac:bytea`, `customer_name:text?`, `message:text?`, `status:text{received|identity_check|in_progress|completed|rejected}`, `submitted_at:timestamptz`, `order_id:uuid? → orders`, `identity_verified_at:timestamptz?`, `processed_by:uuid? → users`, `processed_at:timestamptz?`, `decision_reason:text?`, `refund_id:uuid? → refunds`, `confirmation_outbox_id:uuid? → email_outbox`.
+- Die eingegebene Bestellnummer ist bewusst **kein** FK: sie ist unbestätigte Angabe einer fremden Person. Prüfbedingungen halten fest, dass ein offener Vorgang weder Bearbeiter noch Entscheidung hat, ein abgeschlossener beides samt Grund, und dass eine Erstattung nur an einem angenommenen Vorgang hängt.
+- `withdrawal_verifications` speichert nur einen Schlüssel-Hash des Einmal-Links, mit Ablauf, Versuchszähler und genau einem offenen Nachweis pro Vorgang. Der Link bestätigt die **Adresse**, nicht die Bestellung; erst danach darf Personal eine Bestellung zuordnen, und nur wenn deren Käuferadresse zur bestätigten Adresse passt (`WITHDRAWAL_ORDER_MISMATCH`).
+- Der Vorgang löst **keine** automatische Rückerstattung aus; ein angenommener Widerruf bleibt ohne `refund_id`, bis jemand mit `refunds.manage` die Erstattung separat bucht.
 
 ### `number_counters` – J
 

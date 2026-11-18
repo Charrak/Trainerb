@@ -22,9 +22,11 @@ import { GuestCheckout } from './guest';
 import { GuestController } from './guest-controller';
 import { Invoices } from './invoices';
 import { Refunds } from './refunds';
+import { Disputes } from './disputes';
+import { Withdrawals } from './withdrawals';
 
 @Module({ controllers:[IdentityController, CatalogController, ProductController, PublicationController,
   ShopController, CommerceAdminController, GuestController], providers:[Database, RateLimiter, Sessions, Outbox, Auth,
   Mfa, Admin, Catalog, Products, Publication, Shop, Learning, Accesses, Commerce, StripePayments, GuestCheckout,
-  Invoices, Refunds] })
+  Invoices, Refunds, Disputes, Withdrawals] })
 export class AppModule {}

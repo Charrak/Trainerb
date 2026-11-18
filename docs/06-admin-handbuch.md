@@ -110,7 +110,23 @@ Die Seitenbausteine verwenden sichere Inhaltsblöcke. Beliebige Skripte, unkontr
 
 ## 6.6 Bestellungen, Kunden und Zugänge
 
-> **Umsetzungsstand:** Umgesetzt sind die Bestellübersicht und -detailansicht (`/admin/bestellungen`), die Bestätigung von Zahlungseingängen, das Stornieren mit Grund, Gutscheine, Rechtsfassungen und manuelle Zugangsvergabe samt Entzug. Kundenverwaltung, Erstattungen und Providerabgleich bleiben Zielzustand.
+### 6.3.2 Rückbuchungen (Streitfälle)
+
+1. **Was ein Fall ist.** Meldet die Bank oder der Anbieter eine Rückbuchung, nimmt sie das Geld zurück — nicht wir. Im Bestellbild unter **Rückbuchung (Streitfall)** werden Anbieter-Referenz, Betrag, Stand (`angekündigt`, `offen`, `gewonnen`, `verloren`, `geschlossen`) und Grund erfasst. Derselbe Fall zweimal eingetragen aktualisiert ihn, statt eine zweite Zeile anzulegen; ein abweichender Betrag wird abgelehnt (`DISPUTE_AMOUNT_MISMATCH`).
+2. **Verloren heißt: Geld ist weg.** Ein verlorener Fall setzt die Bestellung auf **zurückgebucht**, mindert den noch erstattbaren Betrag und lässt sich nicht stornieren. Der Zahlnachweis bleibt erhalten; es entsteht **keine** Gutschrift, weil wir kein Geld zurückgezahlt haben. Gewinnt der Widerspruch später doch, wird die Bestellung wieder **bezahlt** — aber nur, wenn kein anderer verlorener Fall bleibt.
+3. **Zugang bleibt eine eigene Entscheidung.** Nach einem entschiedenen Fall lässt sich festhalten, ob der Zugang bleibt oder entzogen wird. Bei laufendem Verfahren ist das gesperrt (`DISPUTE_NOT_RESOLVED`), bei gewonnenem Fall ist ein Entzug nicht vorgesehen (`DISPUTE_WON`).
+4. **Nichts automatisch.** Ein Streitfall löst weder Erstattung noch Kontosperre aus. Prüfliste: `/admin/disputes` (offene zuerst).
+
+### 6.3.3 Widerrufe
+
+1. **Der Eingang.** Über die öffentliche Seite `/widerruf` kann jede Person ohne Konto widerrufen. Die Antwort ist immer dieselbe — unabhängig davon, ob die angegebene Bestellnummer existiert. Das ist Absicht: sonst wäre die Seite eine Auskunftsstelle für fremde Bestellungen.
+2. **Die Bestätigung.** Die eingetragene Adresse erhält sofort eine Bestätigung mit Datum und Uhrzeit. Sie ist der Fristbeleg und wird nicht manuell nachgereicht.
+3. **Die Adresse bestätigen lassen.** In `/admin/widerrufe` **Bestätigungslink senden** — die Person öffnet ihn selbst. Erst danach lässt sich eine Bestellung zuordnen, und nur, wenn deren Käuferadresse zur bestätigten Adresse passt (`WITHDRAWAL_ORDER_MISMATCH`). Vorher ist die Zuordnung gesperrt (`WITHDRAWAL_IDENTITY_REQUIRED`).
+4. **Entscheiden.** Annehmen oder Ablehnen verlangt einen Grund (Kurzcode, z. B. `within_deadline`) und verschickt das Ergebnis. Ein abgeschlossener Vorgang ist endgültig.
+5. **Nicht erstattet.** Ein angenommener Widerruf erstattet nichts. Die Erstattung erfolgt bewusst getrennt in der Bestellung durch `refunds.manage` (Abschnitt 6.3.1). So bleibt sichtbar, wer wann Geld zurückgegeben hat.
+6. **Sichtbarkeit.** `withdrawals.manage` (Admin/Superadmin und freigegebener Support) erlaubt die Fallbearbeitung, aber keine Erstattung und keine Änderung des Zahlungsstatus.
+
+> **Umsetzungsstand:** Umgesetzt sind die Bestellübersicht und -detailansicht (`/admin/bestellungen`), die Bestätigung von Zahlungseingängen, das Stornieren mit Grund, Gutscheine, Rechtsfassungen, manuelle Zugangsvergabe samt Entzug, Erstattungen mit Gutschriften, Rückbuchungen (Streitfälle) und die Widerrufsfallbearbeitung (`/admin/widerrufe`). Kundenverwaltung und ein automatischer Provider-Abgleich (Streitfälle per Webhook) bleiben Zielzustand.
 
 - **Bestellungen** nach Nummer, Zeitraum und Zahlungszustand suchen. Eine ausstehende oder fehlgeschlagene Zahlung ist nicht bezahlt. Rechnungen und erlaubte Details nur an Berechtigte ausgeben.
 - **Kunden** nach Name/E-Mail suchen, Kontostatus und zulässige Lernstände einsehen, Daten im erlaubten Umfang korrigieren oder Konto sperren. Vor- und Nachname bleiben auch nach einer Korrektur verpflichtend; das Leeren beider Felder ist nur im autorisierten Datenschutz-Löschprozess beim anonymisierten Konto vorgesehen. Eine Sperrung beendet laufende Sitzungen.

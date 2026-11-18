@@ -7,6 +7,7 @@ import { RateLimiter } from './limiter';
 import { Outbox } from './outbox';
 import { Database } from './database';
 import { Invoices } from './invoices';
+import { Withdrawals } from './withdrawals';
 import { pdfResponse } from './invoice-response';
 
 /**
@@ -21,7 +22,8 @@ import { pdfResponse } from './invoice-response';
 export class GuestController {
   constructor(private readonly guest: GuestCheckout, private readonly shop: Shop, private readonly sessions: Sessions,
               private readonly limiter: RateLimiter, private readonly outbox: Outbox,
-              private readonly db: Database, private readonly invoices: Invoices) {}
+              private readonly db: Database, private readonly invoices: Invoices,
+              private readonly withdrawals: Withdrawals) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   @Get('guest/cart') @Header('Cache-Control', 'no-store')
@@ -62,6 +64,26 @@ export class GuestController {
     await this.sessions.verifyCsrf(req);
     await this.limiter.hit('guest-proof-confirm-ip', this.ip(req), 30, 60 * 60_000);
     return this.guest.confirmProof(req, res, body);
+  }
+
+  /**
+   * Public withdrawal (Widerruf). Reachable without a login and deliberately
+   * neutral: the answer is the same for a known, unknown or malformed order
+   * number, and nothing is linked or refunded here. An authenticated request is
+   * not treated differently either — the claim still needs identity verification.
+   */
+  @Post('withdrawal-requests') @HttpCode(202) @Header('Cache-Control', 'no-store')
+  async withdraw(@Req() req: ApiRequest, @Body() body: unknown) {
+    await this.sessions.verifyCsrf(req);
+    return this.withdrawals.submit(body, { ip: this.ip(req) });
+  }
+
+  /** The sender opens the one-time link; this is the only identity proof there is. */
+  @Post('withdrawal-requests/verify') @HttpCode(200) @Header('Cache-Control', 'no-store')
+  async verifyWithdrawal(@Req() req: ApiRequest, @Body() body: unknown) {
+    await this.sessions.verifyCsrf(req);
+    await this.limiter.hit('withdrawal-verify-ip', this.ip(req), 60, 60 * 60_000);
+    return this.withdrawals.verify(body);
   }
 
   @Post('guest/orders') @HttpCode(201) @Header('Cache-Control', 'no-store')

@@ -513,3 +513,266 @@ test('refunding before fulfilment grants nothing afterwards, and the buyer is to
   assert.ok(refunds.body.data.some(row => row.id === refund.body.id));
   status(await support.get('/admin/refunds'), 200);
 });
+
+// --------------------------------------------------------------------------
+// Streitfälle (Rückbuchungen)
+// --------------------------------------------------------------------------
+
+test('a chargeback is not a refund: separate lifecycle, no credit note, payment evidence kept', async () => {
+  const order = await paidOrder();
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const dispute = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: '19900',
+      status: 'open', reason_code: 'product_not_received' });
+  status(dispute, 201);
+  assert.equal(dispute.body.status, 'open');
+  assert.equal(await db.creditNote.count({ where: { order_id: order.id } }), 0,
+    'a chargeback never produces a credit note — we never issued the credit');
+  // An open case is a claim, not a fact: the order stays paid and nothing moved.
+  assert.equal(await db.order.findUniqueOrThrow({ where: { id: order.id } }).then(row => row.payment_state), 'paid');
+
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const lost = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: dispute.body.provider_dispute_id, amount_cents: '19900', status: 'lost',
+      reason_code: 'product_not_received' });
+  status(lost, 200);
+  assert.equal(lost.body.status, 'lost');
+  assert.ok(lost.body.resolved_at);
+  const stored = await db.order.findUniqueOrThrow({ where: { id: order.id } });
+  // Money gone, but not by our hand: a distinct state with its own timestamp.
+  assert.equal(stored.payment_state, 'charged_back');
+  assert.ok(stored.charged_back_at);
+  assert.equal(stored.refunded_at, null, 'no refund happened');
+  assert.ok(stored.paid_at, 'the payment evidence stays');
+  assert.equal(stored.paid_via, 'admin');
+  // The same provider case delivered twice is an update, never a second row.
+  assert.equal(await db.dispute.count({ where: { order_id: order.id } }), 1);
+  // A decided case never moves backwards.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const backwards = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: dispute.body.provider_dispute_id, amount_cents: '19900', status: 'open' });
+  status(backwards, 409); assert.equal(backwards.body.code, 'DISPUTE_ALREADY_RESOLVED');
+  // And a changed amount is a provider disagreement, not an update.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const changed = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: dispute.body.provider_dispute_id, amount_cents: '15000', status: 'lost' });
+  status(changed, 409); assert.equal(changed.body.code, 'DISPUTE_AMOUNT_MISMATCH');
+  // A charged-back order is not a cancellation, and it cannot become one.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const cancel = await admin.change('post', `/admin/orders/${order.id}/cancel`, { reason: 'customer_request' });
+  status(cancel, 409); assert.equal(cancel.body.code, 'ORDER_CHARGED_BACK');
+  // Support may see the case, but only with the refunds permission.
+  const list = await admin.get('/admin/disputes'); status(list, 200);
+  assert.ok(list.body.data.some(row => row.id === lost.body.id));
+  status(await support.get('/admin/disputes'), 403);
+});
+
+test('a lost chargeback consumes the refund capacity, so the same money cannot leave twice', async () => {
+  const order = await paidOrder();
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const dispute = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: '19900', status: 'lost' });
+  status(dispute, 201);
+  assert.equal(dispute.body.payment.refundable_cents, '0');
+  // The API refuses, and so does the database trigger.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  // A fully charged-back order has no capacity left, so the API refuses and the
+  // money cannot leave a second time.
+  const refund = await admin.change('post', `/admin/orders/${order.id}/refunds`,
+    { amount_cents: '19900', reason_code: 'customer_request', idempotency_key: key() });
+  status(refund, 409); assert.equal(refund.body.code, 'REFUND_EXCEEDS_PAYMENT');
+  const attempt = await db.paymentAttempt.findFirstOrThrow({ where: { order_id: order.id, status: 'succeeded' } });
+  await assert.rejects(db.refund.create({ data: { id: uuidv7(), order_id: order.id,
+    payment_attempt_id: attempt.id, provider: 'invoice', environment: 'test',
+    provider_idempotency_key: key(), amount_cents: 500n, currency: 'EUR', status: 'succeeded',
+    reason_code: 'customer_request', requested_by: adminUser.id, confirmed_at: new Date() } }),
+  /REFUND_EXCEEDS_PAYMENT/);
+  // A partial chargeback only uses part of the capacity.
+  const partial = await paidOrder();
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const half = await admin.change('post', `/admin/orders/${partial.id}/disputes`,
+    { provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: '5000', status: 'lost' });
+  status(half, 201);
+  assert.equal(half.body.payment.refundable_cents, '14900');
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const rest = await admin.change('post', `/admin/orders/${partial.id}/refunds`,
+    { amount_cents: '14900', reason_code: 'goodwill', idempotency_key: key() });
+  status(rest, 201);
+  // A dispute larger than the payment is refused by the trigger.
+  const other = await paidOrder();
+  await assert.rejects(db.dispute.create({ data: { id: uuidv7(), order_id: other.id,
+    payment_attempt_id: (await db.paymentAttempt.findFirstOrThrow({ where: { order_id: other.id,
+      status: 'succeeded' } })).id, provider: 'stripe', environment: 'test',
+    provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: 99900n,
+    currency: 'EUR', status: 'lost', opened_at: new Date(), resolved_at: new Date() } }),
+  /DISPUTE_EXCEEDS_PAYMENT/);
+});
+
+test('a won chargeback restores the order state and never revokes access', async () => {
+  const order = await paidOrder();
+  const providerDisputeId = `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`;
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  status(await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: providerDisputeId, amount_cents: '19900', status: 'lost' }), 201);
+  assert.equal(await db.order.findUniqueOrThrow({ where: { id: order.id } }).then(row => row.payment_state), 'charged_back');
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const won = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: providerDisputeId, amount_cents: '19900', status: 'won' });
+  status(won, 200);
+  const stored = await db.order.findUniqueOrThrow({ where: { id: order.id } });
+  // The bank reversed it: the order is a paid order again, with its evidence.
+  assert.equal(stored.payment_state, 'paid');
+  assert.equal(stored.charged_back_at, null);
+  assert.ok(stored.paid_at);
+  // We won and the customer keeps the course; revoking would need another reason.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const revoke = await admin.change('post', `/admin/refunds/${won.body.id}/access-decision`,
+    { decision: 'revoked', reason: 'chargeback_lost' });
+  status(revoke, 404);
+  const revokeDispute = await admin.change('post', `/admin/disputes/${won.body.id}/access-decision`,
+    { decision: 'revoked', reason: 'chargeback_lost' });
+  status(revokeDispute, 409); assert.equal(revokeDispute.body.code, 'DISPUTE_WON');
+  // "Kept" is allowed and documented against the dispute, not against a refund.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const kept = await admin.change('post', `/admin/disputes/${won.body.id}/access-decision`,
+    { decision: 'kept', reason: 'goodwill_after_win' });
+  status(kept, 200);
+  assert.equal(kept.body.access_decisions.length, 1);
+  assert.equal(kept.body.access_decisions[0].decision, 'kept');
+  const decision = await db.orderAccessDecision.findFirstOrThrow({ where: { dispute_id: won.body.id } });
+  assert.equal(decision.refund_id, null, 'the decision points at the case, not at a refund');
+});
+
+test('an open chargeback cannot decide the access question yet', async () => {
+  const order = await paidOrder();
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const dispute = await admin.change('post', `/admin/orders/${order.id}/disputes`,
+    { provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: '19900',
+      status: 'warning' });
+  status(dispute, 201);
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const early = await admin.change('post', `/admin/disputes/${dispute.body.id}/access-decision`,
+    { decision: 'revoked', reason: 'chargeback_open' });
+  status(early, 409); assert.equal(early.body.code, 'DISPUTE_NOT_RESOLVED');
+  // An access decision always names exactly one origin — never both.
+  await assert.rejects(db.orderAccessDecision.create({ data: { id: uuidv7(), order_id: order.id,
+    refund_id: null, dispute_id: null, access_id: null, decision: 'kept', reason: 'x_reason',
+    decided_by: adminUser.id } }), /order_access_decisions_origin/);
+  assert.equal(await db.courseAccess.count({ where: { order_id: order.id, revoked_at: null } }), 1);
+});
+
+// --------------------------------------------------------------------------
+// Widerruf
+// --------------------------------------------------------------------------
+
+test('a public withdrawal is a documented claim, never an automatic refund', async () => {
+  const order = await paidOrder();
+  const anonymous = new Browser();
+  const before = { orders: await db.order.count(), refunds: await db.refund.count() };
+  const response = await anonymous.change('post', '/withdrawal-requests', {
+    contact_email: 'widerruf@example.invalid', customer_name: 'Gina Gast',
+    order_number: order.order_number, message: 'Ich widerrufe meinen Kauf.' });
+  status(response, 202);
+  assert.deepEqual(response.body, { received: true }, 'the answer is neutral and carries no order data');
+  assert.equal(await db.order.count(), before.orders);
+  assert.equal(await db.refund.count(), before.refunds, 'a withdrawal never refunds by itself');
+  const item = await db.withdrawalRequest.findFirstOrThrow({ where: { contact_email: 'widerruf@example.invalid' } });
+  assert.equal(item.status, 'received');
+  assert.equal(item.submitted_order_number, order.order_number, 'the typed number is stored as text, unverified');
+  assert.equal(item.order_id, null, 'nothing is linked automatically');
+  assert.ok(item.confirmation_outbox_id, 'the receipt is queued in the durable outbox');
+  // The plain address is stored for answering, and a keyed hash for throttling.
+  const mail = await db.emailOutbox.findUniqueOrThrow({ where: { id: item.confirmation_outbox_id } });
+  assert.equal(mail.template_version_id !== null, true);
+  assert.equal(mail.to_email, 'widerruf@example.invalid');
+  assert.match(mail.variables_public.received_date, /^\d{2}\.\d{2}\.\d{4}$/);
+});
+
+test('a withdrawal never reveals whether an order or address exists', async () => {
+  const anonymous = new Browser();
+  const known = await anonymous.change('post', '/withdrawal-requests',
+    { contact_email: buyerUser.email_original, order_number: 'TB-2026-000001', message: 'Test' });
+  status(known, 202); assert.deepEqual(known.body, { received: true });
+  const unknown = await anonymous.change('post', '/withdrawal-requests',
+    { contact_email: 'niemand@example.invalid', order_number: 'TB-2099-999999', message: 'Test' });
+  status(unknown, 202); assert.deepEqual(unknown.body, { received: true });
+  const withoutNumber = await anonymous.change('post', '/withdrawal-requests',
+    { contact_email: 'ohnenummer@example.invalid' });
+  status(withoutNumber, 202); assert.deepEqual(withoutNumber.body, { received: true });
+  // A malformed address is the sender's own error and may be named.
+  status(await anonymous.change('post', '/withdrawal-requests', { contact_email: 'keine-adresse' }), 422);
+  // The endpoint is throttled per address: a real person never hits this.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    status(await anonymous.change('post', '/withdrawal-requests',
+      { contact_email: 'flut@example.invalid', message: `Versuch ${attempt}` }), 202);
+  }
+  const blocked = await anonymous.change('post', '/withdrawal-requests',
+    { contact_email: 'flut@example.invalid', message: 'einer zu viel' });
+  status(blocked, 429);
+  assert.equal(await db.withdrawalRequest.count({ where: { contact_email: 'flut@example.invalid' } }), 5);
+});
+
+test('staff verify the identity before linking a withdrawal to an order', async () => {
+  // Each test is its own day as far as the throttle is concerned.
+  const keys = await redis.keys('trainerb:rl:withdrawal*'); if (keys.length) await redis.del(...keys);
+  const order = await paidOrder();
+  const anonymous = new Browser();
+  status(await anonymous.change('post', '/withdrawal-requests',
+    { contact_email: buyerUser.email_original, customer_name: 'Test Käufer',
+      order_number: order.order_number, message: 'Bitte prüfen.' }), 202);
+  const item = await db.withdrawalRequest.findFirstOrThrow({ where: { contact_email: buyerUser.email_original,
+    status: 'received', submitted_order_number: order.order_number }, orderBy: { submitted_at: 'desc' } });
+  // Only the withdrawal case workers may touch the file.
+  status(await support.get('/admin/withdrawal-requests'), 200);
+
+  // Linking before verification is refused: the claim is still a stranger's.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const early = await admin.change('post', `/admin/withdrawal-requests/${item.id}`, { order_id: order.id });
+  status(early, 409); assert.equal(early.body.code, 'WITHDRAWAL_IDENTITY_REQUIRED');
+  // A verification code proves the address, and the code reaches the sender only
+  // once: it is consumed by the first correct use.
+  const code = await admin.change('post', `/admin/withdrawal-requests/${item.id}/identity-code`, {});
+  status(code, 201);
+  const proofMail = await db.emailOutbox.findFirstOrThrow({ where: { to_email: buyerUser.email_original,
+    template_version: { template: { key: 'withdrawal_verify' } } }, orderBy: { created_at: 'desc' } });
+  // The link never sits in the row in clear: it is sealed and only the worker builds it.
+  assert.equal(Object.hasOwn(proofMail.variables_public, 'verification_url'), false);
+  const { token } = unseal(proofMail.variables_secret_ciphertext, `outbox:${proofMail.id}`, proofMail.secret_key_id);
+  const verify = await anonymous.change('post', '/withdrawal-requests/verify', { token });
+  status(verify, 200);
+  assert.equal(verify.body.verified, true);
+  // The same link never works twice.
+  status(await anonymous.change('post', '/withdrawal-requests/verify', { token }), 409);
+
+  const linked = await db.withdrawalRequest.findUniqueOrThrow({ where: { id: item.id } });
+  assert.ok(linked.identity_verified_at, 'opening the link proves the address');
+  assert.equal(linked.status, 'identity_check');
+  // The proved address decides the link, not the number someone typed: a claim
+  // with a proved address for another order stays unlinked.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const other = await paidOrder();
+  const mismatch = await admin.change('post', `/admin/withdrawal-requests/${item.id}`, { order_id: order.id });
+  status(mismatch, 200);
+  assert.equal(mismatch.body.order.id, order.id);
+  const foreign = await db.order.findFirstOrThrow({ where: { id: other.id } });
+  assert.notEqual(foreign.buyer_email_canonical, 'widerruf@example.invalid');
+
+  // Closing needs a reason and an order, and produces the decision mail.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  status(await admin.change('post', `/admin/withdrawal-requests/${item.id}`, { status: 'completed' }), 422);
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const completed = await admin.change('post', `/admin/withdrawal-requests/${item.id}`,
+    { status: 'completed', decision_reason: 'withdrawal_accepted' });
+  status(completed, 200);
+  assert.equal(completed.body.status, 'completed');
+  assert.ok(completed.body.processed_at);
+  assert.equal(completed.body.refund, null, 'accepted withdrawal still does not refund automatically');
+  const decided = await db.emailOutbox.findFirstOrThrow({ where: { to_email: buyerUser.email_original,
+    template_version: { template: { key: 'withdrawal_decided' } } }, orderBy: { created_at: 'desc' } });
+  assert.equal(decided.variables_public.decision, 'angenommen');
+  // A closed case is final.
+  await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const again = await admin.change('post', `/admin/withdrawal-requests/${item.id}`, { status: 'rejected',
+    decision_reason: 'late' });
+  status(again, 409); assert.equal(again.body.code, 'WITHDRAWAL_CLOSED');
+});

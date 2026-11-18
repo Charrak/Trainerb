@@ -85,8 +85,16 @@ export class Refunds {
     const used = await client.refund.aggregate({ where: { payment_attempt_id: attempt.id,
       status: { in: ['requested', 'pending', 'succeeded'] } }, _sum: { amount_cents: true } });
     const refunded = used._sum.amount_cents ?? 0n;
+    // A lost chargeback is money already gone, so it consumes capacity exactly
+    // like a confirmed refund. Without this, a decided case could be "refunded"
+    // on top and the same payment would leave twice.
+    const lost = await client.dispute.aggregate({ where: { payment_attempt_id: attempt.id, status: 'lost' },
+      _sum: { amount_cents: true } });
+    const chargedBack = lost._sum.amount_cents ?? 0n;
+    const consumed = refunded + chargedBack;
     return { attempt, paid_cents: attempt.amount_cents, refunded_cents: refunded,
-      refundable_cents: attempt.amount_cents - refunded };
+      charged_back_cents: chargedBack,
+      refundable_cents: attempt.amount_cents > consumed ? attempt.amount_cents - consumed : 0n };
   }
 
   /** The refund history of an order (staff view, part of the order detail). */
@@ -206,7 +214,12 @@ export class Refunds {
       }
       const order = await tx.order.findUnique({ where: { id: orderId }, include: { attempts: true, invoice: true } });
       if (!order) throw missing();
-      if (order.payment_state !== 'paid' && order.payment_state !== 'refunded') {
+      // A *partial* chargeback leaves money with us that the buyer may still be
+      // owed, so `charged_back` is refundable in principle. What is left is
+      // decided by the capacity below, which subtracts lost chargebacks — a
+      // fully charged-back order therefore has nothing left to refund.
+      if (order.payment_state !== 'paid' && order.payment_state !== 'refunded' &&
+          order.payment_state !== 'charged_back') {
         throw apiError(409, 'ORDER_NOT_REFUNDABLE', 'Nur bezahlte Bestellungen können erstattet werden.');
       }
       const attempt = order.attempts.find(candidate => candidate.status === 'succeeded');
@@ -348,16 +361,20 @@ export class Refunds {
   }
 
   /**
-   * Record what happens to the access a refunded order created.
+   * Record what happens to the access an order created.
    *
-   * `kept` is a decision like any other and therefore stored. `revoked` and
-   * `suspended` touch the access rows; an access that has not started yet is
-   * suspended rather than revoked, because the money question may still be
-   * clarified and the grant is not worthless — a cancelled future grant cannot
-   * be resumed as easily as a suspended one.
+   * Shared by refunds and disputes on purpose: the question is identical ("does
+   * the learner keep the course?") and the answer must be recorded the same way,
+   * whichever case triggered it. `kept` is a decision like any other and is
+   * therefore stored — a missing row means "not decided yet", never "revoked".
+   *
+   * `revoked` and `suspended` touch the access rows; a grant that has not
+   * started yet is suspended rather than revoked, because the money question may
+   * still be clarified and the grant is not worthless — a cancelled future grant
+   * cannot be resumed as easily as a suspended one.
    */
-  async decideAccess(ctx: SessionContext, refundIdInput: string, input: unknown) {
-    const refundId = requireUuid(refundIdInput);
+  async decideAccessFor(ctx: SessionContext, origin: { refundId?: string; disputeId?: string,
+    orderId: string }, input: unknown) {
     const body = bodyObject(input, ['decision', 'reason', 'access_ids']);
     const decision = body.decision;
     if (decision !== 'revoked' && decision !== 'kept' && decision !== 'suspended') {
@@ -373,14 +390,8 @@ export class Refunds {
     }
     return this.transaction(async tx => {
       await this.staffActor(tx, ctx, 'access.manage');
-      const current = await tx.refund.findUnique({ where: { id: refundId } });
-      if (!current) throw missing();
-      if (current.status !== 'succeeded') {
-        throw apiError(409, 'REFUND_NOT_SETTLED', 'Erst nach bestätigter Erstattung wird über den Zugang entschieden.');
-      }
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${current.order_id}::uuid FOR UPDATE`;
-      const refund = await tx.refund.findUniqueOrThrow({ where: { id: refundId } });
-      const accesses = await tx.courseAccess.findMany({ where: { order_id: refund.order_id,
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${origin.orderId}::uuid FOR UPDATE`;
+      const accesses = await tx.courseAccess.findMany({ where: { order_id: origin.orderId,
         ...(only === null ? {} : { id: { in: only as string[] } }) }, orderBy: { starts_at: 'asc' } });
       if (only !== null && accesses.length !== new Set(only).size) {
         throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { access_ids: 'Unbekannter Zugang.' });
@@ -389,8 +400,9 @@ export class Refunds {
       for (const access of accesses) {
         // The decision is written first and the access row second — the trigger
         // refuses a suspension/revocation that has no decision yet.
-        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: refund.order_id,
-          refund_id: refund.id, access_id: access.id, decision, reason, decided_by: ctx.user.id, decided_at: now } });
+        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: origin.orderId,
+          refund_id: origin.refundId ?? null, dispute_id: origin.disputeId ?? null, access_id: access.id,
+          decision, reason, decided_by: ctx.user.id, decided_at: now } });
         if (decision === 'kept') {
           if (access.revoked_at || access.suspended_at) {
             await tx.courseAccess.update({ where: { id: access.id },
@@ -411,14 +423,28 @@ export class Refunds {
       if (!accesses.length) {
         // A decision without access is still a decision: it documents that the
         // question was asked and answered (e.g. a manual grant that never existed).
-        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: refund.order_id,
-          refund_id: refund.id, access_id: null, decision, reason, decided_by: ctx.user.id, decided_at: now } });
+        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: origin.orderId,
+          refund_id: origin.refundId ?? null, dispute_id: origin.disputeId ?? null, access_id: null,
+          decision, reason, decided_by: ctx.user.id, decided_at: now } });
       }
       await tx.auditEvent.create({ data: { id: uuidv7(), actor_user_id: ctx.user.id, origin: 'user',
-        action: `access.decided_after_refund`, target_type: 'refund', target_ref: refundId,
+        action: origin.disputeId ? 'access.decided_after_dispute' : 'access.decided_after_refund',
+        target_type: origin.disputeId ? 'dispute' : 'refund', target_ref: origin.disputeId ?? origin.refundId!,
         after_safe: { decision, reason, access_count: accesses.length } } });
-      return this.view(tx, refundId);
+      return { order_id: origin.orderId, decision, reason, access_count: accesses.length };
     });
+  }
+
+  /** Access decision for a refund (the dispute path goes through `Disputes`). */
+  async decideAccess(ctx: SessionContext, refundIdInput: string, input: unknown) {
+    const refundId = requireUuid(refundIdInput);
+    const refund = await this.db.refund.findUnique({ where: { id: refundId }, select: { order_id: true, status: true } });
+    if (!refund) throw missing();
+    if (refund.status !== 'succeeded') {
+      throw apiError(409, 'REFUND_NOT_SETTLED', 'Erst nach bestätigter Erstattung wird über den Zugang entschieden.');
+    }
+    await this.decideAccessFor(ctx, { refundId, orderId: refund.order_id }, input);
+    return this.view(this.db, refundId);
   }
 
   /** One refund with everything a support case needs. */
@@ -439,6 +465,7 @@ export class Refunds {
       note: refund.note, requested_at: refund.requested_at, confirmed_at: refund.confirmed_at,
       provider_refund_id: refund.provider_refund_id, last_error_safe: refund.last_error_safe,
       payment: { paid_cents: String(capacity?.paid_cents ?? 0n), refunded_cents: String(capacity?.refunded_cents ?? 0n),
+        charged_back_cents: String(capacity?.charged_back_cents ?? 0n),
         refundable_cents: String(capacity?.refundable_cents ?? 0n) },
       order: { id: refund.order.id, order_number: refund.order.order_number,
         payment_state: refund.order.payment_state, refunded_at: refund.order.refunded_at,

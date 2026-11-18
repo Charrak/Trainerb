@@ -370,7 +370,8 @@ export class Shop {
       invoice: true, attempts: { orderBy: { created_at: 'desc' } }, coupon: { include: { coupon: true } },
       accesses: { select: { id: true, course_id: true, revoked_at: true, starts_at: true,
         suspended_at: true, suspend_reason: true } },
-      refunds: { orderBy: { requested_at: 'asc' } } } });
+      refunds: { orderBy: { requested_at: 'asc' } },
+      disputes: { orderBy: { opened_at: 'asc' } } } });
     if (!order) throw missing();
     const staff = ctx.permissionKeys.has('orders.read') && ctx.session.kind === 'backoffice';
     // An unlinked guest order is only reachable through the buyer cookie (see
@@ -412,6 +413,11 @@ export class Shop {
         provider: refund.provider, reason_code: refund.reason_code, requested_at: refund.requested_at,
         confirmed_at: refund.confirmed_at })) : undefined,
       refundable: staff ? (await this.refundCapacity(order.id)) : undefined,
+      disputes: staff ? order.disputes.filter(dispute => dispute.status !== 'closed').map(dispute => ({
+        id: dispute.id, provider: dispute.provider, amount_cents: String(dispute.amount_cents),
+        currency: dispute.currency, status: dispute.status,
+        reason_code: dispute.reason_code, opened_at: dispute.opened_at,
+        resolved_at: dispute.resolved_at, provider_dispute_id: dispute.provider_dispute_id })) : undefined,
     };
   }
 
@@ -478,12 +484,18 @@ export class Shop {
   private async refundCapacity(orderId: string) {
     const attempt = await this.db.paymentAttempt.findFirst({ where: { order_id: orderId, status: 'succeeded' },
       orderBy: { confirmed_at: 'desc' }, select: { amount_cents: true } });
-    if (!attempt) return { paid_cents: '0', refunded_cents: '0', refundable_cents: '0' };
+    if (!attempt) return { paid_cents: '0', refunded_cents: '0', charged_back_cents: '0', refundable_cents: '0' };
     const used = await this.db.refund.aggregate({ where: { order_id: orderId,
       status: { in: ['requested', 'pending', 'succeeded'] } }, _sum: { amount_cents: true } });
     const refunded = used._sum.amount_cents ?? 0n;
+    // A lost chargeback is money gone; it counts against the same ceiling.
+    const lost = await this.db.dispute.aggregate({ where: { order_id: orderId, status: 'lost' },
+      _sum: { amount_cents: true } });
+    const chargedBack = lost._sum.amount_cents ?? 0n;
+    const consumed = refunded + chargedBack;
     return { paid_cents: String(attempt.amount_cents), refunded_cents: String(refunded),
-      refundable_cents: String(attempt.amount_cents > refunded ? attempt.amount_cents - refunded : 0n) };
+      charged_back_cents: String(chargedBack),
+      refundable_cents: String(attempt.amount_cents > consumed ? attempt.amount_cents - consumed : 0n) };
   }
 
   private async staffActor(tx: Prisma.TransactionClient, ctx: SessionContext, permission: string) {
@@ -563,6 +575,11 @@ export class Shop {
       const order = await tx.order.findUnique({ where: { id: orderId } });
       if (!order) throw missing();
       if (order.payment_state === 'cancelled') return this.orderView(tx, ctx, orderId);
+      // A chargeback already took the money back. Cancelling would pretend the
+      // staff ended the sale, and the two records would contradict each other.
+      if (order.payment_state === 'charged_back') {
+        throw apiError(409, 'ORDER_CHARGED_BACK', 'Eine zurückgebuchte Bestellung wird nicht storniert.');
+      }
       const now = new Date();
       const accesses = await tx.courseAccess.findMany({ where: { order_id: orderId, revoked_at: null } });
       // Revoking purchased access requires a decision on record. Cancelling the
