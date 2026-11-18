@@ -103,9 +103,9 @@ before(async () => {
     MEDIA_S3_REGION: 'eu-central-1', MEDIA_S3_ACCESS_KEY_ID: 'synthetic', MEDIA_S3_SECRET_ACCESS_KEY: 'synthetic-only' });
   if (process.env.TRAINERB_TEST_S3_ORIGIN) {
     assert.match(process.env.TRAINERB_TEST_S3_ORIGIN, /^https:\/\/127\.0\.0\.1:\d+$/);
-    assert.ok(process.env.MINIO_ROOT_PASSWORD);
+    assert.ok(process.env.TRAINERB_TEST_S3_SECRET);
     Object.assign(process.env, { MEDIA_S3_ENDPOINT: process.env.TRAINERB_TEST_S3_ORIGIN, MEDIA_S3_REGION: 'us-east-1',
-      MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.MINIO_ROOT_PASSWORD });
+      MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.TRAINERB_TEST_S3_SECRET });
   }
   app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
