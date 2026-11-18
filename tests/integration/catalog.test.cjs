@@ -765,3 +765,21 @@ test('product activation enforces completeness, price rules and course dependenc
   const drafts = await db.price.findMany({ where: { product_id: productId, status: 'draft' } });
   assert.equal(drafts.length, 1);
 });
+
+test('media metadata defaults to private, binds one immutable source and cannot publish unscanned files', async () => {
+  const create = overrides => db.mediaAsset.create({ data: { id: uuidv7(), source: 's3', storage_key: randomUUID(),
+    original_name: 'titel.jpg', mime_detected: 'image/jpeg', size_bytes: 100n, uploaded_by: adminUser.id, ...overrides } });
+  const asset = await create({ sha256: Buffer.alloc(32) });
+  assert.equal(asset.status, 'pending_scan'); assert.equal(asset.visibility, 'private');
+  for (const invalid of [{ source: 'other' }, { storage_key: null }, { storage_key: '../titel.jpg' },
+    { video_external_id: 'clip' }, { source: 'video_provider', storage_key: null }, { size_bytes: -1n },
+    { sha256: Buffer.alloc(31) }, { visibility: 'public' }, { status: 'unknown' }]) {
+    await assert.rejects(create(invalid), /check constraint/i);
+  }
+  await assert.rejects(create({ storage_key: asset.storage_key }), { code: 'P2002' });
+  await assert.rejects(db.mediaAsset.update({ where: { id: asset.id }, data: { storage_key: randomUUID() } }), /MEDIA_REFERENCE_IMMUTABLE/);
+  await db.mediaAsset.update({ where: { id: asset.id }, data: { status: 'ready', visibility: 'public' } });
+  await assert.rejects(db.mediaAsset.update({ where: { id: asset.id }, data: { status: 'quarantined' } }), /media_assets_public_ready/);
+  const video = await create({ source: 'video_provider', storage_key: null, video_external_id: uuidv7() });
+  assert.equal(video.storage_key, null); assert.equal(video.visibility, 'private');
+});
