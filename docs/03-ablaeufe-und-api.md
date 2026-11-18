@@ -74,6 +74,13 @@ Die folgenden Routen sind implementiert und getestet. Der Verkauf ist nur bei fr
 | `POST /admin/orders/{id}/confirm-payment`, `POST /admin/orders/{id}/cancel` | `orders.manage`, frische Bestätigung | Bestätigung mit Referenz schaltet Zahlung, Zugang und Mail frei; Stornieren verlangt einen Grund und gibt Gutscheine frei. Beides wird auditiert. |
 | `GET/POST /admin/commerce/settings`, `POST /admin/commerce/legal`, `POST /admin/commerce/legal/{id}/activate`, `GET/POST /admin/coupons`, `POST /admin/coupons/{id}/active` | `settings.manage`, `legal.manage`, `coupons.manage`; Schreibzugriffe mit frischer Bestätigung | Verkaufssperre, Rechnungssteller, Bankverbindung, Zahlungsziel, Rechtsfassungen und Gutscheine. Nur eine aktive Fassung je Art. |
 | `POST /admin/accesses`, `POST /admin/accesses/{id}/revoke` | `access.manage`, frische Bestätigung | Manuelle Freischaltung/Widerruf, auditiert, ohne Bestellung und ohne Rechnung. |
+| `POST /admin/orders/{id}/refund-proposals` | `refunds.propose` | Erfasst einen Erstattungsvorschlag (`requested`); bewegt kein Geld, erzeugt keinen Beleg. Nur bezahlte Bestellungen, Betrag höchstens die Restkapazität, `idempotency_key` Pflicht. |
+| `POST /admin/orders/{id}/refunds` | `refunds.manage`, frische Bestätigung | Führt die Erstattung aus: Überweisung sofort bestätigt, Karte erst mit Anbieter-Referenz (`pending`). Deckelung durch `REFUND_EXCEEDS_PAYMENT`; optional positionsgenaue `allocations`, die den Betrag ergeben müssen. Erzeugt Gutschrift und Mail. |
+| `GET /admin/refunds`, `GET /admin/refunds/{id}` | `refunds.manage` oder `refunds.propose` | Erstattungsliste bzw. Einzelvorgang mit Kapazität, Zuordnungen, Belegen und Zugangsentscheidungen. |
+| `POST /admin/refunds/{id}/confirm`, `POST /admin/refunds/{id}/fail` | `refunds.manage`, frische Bestätigung | Bestätigen ist idempotent (keine zweite Gutschrift); `fail` gibt die Kapazität wieder frei, weil kein Geld floss. |
+| `POST /admin/refunds/{id}/access-decision` | `access.manage`, frische Bestätigung | `kept`, `suspended` oder `revoked` je Zugang, mit Grund; erst nach bestätigter Erstattung (`409 REFUND_NOT_SETTLED`). Entscheidungen sind selbst der Nachweis, den der Datenbank-Trigger für Entzug/Sperrung verlangt. |
+| `GET /credit-notes`, `GET /credit-notes/{id}/pdf` | eigene Sitzung | Korrekturbelege des Kontos; Download nur für Eigentümer (`404` für fremde, `401` ohne Sitzung). |
+| `GET /admin/credit-notes/{id}/pdf` | `orders.read` | Support-Download des Korrekturbelegs. |
 
 ### Phase-4-Vertrag: Gastkauf und Kontozuordnung (umgesetzt)
 

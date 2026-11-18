@@ -28,7 +28,13 @@ export type OrderDetail = OrderSummary & { identity_kind?: 'account' | 'guest'; 
       unit_gross_cents: string; total_gross_cents: string }[]; total_gross_cents: string; due_at: string | null;
     payment_reference: string | null; /** null while the order is not paid */ pdf_href: string | null } | null;
   bank: { holder: string; iban: string; bic: string | null; bank: string | null; reference: string | null } | null;
-  access: { course_id: string; revoked: boolean }[] };
+  access: { id: string; course_id: string; revoked: boolean; suspended: boolean;
+    suspend_reason: string | null; starts_at: string }[];
+  /** staff only: what came back and what can still be returned */
+  refunded_at?: string | null;
+  refunds?: { id: string; amount_cents: string; status: string; provider: string; reason_code: string;
+    requested_at: string; confirmed_at: string | null }[];
+  refundable?: { paid_cents: string; refunded_cents: string; refundable_cents: string } };
 export type MyCourse = { course_id: string; slug: string; title: string; subtitle: string | null;
   duration_minutes: number | null; starts_at: string; ends_at: string | null; chapter_count: number;
   completed_count: number };
@@ -61,7 +67,24 @@ export function dateOnly(value: string | null): string {
 }
 export const paymentStateLabels: Record<string, string> = {
   awaiting: 'Zahlung offen', paid: 'Bezahlt', cancelled: 'Storniert', review: 'Prüfung nötig',
+  refunded: 'Erstattet',
 };
+export const refundStatusLabels: Record<string, string> = {
+  requested: 'Vorschlag offen', pending: 'Beim Anbieter offen', succeeded: 'Erstattet',
+  failed: 'Fehlgeschlagen', cancelled: 'Zurückgezogen',
+};
+export const refundReasons: { code: string; label: string }[] = [
+  { code: 'customer_request', label: 'Kundenwunsch' },
+  { code: 'withdrawal', label: 'Widerruf' },
+  { code: 'goodwill', label: 'Kulanz' },
+  { code: 'duplicate_payment', label: 'Doppelzahlung' },
+  { code: 'chargeback', label: 'Rückbuchung' },
+  { code: 'service_not_delivered', label: 'Leistung nicht erbracht' },
+];
+/** One issued credit note (correction of an invoice after a refund). */
+export type CreditNoteSummary = { id: string; document_number: string; issued_at: string; order_id: string;
+  order_number: string; total_gross_cents: string; currency: string; reason_code: string;
+  refund_status: string };
 export const fulfillmentLabels: Record<string, string> = {
   not_ready: 'Nicht bereit', waiting: 'Wartet auf Zahlung', fulfilled: 'Freigeschaltet', blocked: 'Gesperrt',
 };

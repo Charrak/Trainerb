@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
 import { Arrow, Notice } from './site';
-import { dateOnly, euro, paymentStateLabels, type InvoiceSummary } from '../lib/shop';
+import { dateOnly, euro, paymentStateLabels, type CreditNoteSummary, type InvoiceSummary } from '../lib/shop';
 
 /**
  * The account's invoices.
@@ -15,6 +15,7 @@ import { dateOnly, euro, paymentStateLabels, type InvoiceSummary } from '../lib/
  */
 export function MyInvoices() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>();
+  const [creditNotes, setCreditNotes] = useState<CreditNoteSummary[]>([]);
   const [error, setError] = useState('');
   const [downloading, setDownloading] = useState('');
   useEffect(() => {
@@ -22,20 +23,26 @@ export function MyInvoices() {
     api<{ data: InvoiceSummary[] }>('/invoices')
       .then(value => { if (active) setInvoices(value.data); })
       .catch(e => { if (active) setError(errorMessage(e)); });
+    // A credit note exists only after a refund; the list is simply empty until
+    // then. It is a separate request so a refund failure never hides invoices.
+    api<{ data: CreditNoteSummary[] }>('/credit-notes')
+      .then(value => { if (active) setCreditNotes(value.data); })
+      .catch(() => { /* summary list stays empty; download errors still show */ });
     return () => { active = false; };
   }, []);
 
-  async function download(invoice: InvoiceSummary) {
+  async function download(invoice: InvoiceSummary | CreditNoteSummary) {
     setDownloading(invoice.id); setError('');
+    const creditNote = 'document_number' in invoice;
     try {
-      const response = await fetch(`/api/v1/invoices/${invoice.id}/pdf`, { credentials: 'same-origin',
-        cache: 'no-store' });
+      const path = creditNote ? `/api/v1/credit-notes/${invoice.id}/pdf` : `/api/v1/invoices/${invoice.id}/pdf`;
+      const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
       if (!response.ok) throw new Error('Der Beleg konnte nicht geladen werden. Bitte versuche es später erneut.');
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Rechnung-${invoice.invoice_number}.pdf`;
+      link.download = creditNote ? `Gutschrift-${invoice.document_number}.pdf` : `Rechnung-${invoice.invoice_number}.pdf`;
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -45,7 +52,7 @@ export function MyInvoices() {
 
   return <div className="account-page content-width">
     <div className="dashboard-title"><div><span className="eyebrow"><span className="eyebrow-line"/> DEINE BELEGE</span>
-      <h1>Rechnungen<span className="accent-dot">.</span></h1>
+      <h1>Rechnungen &amp; Gutschriften<span className="accent-dot">.</span></h1>
       <p>Jede Rechnung ist unveränderlich. Ein Beleg wird erst bereitgestellt, wenn die Zahlung bestätigt ist.</p></div>
       <Link className="button button-secondary" href="/konto">← Zum Konto</Link></div>
     <Notice message={error}/>

@@ -50,6 +50,8 @@ model User {
   course_access_granted CourseAccess[] @relation("CourseAccessGranter")
   legal_versions_activated LegalDocumentVersion[] @relation("LegalActivator")
   commerce_settings CommerceSettings[] @relation("CommerceSettingsEditor")
+  refunds_requested Refund[] @relation("RefundRequester")
+  access_decisions  OrderAccessDecision[] @relation("AccessDecisionMaker")
 
   @@map("users")
 }
@@ -655,6 +657,7 @@ model Order {
   fulfilled_at             DateTime? @db.Timestamptz(6)
   cancelled_at             DateTime? @db.Timestamptz(6)
   cancelled_reason         String?   @db.Text
+  refunded_at              DateTime? @db.Timestamptz(6)
   created_by               String?   @db.Uuid
   updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   user                     User?     @relation("OrderBuyer", fields: [user_id], references: [id], onDelete: Restrict)
@@ -669,6 +672,9 @@ model Order {
   coupon                   CouponReservation?
   accesses                 CourseAccess[]
   invoice                  Invoice?
+  refunds                  Refund[]
+  access_decisions         OrderAccessDecision[]
+  credit_notes             CreditNote[]
   @@unique([user_id, checkout_idempotency_key])
   @@unique([checkout_email_verification_id, checkout_idempotency_key])
   @@index([user_id, placed_at])
@@ -693,6 +699,7 @@ model OrderItem {
   product           Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
   price             Price    @relation(fields: [price_id, product_id], references: [id, product_id], onDelete: Restrict)
   courses           OrderItemCourse[]
+  refund_allocations RefundAllocation[]
   @@id([order_id, product_id])
   @@unique([order_id, position])
   @@map("order_items")
@@ -744,6 +751,8 @@ model PaymentAttempt {
   created_at               DateTime  @default(now()) @db.Timestamptz(6)
   updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   order                    Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  refunds                  Refund[]
+  @@unique([id, order_id])
   @@index([order_id])
   @@map("payment_attempts")
 }
@@ -821,6 +830,8 @@ model CourseAccess {
   ends_at           DateTime? @db.Timestamptz(6)
   revoked_at        DateTime? @db.Timestamptz(6)
   revoke_reason     String?   @db.Text
+  suspended_at      DateTime? @db.Timestamptz(6)
+  suspend_reason    String?   @db.Text
   created_at        DateTime  @default(now()) @db.Timestamptz(6)
   user              User      @relation("CourseAccessUser", fields: [user_id], references: [id], onDelete: Restrict)
   course            Course    @relation(fields: [course_id], references: [id], onDelete: Restrict)
@@ -828,6 +839,7 @@ model CourseAccess {
   order             Order?    @relation(fields: [order_id], references: [id], onDelete: Restrict)
   granter           User?     @relation("CourseAccessGranter", fields: [granted_by], references: [id], onDelete: Restrict)
   progress          ChapterProgress[]
+  access_decisions  OrderAccessDecision[]
   @@index([user_id, created_at])
   @@map("course_access")
 }
@@ -860,5 +872,92 @@ model Invoice {
   recipient_email   String?  @db.Text
   created_at        DateTime @default(now()) @db.Timestamptz(6)
   order             Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  credit_notes      CreditNote[]
   @@map("invoices")
+}
+
+model Refund {
+  id                       String    @id @db.Uuid
+  order_id                 String    @db.Uuid
+  payment_attempt_id       String    @db.Uuid
+  provider                 String    @db.Text
+  environment              String    @db.Text
+  provider_refund_id       String?   @db.Text
+  provider_idempotency_key String    @unique @db.Text
+  amount_cents             BigInt
+  currency                 String    @db.Char(3)
+  status                   String    @db.Text
+  reason_code              String    @db.Text
+  note                     String?   @db.Text
+  requested_by             String    @db.Uuid
+  requested_at             DateTime  @default(now()) @db.Timestamptz(6)
+  confirmed_at             DateTime? @db.Timestamptz(6)
+  last_error_safe          String?   @db.Text
+  created_at               DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  order                    Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  attempt                  PaymentAttempt @relation(fields: [payment_attempt_id, order_id], references: [id, order_id], onDelete: Restrict)
+  requester                User      @relation("RefundRequester", fields: [requested_by], references: [id], onDelete: Restrict)
+  allocations              RefundAllocation[]
+  access_decisions         OrderAccessDecision[]
+  credit_notes             CreditNote[]
+  @@index([order_id, status])
+  @@index([payment_attempt_id, status])
+  @@map("refunds")
+}
+
+model RefundAllocation {
+  refund_id          String   @db.Uuid
+  order_id           String   @db.Uuid
+  order_item_product String   @db.Uuid
+  gross_cents        BigInt
+  net_cents          BigInt   @default(0)
+  tax_cents          BigInt   @default(0)
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+  refund             Refund   @relation(fields: [refund_id], references: [id], onDelete: Restrict)
+  item               OrderItem @relation(fields: [order_item_product, order_id], references: [product_id, order_id], onDelete: Restrict)
+  @@id([refund_id, order_item_product])
+  @@map("refund_allocations")
+}
+
+model OrderAccessDecision {
+  id         String   @id @db.Uuid
+  order_id   String   @db.Uuid
+  refund_id  String?  @db.Uuid
+  access_id  String?  @db.Uuid
+  decision   String   @db.Text
+  reason     String   @db.Text
+  decided_by String   @db.Uuid
+  decided_at DateTime @default(now()) @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  order      Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  refund     Refund?  @relation(fields: [refund_id], references: [id], onDelete: Restrict)
+  access     CourseAccess? @relation(fields: [access_id], references: [id], onDelete: Restrict)
+  decider    User     @relation("AccessDecisionMaker", fields: [decided_by], references: [id], onDelete: Restrict)
+  @@index([order_id, decided_at])
+  @@index([refund_id])
+  @@map("order_access_decisions")
+}
+
+model CreditNote {
+  id                  String   @id @db.Uuid
+  order_id            String   @db.Uuid
+  refund_id           String   @unique @db.Uuid
+  original_invoice_id String   @db.Uuid
+  document_number     String   @unique @db.Text
+  issued_at           DateTime @default(now()) @db.Timestamptz(6)
+  issuer_snapshot     Json
+  buyer_snapshot      Json
+  lines_snapshot      Json
+  total_gross_cents   BigInt
+  currency            String   @db.Char(3)
+  reason_code         String   @db.Text
+  note                String?  @db.Text
+  recipient_email     String?  @db.Text
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  order               Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  refund              Refund   @relation(fields: [refund_id], references: [id], onDelete: Restrict)
+  original_invoice    Invoice  @relation(fields: [original_invoice_id], references: [id], onDelete: Restrict)
+  @@index([order_id, issued_at])
+  @@map("credit_notes")
 }

@@ -22,6 +22,12 @@ export class Learning {
     const access = await this.db.courseAccess.findFirst({ where: { user_id: userId, revoked_at: null,
       course: { slug: courseSlug } }, include: { course: true, version: true } });
     if (!access) throw missing();
+    // A suspended grant (open refund or dispute) stops access without deleting
+    // the grant: the same row resumes if the question is settled in the buyer's
+    // favour. A plain 404 would look like "never bought it".
+    if (access.suspended_at) {
+      throw apiError(403, 'ACCESS_SUSPENDED', 'Der Zugang zu dieser Ausbildung ist vorübergehend gesperrt.');
+    }
     const now = new Date();
     if (access.starts_at > now || (access.ends_at && access.ends_at <= now)) {
       throw apiError(403, 'ACCESS_EXPIRED', 'Der Zugang zu dieser Ausbildung ist abgelaufen.');
@@ -33,7 +39,7 @@ export class Learning {
   async myCourses(ctx: SessionContext) {
     const now = new Date();
     const accesses = await this.db.courseAccess.findMany({ where: { user_id: ctx.user.id, revoked_at: null,
-      starts_at: { lte: now }, OR: [{ ends_at: null }, { ends_at: { gt: now } }] },
+      suspended_at: null, starts_at: { lte: now }, OR: [{ ends_at: null }, { ends_at: { gt: now } }] },
       orderBy: { created_at: 'desc' }, include: { course: true, version: true,
         progress: { select: { chapter_id: true } } } });
     const data = [];
@@ -42,7 +48,7 @@ export class Learning {
       data.push({ course_id: access.course_id, slug: access.course.slug, title: access.version.title,
         subtitle: access.version.subtitle, duration_minutes: access.version.duration_minutes,
         starts_at: access.starts_at, ends_at: access.ends_at, chapter_count: chapters,
-        completed_count: access.progress.length });
+        completed_count: access.progress.length, suspended: false });
     }
     return { data };
   }
@@ -159,7 +165,14 @@ export class Accesses {
       if (!access) throw missing();
       if (access.revoked_at) return { id: access.id, revoked_at: access.revoked_at };
       const now = new Date();
-      await tx.courseAccess.update({ where: { id: accessId }, data: { revoked_at: now, revoke_reason: reason } });
+      // Purchased access may only be revoked when the decision is on record; a
+      // manual grant carries its own history and needs no order decision.
+      if (access.source === 'order' && access.order_id) {
+        await tx.orderAccessDecision.create({ data: { id: uuidv7(), order_id: access.order_id,
+          access_id: access.id, decision: 'revoked', reason, decided_by: ctx.user.id } });
+      }
+      await tx.courseAccess.update({ where: { id: accessId }, data: { revoked_at: now, revoke_reason: reason,
+        suspended_at: null, suspend_reason: null } });
       await tx.auditEvent.create({ data: { id: uuidv7(), actor_user_id: ctx.user.id, origin: 'user',
         action: 'access.revoked', target_type: 'course_access', target_ref: accessId,
         after_safe: { source: access.source, reason } } });

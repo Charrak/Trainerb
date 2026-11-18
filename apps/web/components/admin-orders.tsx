@@ -2,7 +2,8 @@
 import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, errorMessage, type Profile } from '../lib/api';
-import { dateTime, euro, paymentStateLabels, fulfillmentLabels, type AdminOrder, type OrderDetail } from '../lib/shop';
+import { dateTime, euro, paymentStateLabels, fulfillmentLabels, refundStatusLabels, refundReasons,
+  type AdminOrder, type OrderDetail } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 import { InvoiceDownload } from './invoices';
 
@@ -12,6 +13,10 @@ const canManage = (profile: Profile) => profile.permissions.includes('orders.man
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
 const canConfigure = (profile: Profile) => profile.permissions.includes('settings.manage') &&
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
+const canRefund = (profile: Profile) => profile.permissions.includes('refunds.manage');
+const canPropose = (profile: Profile) => profile.permissions.includes('refunds.propose') ||
+  profile.permissions.includes('refunds.manage');
+const canDecideAccess = (profile: Profile) => profile.permissions.includes('access.manage');
 
 export function StaffInvoiceDownload({ invoiceId }: { invoiceId: string }) {
   // The staff route enforces `orders.read` on the server; the button only asks.
@@ -22,14 +27,14 @@ export function AdminOrders() {
   const [profile, setProfile] = useState<Profile>();
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [state, setState] = useState('awaiting');
-  const [totals, setTotals] = useState<{ awaiting: number; paid: number }>();
+  const [totals, setTotals] = useState<{ awaiting: number; paid: number; refunded: number }>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const allowed = !!profile && canRead(profile);
   async function load(filter = state) {
     setError('');
     try {
-      const page = await api<{ data: AdminOrder[]; totals: { awaiting: number; paid: number } }>(
+      const page = await api<{ data: AdminOrder[]; totals: { awaiting: number; paid: number; refunded: number } }>(
         `/admin/orders?state=${encodeURIComponent(filter)}`);
       setOrders(page.data); setTotals(page.totals);
     } catch (e) {
@@ -56,9 +61,9 @@ export function AdminOrders() {
     {loading ? <p className="muted">Bestellungen werden geladen …</p> : allowed && <>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">ÜBERSICHT</span>
         <h2>Offene und bezahlte Bestellungen</h2>
-        <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt` : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
+        <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt · ${totals.refunded} erstattet` : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
         <div className="choice-row" role="group" aria-label="Statusfilter">
-          {['awaiting', 'paid', 'unlinked', 'review', 'cancelled', ''].map(value => <label key={value || 'all'}>
+          {['awaiting', 'paid', 'unlinked', 'review', 'refunded', 'cancelled', ''].map(value => <label key={value || 'all'}>
             <input type="radio" checked={state === value} onChange={() => { setState(value); void load(value); }}/>
             {value === '' ? 'Alle' : value === 'unlinked' ? 'Ohne Konto' : paymentStateLabels[value]}</label>)}
         </div>
@@ -180,11 +185,100 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
         </>}
         <div className="inner-divider"/>
         <h3>Zugang</h3>
-        {order.access.length ? <ul className="plain-list">{order.access.map(access => <li key={access.course_id}>
-          {access.course_id.slice(0, 8)}… · {access.revoked ? 'entzogen' : 'aktiv'}</li>)}</ul> : <p className="muted">Noch kein Zugang vergeben.</p>}
+        {order.access.length ? <ul className="plain-list">{order.access.map(access => <li key={access.id}>
+          {access.course_id.slice(0, 8)}… · {access.revoked ? 'entzogen' : access.suspended ? 'gesperrt' : 'aktiv'}</li>)}</ul>
+          : <p className="muted">Noch kein Zugang vergeben.</p>}
+        <RefundPanel order={order} profile={profile!} busy={busy} setBusy={setBusy}
+          setError={setError} setSuccess={setSuccess} reload={() => void load()} setReauthNeeded={setReauthNeeded}/>
       </section>
     </div>}
   </div>;
+}
+
+/**
+ * Refunds for one order.
+ *
+ * The panel is deliberately boring: an amount, a reason and an explicit button
+ * whose label says what will happen. A proposal moves no money, executing one
+ * does — and the access question is asked separately, because "the money came
+ * back" and "the learner loses the course" are two different decisions.
+ */
+function RefundPanel({ order, profile, busy, setBusy, setError, setSuccess, reload, setReauthNeeded }: {
+  order: OrderDetail; profile: Profile; busy: string;
+  setBusy: (value: string) => void; setError: (value: string) => void; setSuccess: (value: string) => void;
+  reload: () => void; setReauthNeeded: (value: boolean) => void;
+}) {
+  const refundable = order.refundable;
+  const [amount, setAmount] = useState(refundable?.refundable_cents ?? '0');
+  const [reason, setReason] = useState(refundReasons[0].code);
+  const [note, setNote] = useState('');
+  const [decision, setDecision] = useState<'revoked' | 'kept' | 'suspended'>('kept');
+  const [decisionReason, setDecisionReason] = useState('customer_request');
+  useEffect(() => { setAmount(refundable?.refundable_cents ?? '0'); }, [refundable?.refundable_cents]);
+  if (!canPropose(profile)) return null;
+  const cents = /^[0-9]{1,12}$/.test(amount) ? BigInt(amount) : 0n;
+  const left = refundable ? BigInt(refundable.refundable_cents) : 0n;
+  const valid = cents > 0n && cents <= left;
+  async function send(label: string, path: string, payload: unknown, message: string) {
+    setBusy(label); setError(''); setSuccess('');
+    try {
+      await api(path, 'POST', payload); setSuccess(message); reload();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403 && e.code === 'REAUTH_REQUIRED') setReauthNeeded(true);
+      setError(errorMessage(e));
+    } finally { setBusy(''); }
+  }
+  const proposal = { amount_cents: amount, reason_code: reason, note: note || undefined,
+    idempotency_key: crypto.randomUUID().replace(/-/g, '').slice(0, 40) };
+  const settled = (order.refunds ?? []).filter(refund => refund.status === 'succeeded');
+  return <>
+    <div className="inner-divider"/>
+    <h3>Erstattung</h3>
+    {refundable && <p className="muted">Bezahlt {euro(refundable.paid_cents)} · zurück {euro(refundable.refunded_cents)} ·
+      {' '}noch erstattbar <strong>{euro(refundable.refundable_cents)}</strong></p>}
+    {!!order.refunds?.length && <ul className="plain-list">{order.refunds.map(refund => <li key={refund.id}>
+      {euro(refund.amount_cents)} · {refundStatusLabels[refund.status] ?? refund.status}
+      {' '}· {refund.reason_code}{refund.confirmed_at ? ` · bestätigt ${dateTime(refund.confirmed_at)}` : ''}</li>)}</ul>}
+    {left > 0n ? <form className="stack-form" onSubmit={event => { event.preventDefault();
+      void send('refund', `/admin/orders/${order.id}/refunds`, proposal,
+        'Erstattung gebucht und Gutschrift erstellt.'); }}>
+      <div className="field-row">
+        <Field label="Betrag in Cent" id="refund-amount" hint={`Höchstens ${euro(refundable?.refundable_cents ?? '0')}.`}>
+          <input id="refund-amount" inputMode="numeric" value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} required/></Field>
+        <Field label="Grund" id="refund-reason"><select id="refund-reason" value={reason} onChange={e => setReason(e.target.value)}>
+          {refundReasons.map(entry => <option key={entry.code} value={entry.code}>{entry.label}</option>)}</select></Field>
+      </div>
+      <Field label="Notiz (optional)" id="refund-note"><input id="refund-note" value={note}
+        onChange={e => setNote(e.target.value)} maxLength={500}/></Field>
+      {canRefund(profile) ? <>
+        <button className="button button-primary" disabled={!!busy || !valid}>
+          {busy === 'refund' ? 'Bitte warten …' : `${euro(cents.toString())} erstatten und Gutschrift erstellen`} <Arrow/></button>
+        <p className="muted">Erstattet das Geld nachweislich und erzeugt den Korrekturbeleg. Nicht ausführen, solange
+          die Zahlung nicht tatsächlich zurückgegangen ist.</p>
+      </> : <p className="muted">Erstattungen dürfen nur von Administration und Superadministration ausgeführt
+        werden. Du kannst einen Vorschlag zur Prüfung erfassen.</p>}
+      {!canRefund(profile) && <button type="button" className="button button-secondary" disabled={!!busy || !valid}
+        onClick={() => void send('propose', `/admin/orders/${order.id}/refund-proposals`, proposal,
+          'Vorschlag erfasst. Die Ausführung prüft eine berechtigte Person.')}>
+        {busy === 'propose' ? 'Bitte warten …' : 'Erstattung vorschlagen'}</button>}
+    </form> : <p className="muted">Für diese Bestellung ist nichts mehr erstattbar.</p>}
+    {canDecideAccess(profile) && settled.length > 0 && <div className="stack-form">
+      <h4 className="detail-subheading">Zugang nach Erstattung</h4>
+      <p className="muted">Ohne diese Entscheidung bleibt der Zugang unverändert. „Gesperrt“ lässt sich später
+        zurücknehmen, „entzogen“ nicht.</p>
+      <Field label="Entscheidung" id="access-decision"><select id="access-decision" value={decision}
+        onChange={e => setDecision(e.target.value as typeof decision)}>
+        <option value="kept">Zugang bleibt bestehen (Kulanz)</option>
+        <option value="suspended">Zugang vorläufig sperren</option>
+        <option value="revoked">Zugang entziehen</option></select></Field>
+      <Field label="Begründung" id="access-decision-reason"><input id="access-decision-reason" value={decisionReason}
+        onChange={e => setDecisionReason(e.target.value)} maxLength={60} pattern="[a-z_]{3,60}" required/></Field>
+      <button type="button" className="button button-secondary" disabled={!!busy}
+        onClick={() => void send('decision', `/admin/refunds/${settled[settled.length - 1].id}/access-decision`,
+          { decision, reason: decisionReason }, 'Entscheidung zum Zugang festgehalten.')}>
+        {busy === 'decision' ? 'Bitte warten …' : 'Entscheidung festhalten'}</button>
+    </div>}
+  </>;
 }
 
 type CommerceState = { settings: { sales_enabled: boolean; invoice_seller_name: string; invoice_seller_street: string;
