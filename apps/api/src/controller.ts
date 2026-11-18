@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { Auth } from './auth';
 import { Mfa } from './mfa';
 import { Sessions, ApiRequest } from './sessions';
+import { Customers } from './customers';
 import { Admin } from './admin';
 import { apiError } from './security';
 import { GuestCheckout } from './guest';
@@ -10,7 +11,7 @@ import { GuestCheckout } from './guest';
 @Controller()
 export class IdentityController {
   constructor(private readonly auth: Auth, private readonly mfa: Mfa, private readonly sessions: Sessions,
-              private readonly admin: Admin, private readonly guest: GuestCheckout) {}
+              private readonly customers: Customers, private readonly admin: Admin, private readonly guest: GuestCheckout) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   // Publication, commerce and learning access are available behind explicit
@@ -93,6 +94,16 @@ export class IdentityController {
   async changeEmail(@Req() req: ApiRequest, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { fresh:true }); await this.sessions.verifyCsrf(req, ctx);
     await this.auth.requestEmailChange(ctx, body, this.ip(req)); return { status:'accepted' };
+  }
+  @Post('admin/customers/search') @HttpCode(200)
+  async customerSearch(@Req() req: ApiRequest, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true });
+    if (!ctx.permissionKeys.has('users.read') && !ctx.permissionKeys.has('users.read_limited')) throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    await this.sessions.verifyCsrf(req, ctx); return this.customers.search(body);
+  }
+  @Put('admin/customers/:id/status') async customerStatus(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'users.block', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.customers.changeStatus(ctx, id, body);
   }
   @Get('admin/users') async users(@Req() req: ApiRequest, @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
     await this.sessions.require(req, { backoffice:true, permission:'users.read' }); return this.admin.listUsers(limit, cursor);
