@@ -14,13 +14,15 @@ async function read<T>(response: Response): Promise<T> {
 export async function api<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET', body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   try {
+    const file = body instanceof File ? body : undefined;
     if (method !== 'GET') {
       const csrf = await read<{ csrf_token: string }>(await fetch('/api/v1/auth/csrf', { cache: 'no-store', credentials: 'same-origin' }));
       headers['X-CSRF-Token'] = csrf.csrf_token;
-      headers['Content-Type'] = 'application/json';
+      headers['Content-Type'] = file ? 'application/octet-stream' : 'application/json';
+      if (file) headers['X-Upload-Name'] = encodeURIComponent(file.name);
     }
     return await read<T>(await fetch(`/api/v1${path}`, { method, headers, cache: 'no-store', credentials: 'same-origin',
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }));
+      ...(body !== undefined ? { body: file ?? JSON.stringify(body) } : {}) }));
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(0, 'NETWORK_ERROR', 'Die Verbindung ist vorübergehend nicht verfügbar. Bitte versuche es erneut.');

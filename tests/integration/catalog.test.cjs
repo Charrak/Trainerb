@@ -266,6 +266,51 @@ test('assignments scope read and write; fresh MFA and current membership are enf
   assert.equal(await db.auditEvent.count({ where: { target_ref: courseA.id, action: 'course.staff_removed' } }), 1);
 });
 
+
+test('course uploads are bounded, scoped, and end in a separate private quarantine bucket', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOxSaxkAAAAASUVORK5CYII=', 'base64');
+  const post = async (browser, id, bytes, name = 'Beispiel.png', csrf = true) => {
+    const req = request(server).post(`/api/v1/admin/courses/${id}/media/uploads`).set('Origin', origin)
+      .set('Content-Type', 'application/octet-stream').set('X-Upload-Name', encodeURIComponent(name));
+    if (csrf) req.set('X-CSRF-Token', (await browser.get('/auth/csrf')).body.csrf_token);
+    return req.set('Cookie', browser.cookie()).send(bytes);
+  };
+  const cfg = require('../../apps/api/dist/config').getConfig();
+  const before = await db.courseMediaUpload.count(), assets = await db.mediaAsset.count();
+  status(await post(participant, courseB.id, png), 403);
+  status(await post(instructor, courseA.id, png), 404);
+  status(await post(instructor, courseB.id, png, 'x.png', false), 403);
+  status(await post(instructor, courseB.id, png), 503); // disabled by default
+  // Only the disposable gateway uses a synthetic root identity for provisioning.
+  cfg.quarantineStore = { ...cfg.mediaStore, bucket: 'trainerb-quarantine' };
+  try {
+    status(await post(instructor, courseB.id, Buffer.from('not an image')), 422);
+    status(await post(instructor, courseB.id, png, '../x.png'), 422);
+    status(await post(instructor, courseB.id, png, 'x.pdf'), 422);
+    status(await post(instructor, courseB.id, Buffer.alloc(5 * 1024 * 1024 + 1)), 413);
+    assert.equal(await db.courseMediaUpload.count(), before);
+    if (!process.env.TRAINERB_TEST_S3_ORIGIN) return;
+    const { AwsClient } = require('aws4fetch');
+    const client = new AwsClient({ ...cfg.mediaStore, service: 's3', retries: 0 });
+    const bucket = `${cfg.mediaStore.origin}/${cfg.quarantineStore.bucket}`;
+    status(await post(instructor, courseB.id, png), 503); // nonexistent bucket: no receipt
+    assert.equal(await db.courseMediaUpload.count(), before);
+    assert.equal((await client.fetch(bucket, { method: 'PUT' })).status, 200);
+    const response = await post(instructor, courseB.id, png);
+    status(response, 201); assert.deepEqual(Object.keys(response.body).sort(), ['id','status']);
+    assert.equal(response.body.status, 'pending_scan');
+    const row = await db.courseMediaUpload.findUniqueOrThrow({ where: { id: response.body.id } });
+    assert.equal(row.course_id, courseB.id); assert.equal(row.uploaded_by, instructorUser.id);
+    assert.equal(row.size_bytes, png.length); assert.equal(row.mime_detected, 'image/png');
+    assert.deepEqual(Buffer.from(row.sha256), require('node:crypto').createHash('sha256').update(png).digest());
+    const url = `${bucket}/${row.object_key}`;
+    assert.equal((await fetch(url)).status, 403);
+    assert.deepEqual(Buffer.from(await (await client.fetch(url)).arrayBuffer()), png);
+    assert.equal(await db.mediaAsset.count(), assets);
+    assert.equal(await db.auditEvent.count({ where: { target_ref: courseB.id, action: 'media.upload_quarantined' } }), 1);
+  } finally { cfg.quarantineStore = undefined; }
+});
+
 test('a concurrent unassignment and edit serialize on the course and leave no subsequent access', async () => {
   status(await assign(courseA.id, managerUser.id, 'manager'), 200);
   const [removed, edited] = await Promise.all([

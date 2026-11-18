@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query, Req, Res } from '@nestjs/common';
+import type { Response } from 'express';
+import { quarantineFile } from './quarantine';
 import { Catalog } from './catalog';
 import { RateLimiter } from './limiter';
 import { Sessions, type ApiRequest } from './sessions';
@@ -23,6 +25,12 @@ export class CatalogController {
   @Get('admin/courses/:id') async detail(@Req() req: ApiRequest, @Param('id') id: string) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.read' });
     return this.catalog.detail(ctx, id);
+  }
+  @Post('admin/courses/:id/media/uploads') async upload(@Req() req: ApiRequest, @Res({ passthrough: true }) res: Response, @Param('id') id: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'media.upload' });
+    await this.sessions.verifyCsrf(req, ctx);
+    await this.limiter.hit('media-upload', ctx.user.id, 20, 15 * 60_000);
+    return this.catalog.quarantineUpload(ctx, id, () => quarantineFile(req, res));
   }
   @Post('admin/courses') async create(@Req() req: ApiRequest, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.create' });
