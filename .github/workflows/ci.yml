@@ -87,8 +87,8 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Integration tests
-        run: npm run test:integration
+      - name: Integration tests (including private HTTPS object delivery)
+        run: bash scripts/test-integration-s3.sh
 
       - name: Build
         run: npm run build
