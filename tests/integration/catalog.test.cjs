@@ -98,9 +98,15 @@ const rejectedStatus = expected => error => error.getStatus?.() === expected;
 before(async () => {
   assert.equal(process.env.TRAINERB_DESTRUCTIVE_TEST_DATABASE, 'confirmed');
   assert.match(new URL(process.env.DATABASE_URL).pathname, /_test$/);
-  // Signing tests use synthetic credentials only; never contact a real bucket.
+  // Without the disposable store, keep running the network-free signing tests.
   Object.assign(process.env, { MEDIA_S3_ENDPOINT: 'https://objects.example.invalid', MEDIA_S3_BUCKET: 'trainerb-test',
     MEDIA_S3_REGION: 'eu-central-1', MEDIA_S3_ACCESS_KEY_ID: 'synthetic', MEDIA_S3_SECRET_ACCESS_KEY: 'synthetic-only' });
+  if (process.env.TRAINERB_TEST_S3_ORIGIN) {
+    assert.match(process.env.TRAINERB_TEST_S3_ORIGIN, /^https:\/\/127\.0\.0\.1:\d+$/);
+    assert.ok(process.env.TRAINERB_TEST_S3_SECRET);
+    Object.assign(process.env, { MEDIA_S3_ENDPOINT: process.env.TRAINERB_TEST_S3_ORIGIN, MEDIA_S3_REGION: 'us-east-1',
+      MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.TRAINERB_TEST_S3_SECRET });
+  }
   app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
@@ -654,6 +660,16 @@ test('publication requires a fresh admin and a complete draft; published version
   const makeImage = visibility => db.mediaAsset.create({ data: { id: uuidv7(), source: 's3', storage_key: randomUUID(),
     original_name: 'bild.jpg', mime_detected: 'image/jpeg', size_bytes: 80n, visibility, status: 'ready' } });
   const cover = await makeImage('public'), lesson = await makeImage('private');
+  const storageTest = !!process.env.TRAINERB_TEST_S3_ORIGIN;
+  const fixtureBytes = Buffer.from('private trainerb integration fixture');
+  if (storageTest) {
+    const { AwsClient } = require('aws4fetch');
+    const { mediaStore } = require('../../apps/api/dist/config').getConfig();
+    const seed = new AwsClient({ ...mediaStore, service: 's3', retries: 0 });
+    const bucket = `${mediaStore.origin}/${mediaStore.bucket}`;
+    assert.equal((await seed.fetch(bucket, { method: 'PUT' })).status, 200);
+    assert.equal((await seed.fetch(`${bucket}/${lesson.storage_key}`, { method: 'PUT', body: fixtureBytes })).status, 200);
+  }
   const setCover = id => db.courseVersion.update({ where: { id: course.version_id }, data: { cover_media_id: id } });
   await assert.rejects(setCover(lesson.id), /COURSE_MEDIA_UNAVAILABLE/); await setCover(cover.id);
   const mediaRow = { id: uuidv7(), course_version_id: course.version_id, chapter_id: chapterResponse.body.id,
@@ -701,7 +717,7 @@ test('publication requires a fresh admin and a complete draft; published version
   status(await participant.get(mediaPath), 404);
   const access = await db.courseAccess.create({ data: { id: uuidv7(), user_id: (await contextFor(participant)).user.id,
     course_id: course.id, course_version_id: course.version_id, source: 'manual', granted_by: releaseAdminUser.id,
-    starts_at: new Date(Date.now() - 60_000), ends_at: new Date(Date.now() + 40_000) } });
+    starts_at: new Date(Date.now() - 60_000), ends_at: new Date(Date.now() + (storageTest ? 10_000 : 40_000)) } });
   const chapterView = await participant.get(chapterPath); status(chapterView, 200);
   assert.equal(chapterView.body.contents.find(c => c.id === mediaRow.id).media_available, true);
   assert.ok(!JSON.stringify(chapterView.body).includes(lesson.storage_key));
@@ -710,6 +726,18 @@ test('publication requires a fresh admin and a complete draft; published version
   assert.equal(signed.origin, store.origin); assert.equal(signed.pathname, `/${store.bucket}/${lesson.storage_key}`);
   assert.match(signed.searchParams.get('X-Amz-Signature'), /^[0-9a-f]{64}$/);
   assert.ok(Number(signed.searchParams.get('X-Amz-Expires')) > 0 && Number(signed.searchParams.get('X-Amz-Expires')) <= 40);
+  // Use anonymous HTTP requests to the storage service, never app cookies.
+  // Compare only statuses/bytes; signed URLs must not appear in test output.
+  const objectGet = url => fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+  if (storageTest) {
+    assert.equal((await objectGet(signed.origin + signed.pathname)).status, 403);
+    const object = await objectGet(signed);
+    assert.equal(object.status, 200);
+    assert.deepEqual(Buffer.from(await object.arrayBuffer()), fixtureBytes);
+    assert.match(object.headers.get('cache-control'), /\bno-store\b/);
+    assert.equal(object.headers.get('content-type'), 'image/jpeg');
+    assert.equal(object.headers.get('content-disposition'), 'inline');
+  }
   status(await participant.get(mediaPath.replace(chapterResponse.body.id, uuidv7())), 404);
   status(await participant.get(`${chapterPath}/media/${lesson.id}`), 404); // an asset ID is not an authorization
   await db.courseAccess.update({ where: { id: access.id }, data: { suspended_at: new Date(), suspend_reason: 'review' } });
@@ -734,6 +762,14 @@ test('publication requires a fresh admin and a complete draft; published version
   status(await participant.get(`/me/courses/release-ready/chapters/${copiedMedia.chapter_id}/media/${copiedMedia.id}`), 404);
   assert.equal(copiedMedia.media_asset_id, lesson.id); assert.notEqual(copiedMedia.id, mediaRow.id);
   assert.equal(copiedMedia.body, null); assert.equal(copiedMedia.position, mediaRow.position);
+  if (storageTest) {
+    // Reuse the exact URL, without re-signing. The grant is now valid again,
+    // so a fresh GET must work even though the original signature has expired.
+    await new Promise(resolve => setTimeout(resolve, (Number(signed.searchParams.get('X-Amz-Expires')) + 1) * 1000));
+    assert.equal((await objectGet(signed)).status, 403);
+    const renewed = await participant.get(mediaPath); status(renewed, 302);
+    assert.equal((await objectGet(renewed.headers.location)).status, 200);
+  }
   const copiedText = await releaseAdmin.get(`/admin/course-chapters/${copy.modules[0].chapters[0].id}/contents`);
   assert.equal(copiedText.body.data[0].body.blocks[0].text, 'Synthetischer Lehrtext.');
   assert.notEqual(copiedText.body.data[0].id, (await db.chapterContent.findFirstOrThrow({ where: { course_version_id: course.version_id } })).id);
