@@ -95,7 +95,7 @@ export function AdminCourseDetail({ id }: { id: string }) {
       </section>
       </> : null}
       {profile?.permissions.includes('media.upload') && <QuarantineUpload key={course.id} courseId={course.id} mutate={mutate} disabled={busy || outdated}/>}
-      <ScanResults uploads={course.quarantine_uploads}/>
+      <ScanResults uploads={course.quarantine_uploads} courseId={course.id} canApprove={canPublish} disabled={busy || outdated} mutate={mutate}/>
       <CoursePublication courseId={course.id} version={version && { id: version.id, revision: version.revision, version: version.version }}
         canPublish={canPublish} onChanged={() => void reload()}/>
       {canAssign && <Staff course={course} canReadUsers={profile?.permissions.includes('users.read') || false} disabled={busy || outdated} mutate={mutate}/>}
@@ -120,7 +120,7 @@ function QuarantineUpload({ courseId, mutate, disabled }: { courseId: string; mu
       <button className="button button-secondary" disabled={disabled}>In Quarantäne hochladen</button></form></section>;
 }
 
-function ScanResults({ uploads }: { uploads: CourseDetail['quarantine_uploads'] }) {
+function ScanResults({ uploads, courseId, canApprove, disabled, mutate }: { uploads: CourseDetail['quarantine_uploads']; courseId: string; canApprove: boolean; disabled: boolean; mutate: Mutate }) {
   if (!uploads.length) return null;
   const statuses: Record<string, string> = { pending_scan: 'Wartet auf Prüfung', clean: 'Ohne Fund – weiterhin privat',
     infected: 'Fund – gesperrt', scan_error: 'Prüffehler – gesperrt' };
@@ -128,7 +128,14 @@ function ScanResults({ uploads }: { uploads: CourseDetail['quarantine_uploads'] 
   return <section className="dashboard-card"><h2>Prüfergebnisse</h2><p>Die letzten 25 Uploads dieses Kurses. Für neue Ergebnisse die Seite neu laden.</p>
     <ul>{uploads.map(row => <li key={row.id}><strong>{row.original_name}</strong>: {statuses[row.status] ?? 'Unbekannt – gesperrt'}
       {row.scan_error && ` (${errors[row.scan_error] ?? 'Prüfung fehlgeschlagen'})`}{row.scanned_at && ` · ${new Date(row.scanned_at).toLocaleString('de-DE')}`}
-      {row.scan_error && <small> · Beleg {row.id}</small>}</li>)}</ul></section>;
+      {row.scan_error && <small> · Beleg {row.id}</small>}
+      {row.approved_at ? <strong> · Redaktionell freigegeben am {new Date(row.approved_at).toLocaleString('de-DE')} – noch nicht übernommen</strong>
+        : canApprove && row.status === 'clean' && <button className="button button-secondary" disabled={disabled} onClick={() => {
+          if (window.confirm(`„${row.original_name}“ für die spätere Übernahme als privates Kursmedium freigeben?`))
+            void mutate(`/admin/courses/${courseId}/media/uploads/${row.id}/approve`, 'POST', {}, 'Freigabe gespeichert. Die Datei bleibt in Quarantäne.');
+        }}>Für Übernahme freigeben</button>}</li>)}</ul>
+    {canApprove && uploads.some(row => row.status === 'clean' && !row.approved_at) && <details><summary>Identität für die Freigabe bestätigen</summary>
+      <Reauth mfa idPrefix="media-approval"/></details>}</section>;
 }
 
 function VersionForm({ version, disabled, mutate }: { version: Version; disabled: boolean; mutate: Mutate }) {

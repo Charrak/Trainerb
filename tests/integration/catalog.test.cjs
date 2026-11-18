@@ -333,7 +333,7 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
     const detail = await instructor.get(`/admin/courses/${courseB.id}`); status(detail, 200);
     const report = detail.body.quarantine_uploads.find(upload => upload.id === row.id);
     assert.equal(report.status, 'scan_error'); assert.equal(report.scan_error, 'storage'); assert.ok(report.scanned_at);
-    assert.deepEqual(Object.keys(report).sort(), ['id','original_name','scan_error','scanned_at','status']);
+    assert.deepEqual(Object.keys(report).sort(), ['approved_at','id','original_name','scan_error','scanned_at','status']);
     status(await participant.get(`/admin/courses/${courseB.id}`), 403);
     // An explicit retry is serialized; terminal verdicts cannot be retried.
     const results = await Promise.all([1, 2].map(() => scanNext(db, async () => ({ status: 'infected', scan_error: null }), row.id)));
@@ -343,6 +343,34 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
     assert.equal(await db.mediaAsset.count(), assets);
 
   } finally { cfg.quarantineStore = undefined; }
+});
+
+test('editorial approval is separate from scanning, course-bound and recorded exactly once', async () => {
+  const assets = await db.mediaAsset.count();
+  const receipt = await db.courseMediaUpload.create({ data: { id: uuidv7(), course_id: courseB.id, uploaded_by: instructorUser.id,
+    object_key: randomUUID(), original_name: 'Test.png', mime_detected: 'image/png', size_bytes: 1, sha256: Buffer.alloc(32) } });
+  const path = `/admin/courses/${courseB.id}/media/uploads/${receipt.id}/approve`;
+  status(await instructor.change('post', path, {}), 403);
+  await db.authSession.updateMany({ where: { user_id: adminUser.id, kind: 'backoffice' }, data: { reauthenticated_at: null } });
+  const stale = await admin.change('post', path, {}); status(stale, 403); assert.equal(stale.body.code, 'REAUTH_REQUIRED');
+  status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[1] }), 204);
+  status(await admin.change('post', path, {}, { noCsrf: true }), 403);
+  status(await admin.change('post', path.replace(courseB.id, courseA.id), {}), 404);
+  status(await admin.change('post', path, { status: 'clean' }), 400);
+  status(await admin.change('post', path, {}), 409);
+  await assert.rejects(db.courseMediaUpload.update({ where: { id: receipt.id }, data: { approved_by: adminUser.id, approved_at: new Date() } }), /upload_approval_clean/);
+  for (const verdict of ['infected', 'scan_error', 'clean']) {
+    await db.courseMediaUpload.update({ where: { id: receipt.id }, data: { status: verdict, scanned_at: new Date(), scan_error: verdict === 'scan_error' ? 'scanner' : null } });
+    if (verdict !== 'clean') status(await admin.change('post', path, {}), 409);
+  }
+  const responses = await Promise.all([admin.change('post', path, {}), admin.change('post', path, {})]);
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 409]);
+  const saved = await db.courseMediaUpload.findUniqueOrThrow({ where: { id: receipt.id } });
+  assert.equal(saved.approved_by, adminUser.id); assert.ok(saved.approved_at); assert.equal(saved.status, 'clean');
+  const details = await instructor.get(`/admin/courses/${courseB.id}`); status(details, 200);
+  assert.equal(details.body.quarantine_uploads.find(r => r.id === receipt.id).approved_at, saved.approved_at.toISOString());
+  assert.equal(await db.auditEvent.count({ where: { action: 'media.upload_approved', actor_user_id: adminUser.id, target_ref: courseB.id } }), 1);
+  assert.equal(await db.mediaAsset.count(), assets);
 });
 
 test('a concurrent unassignment and edit serialize on the course and leave no subsequent access', async () => {
