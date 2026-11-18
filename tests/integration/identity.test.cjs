@@ -458,3 +458,46 @@ test('authentication rate limit fails closed if Redis is unavailable', async () 
     await assert.rejects(limiter.hit('test', 'identity', 1), error => error.getStatus?.() === 503);
   } finally { await limiter.onModuleDestroy(); }
 });
+
+test('customer support can find and block participant accounts without gaining staff access', async () => {
+  const staff = await register(address('customer-support')); await activate(staff.user);
+  const role = await db.role.findUniqueOrThrow({ where: { key: 'support' } });
+  await db.userRole.create({ data: { user_id: staff.user.id, role_id: role.id } });
+  const agent = staff.browser;
+  assert.equal((await login(agent, staff.user.email_original)).status, 202);
+  const setup = await agent.change('post', '/auth/mfa/enrollment/start', {});
+  const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(setup.body.secret) });
+  const confirmed = await agent.change('post', '/auth/mfa/enrollment/confirm', { code: totp.generate() });
+  assert.equal(confirmed.status, 200);
+
+  const { user, browser } = await register(address('customer-block'), 'Mara', 'Kundenbeispiel');
+  await activate(user); assert.equal((await login(browser, user.email_original)).status, 200);
+  const find = (query, status) => agent.change('post', '/admin/customers/search', { query, status });
+  const path = `/admin/customers/${user.id}/status`, block = { status: 'blocked', reason_code: 'security' };
+  assert.equal((await browser.change('post', '/admin/customers/search', { query: 'Mara' })).status, 403);
+  assert.equal((await browser.change('put', path, block)).status, 403);
+  assert.equal((await agent.get('/admin/users')).status, 403);
+  assert.equal((await find('x')).status, 422);
+  assert.deepEqual((await find('%%')).body.data, []);
+  assert.deepEqual((await find('customer-support')).body.data, []);
+  assert.deepEqual((await find('MARA Kundenbeispiel', 'active')).body.data, [{ id: user.id, first_name: 'Mara',
+    last_name: 'Kundenbeispiel', email_original: user.email_original, status: 'active' }]);
+  assert.equal((await agent.change('put', `/admin/customers/${staff.user.id}/status`, block)).status, 404);
+  assert.equal((await agent.change('put', path, block, { noCsrf: true })).status, 403);
+  assert.equal((await agent.change('put', path, { ...block, reason_code: 'other' })).status, 422);
+  await db.authSession.updateMany({ where: { user_id: staff.user.id }, data: { reauthenticated_at: null } });
+  assert.equal((await agent.change('put', path, block)).body.code, 'REAUTH_REQUIRED');
+  assert.equal((await agent.change('post', '/auth/reauth', { password: PASSWORD, recovery_code: confirmed.body.recovery_codes[0] })).status, 204);
+
+  assert.equal((await agent.change('put', path, block)).status, 200);
+  assert.equal((await browser.get('/me')).status, 401);
+  assert.equal((await login(new Browser(), user.email_original)).status, 401);
+  assert.equal((await find(user.email_original, 'blocked')).body.data[0].id, user.id);
+  assert.deepEqual((await find(user.email_original, 'active')).body.data, []);
+  const audit = await db.auditEvent.findFirstOrThrow({ where: { action: 'customer.blocked', target_ref: user.id } });
+  assert.equal(audit.actor_user_id, staff.user.id); assert.equal(audit.reason_code, 'security');
+  assert.deepEqual(audit.before_safe, { status: 'active' }); assert.deepEqual(audit.after_safe, { status: 'blocked' });
+  assert.equal((await agent.change('put', path, { status: 'active', reason_code: 'correction' })).status, 200);
+  assert.equal((await browser.get('/me')).status, 401, 'unblocking must not revive a revoked session');
+  assert.equal((await login(new Browser(), user.email_original)).status, 200);
+});
