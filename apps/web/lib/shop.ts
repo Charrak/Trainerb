@@ -42,7 +42,7 @@ export type OrderDetail = OrderSummary & { identity_kind?: 'account' | 'guest'; 
     resolved_at: string | null }[] };
 export type MyCourse = { course_id: string; slug: string; title: string; subtitle: string | null;
   duration_minutes: number | null; starts_at: string; ends_at: string | null; chapter_count: number;
-  completed_count: number };
+  completed_count: number; suspended: boolean };
 /** An issued invoice in the account overview; the document is one link away. */
 export type InvoiceSummary = { id: string; invoice_number: string; issued_at: string; order_id: string;
   order_number: string; total_gross_cents: string; currency: string; payment_state: string };

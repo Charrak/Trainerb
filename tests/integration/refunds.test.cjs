@@ -912,6 +912,14 @@ test('during a running chargeback the access can be paused but not revoked', asy
     { provider_dispute_id: providerDisputeId, amount_cents: '19900', status: 'open' });
   status(dispute, 201);
 
+  const courseId = await courseOf(order);
+  async function listedCourse() {
+    const list = await buyer.get('/me/courses');
+    status(list, 200);
+    return list.body.data.find(course => course.course_id === courseId);
+  }
+  assert.equal((await listedCourse()).suspended, false);
+
   // Ending the access now would be a verdict on a case without an outcome.
   await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
   const early = await admin.change('post', `/admin/disputes/${dispute.body.id}/access-decision`,
@@ -930,6 +938,11 @@ test('during a running chargeback the access can be paused but not revoked', asy
   const decision = await db.orderAccessDecision.findFirstOrThrow({ where: { dispute_id: dispute.body.id } });
   assert.equal(decision.decision, 'suspended');
 
+  const listed = await listedCourse();
+  assert.equal(listed.suspended, true);
+  const blocked = await buyer.get(`/me/courses/${listed.slug}`);
+  status(blocked, 403); assert.equal(blocked.body.code, 'ACCESS_SUSPENDED');
+
   // After the case is lost, revoking is allowed — now there is an outcome.
   await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
   status(await admin.change('post', `/admin/orders/${order.id}/disputes`,
@@ -941,6 +954,7 @@ test('during a running chargeback the access can be paused but not revoked', asy
   const revokedAccess = await db.courseAccess.findFirstOrThrow({ where: { order_id: order.id } });
   assert.ok(revokedAccess.revoked_at);
   assert.equal(revokedAccess.suspended_at, null);
+  assert.equal(await listedCourse(), undefined);
 });
 
 test('the decision reasons the API offers are the ones the database accepts', async () => {
