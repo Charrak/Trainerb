@@ -9,7 +9,7 @@ import { RateLimiter } from './limiter';
 import { Invoices } from './invoices';
 import { Refunds } from './refunds';
 import { Disputes } from './disputes';
-import { Withdrawals } from './withdrawals';
+import { Withdrawals, DECISION_REASONS } from './withdrawals';
 import { pdfResponse } from './invoice-response';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError, requireUuid } from './security';
@@ -294,6 +294,16 @@ export class CommerceAdminController {
   }
 
   // ---- Widerrufsvorgänge -------------------------------------------------
+  /**
+   * The decision vocabulary the back office offers, taken from the same table the
+   * API validates against — so the drop-down and the validator cannot drift.
+   */
+  @Get('admin/withdrawal-requests/decision-reasons') async withdrawalReasons(@Req() req: ApiRequest) {
+    await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage' });
+    return { data: Object.entries(DECISION_REASONS).map(([code, label]) => ({ code, label,
+      closes_without_order: ['order_not_found', 'identity_unconfirmed', 'duplicate_request'].includes(code) })) };
+  }
+
   @Get('admin/withdrawal-requests') async listWithdrawals(@Req() req: ApiRequest, @Query('status') status: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
     await this.sessions.require(req, { backoffice: true, permission: 'withdrawals.manage' });

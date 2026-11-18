@@ -92,6 +92,14 @@ Fulfillment ist ein gemeinsamer Pfad (`fulfilPaidOrder`) für Verwaltungsbestät
 
 Rechnungen werden in `apps/api/src/invoices.ts` ausgestellt und in `apps/api/src/invoice-pdf.ts` gerendert — ohne Fremdbibliothek, damit das Dokument auch in einer Umgebung ohne Netzzugang reproduzierbar bleibt. Der Renderer liest ausschließlich den Snapshot, ist damit eine reine Funktion und liefert für dieselbe Rechnung immer dieselben Bytes; ein Test vergleicht zwei Abrufe nach einer Änderung der Stellerdaten. Er kennt keine Steuersätze: `tax_category` wandert als Kennung in den Snapshot, das Dokument weist nur Bruttobeträge aus. Zeichenketten werden als WinAnsi-Bytes geschrieben (Klammern und Backslashes escaped, alles außerhalb WinAnsi wird zu `?`), sodass eine Rechnungsadresse das PDF nicht manipulieren kann. Der Download ist ein Blob-Abruf der Web-Oberfläche, weil die Datei eine Sitzung bzw. das Gast-Cookie braucht; `pdf_href` in der Bestellansicht ist bei unbezahlter Bestellung `null`.
 
+## 7.4d Sackgassen: drei Wege aus dem Stillstand
+
+Migration `202611150010_phase4_dead_ends` schließt drei Zustände, aus denen es vorher keinen Ausweg gab.
+
+- **Widerruf ohne Bestellung.** Annehmen verlangt die Bestellung (`withdrawal_requests_completed_needs_order`), Ablehnen nicht — aber nur mit einem Grund, der das erklärt (`trainerb_check_withdrawal_close`, `WITHDRAWAL_CLOSE_REASON`). `decision_reason` ist ein geschlossener Katalog (`withdrawal_requests_decision_reason_codes`), damit kein Freitext jeden Filter umgeht; die API liefert denselben Katalog unter `GET /admin/withdrawal-requests/decision-reasons`.
+- **Laufender Streitfall blockiert das Fulfillment.** `fulfilPaidOrder` prüft zuerst auf `warning`/`open` und **gibt ein Ergebnis zurück** statt zu werfen: `blocked_by_dispute`. Ein `throw` hätte die Zahlungsbuchung derselben Transaktion mit zurückgerollt und den Eingang unsichtbar gemacht. Die Bestellung wird `blocked`, das Audit nennt den Fall, die „Zugang freigeschaltet“-Mail entfällt. `disputes.record` gibt einen geparkten Auftrag frei, sobald der Fall entschieden ist und kein offener mehr bleibt.
+- **Vorläufige Zugangsentscheidung.** Bei laufendem Fall ist nur `kept` oder `suspended` möglich; `kept` hebt eine bestehende Sperre **nicht** auf, sondern hält sie, und suspendiert einen noch nicht begonnenen Grant. `revoked` bleibt dem entschiedenen Fall vorbehalten.
+
 ## 7.4c Streitfälle: die Bank bewegt das Geld, nicht wir
 
 Migration `202611150009_phase4_disputes` legt `disputes` und `withdrawal_requests` an; beide Bereiche liegen in `apps/api/src/disputes.ts` und `apps/api/src/withdrawals.ts`.

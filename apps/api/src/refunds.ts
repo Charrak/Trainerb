@@ -372,9 +372,14 @@ export class Refunds {
    * started yet is suspended rather than revoked, because the money question may
    * still be clarified and the grant is not worthless — a cancelled future grant
    * cannot be resumed as easily as a suspended one.
+   *
+   * A **provisional** decision (a running chargeback) is either `kept` or
+   * `suspended`, and it always suspends an exception: while the bank decides, the
+   * money may be gone tomorrow, so no new access may start. Only a resolved case
+   * may revoke.
    */
   async decideAccessFor(ctx: SessionContext, origin: { refundId?: string; disputeId?: string,
-    orderId: string }, input: unknown) {
+    orderId: string }, input: unknown, options: { provisional?: boolean } = {}) {
     const body = bodyObject(input, ['decision', 'reason', 'access_ids']);
     const decision = body.decision;
     if (decision !== 'revoked' && decision !== 'kept' && decision !== 'suspended') {
@@ -404,9 +409,17 @@ export class Refunds {
           refund_id: origin.refundId ?? null, dispute_id: origin.disputeId ?? null, access_id: access.id,
           decision, reason, decided_by: ctx.user.id, decided_at: now } });
         if (decision === 'kept') {
-          if (access.revoked_at || access.suspended_at) {
+          // `kept` lifts a previous suspension only once the case is over. During
+          // a running case it records the intent to keep the access but leaves the
+          // suspension in place: the money question is still open, so nothing
+          // starts in the meantime.
+          if (!options.provisional && (access.revoked_at || access.suspended_at)) {
             await tx.courseAccess.update({ where: { id: access.id },
               data: { suspended_at: null, suspend_reason: null } });
+          } else if (options.provisional && !access.revoked_at && !access.suspended_at &&
+                     access.starts_at > now) {
+            await tx.courseAccess.update({ where: { id: access.id },
+              data: { suspended_at: now, suspend_reason: reason } });
           }
         } else if (decision === 'suspended') {
           if (!access.revoked_at) {

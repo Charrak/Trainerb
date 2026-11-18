@@ -548,10 +548,12 @@ export class Shop {
       // A guest order gets its account here, inside the same transaction: money
       // is real, so the buyer may be linked; the order stays unfulfilled if the
       // account is blocked and a human has to decide.
-      await fulfilPaidOrder(tx, orderId, this.outbox);
+      const outcome = await fulfilPaidOrder(tx, orderId, this.outbox);
       await this.audit(tx, ctx.user.id, 'order.payment_confirmed', 'order', orderId, { reference, note: note || null });
       const paid = await tx.order.findUniqueOrThrow({ where: { id: orderId }, select: { user_id: true } });
-      if (order.buyer_email_original && paid.user_id) {
+      // The confirmation mail claims the access is unlocked. While a chargeback
+      // is open that is not true, so it is not sent; the case has its own mail.
+      if (outcome.status === 'fulfilled' && order.buyer_email_original && paid.user_id) {
         const buyer = await tx.user.findUnique({ where: { id: paid.user_id }, select: { first_name: true } });
         await this.outbox.notify(tx, paid.user_id, order.buyer_email_original,
           buyer?.first_name || order.guest_participant_first_name || 'du', 'order_paid',

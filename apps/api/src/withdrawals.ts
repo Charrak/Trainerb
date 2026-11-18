@@ -14,6 +14,30 @@ const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
 const CASE_STATUSES = ['received', 'identity_check', 'in_progress', 'completed', 'rejected'] as const;
 
 /**
+ * The only decision codes a closed case may carry.
+ *
+ * A free-text reason would be a data-quality trap: every filter, report and
+ * export would quietly miss the cases whose reason happened to be spelled
+ * differently. The database enforces the same list.
+ */
+export const DECISION_REASONS = {
+  withdrawal_accepted: 'Widerruf angenommen',
+  withdrawal_declined: 'Widerruf abgelehnt',
+  order_not_found: 'Keine passende Bestellung auffindbar',
+  outside_statutory_period: 'Frist abgelaufen',
+  digital_content_started: 'Digitale Inhalte wurden bereits begonnen',
+  duplicate_request: 'Doppelter Vorgang',
+  identity_unconfirmed: 'Adresse blieb unbestätigt',
+} as const;
+
+const isDecisionReason = (value: string): boolean =>
+  (Object.keys(DECISION_REASONS) as string[]).includes(value);
+
+/** Reasons that may close a case that has no order — the honest way out. */
+const CLOSABLE_WITHOUT_ORDER: readonly string[] =
+  ['order_not_found', 'identity_unconfirmed', 'duplicate_request'];
+
+/**
  * Withdrawals (Widerruf).
  *
  * This is the weakest input in the system: no session, an unverified address and
@@ -238,8 +262,11 @@ export class Withdrawals {
     }
     const reason = body.decision_reason === undefined || body.decision_reason === null ? null
       : String(body.decision_reason).trim();
-    if (reason !== null && !/^[a-z_]{3,60}$/.test(reason)) {
-      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { decision_reason: 'Bitte einen Grund angeben.' });
+    if (reason !== null && !isDecisionReason(reason)) {
+      // The catalogue is the API contract; an unknown code is a client bug, not a
+      // note. Anything a person needs to say belongs in `message`, not here.
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+        { decision_reason: 'Unbekannter Entscheidungsgrund.' });
     }
     if ((status === 'completed' || status === 'rejected') && reason === null) {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
@@ -279,9 +306,17 @@ export class Withdrawals {
       const now = new Date();
       const nextStatus = status ?? (verifiedAt && item.status === 'received' ? 'identity_check' : item.status);
       const closing = nextStatus === 'completed' || nextStatus === 'rejected';
-      if (closing && orderId === null) {
+      // Accepting a withdrawal always names the purchase it cancels. Declining
+      // does not: "I cannot find a matching order" is a legitimate outcome, and
+      // without it such a case would sit in the queue forever. The database
+      // limits which reasons may close a case without an order.
+      if (closing && orderId === null && nextStatus === 'completed') {
         throw apiError(409, 'WITHDRAWAL_ORDER_REQUIRED',
-          'Ohne zugeordnete Bestellung kann der Vorgang nicht abgeschlossen werden.');
+          'Ein angenommener Widerruf braucht die zugehörige Bestellung. Ohne sie lässt er sich nur ablehnen.');
+      }
+      if (closing && orderId === null && reason !== null && !CLOSABLE_WITHOUT_ORDER.includes(reason)) {
+        throw apiError(409, 'WITHDRAWAL_CLOSE_REASON',
+          'Ohne Bestellung lässt sich der Vorgang nur mit einem Grund schließen, der das erklärt.');
       }
       await tx.withdrawalRequest.update({ where: { id: caseId }, data: { status: nextStatus,
         order_id: orderId, identity_verified_at: verifiedAt,

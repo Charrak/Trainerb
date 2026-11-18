@@ -303,7 +303,7 @@ function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, rel
   const [amount, setAmount] = useState('');
   const [status, setStatus] = useState<'warning' | 'open' | 'won' | 'lost' | 'closed'>('open');
   const [reasonCode, setReasonCode] = useState('product_not_received');
-  const [decision, setDecision] = useState<'kept' | 'revoked'>('kept');
+  const [decision, setDecision] = useState<'kept' | 'suspended' | 'revoked'>('kept');
   const [decisionReason, setDecisionReason] = useState('chargeback_lost');
   if (!canHandleDisputes(profile)) return null;
   const disputes = order.disputes ?? [];
@@ -356,20 +356,26 @@ function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, rel
       <button className="button button-secondary" disabled={!!busy || !providerDisputeId || !amount}>
         {busy === 'dispute' ? 'Bitte warten …' : 'Streitfall erfassen'}</button>
     </form>
-    {canDecideAccess(profile) && disputes.some(dispute => ['won', 'lost', 'closed'].includes(dispute.status)) &&
-      <div className="stack-form">
+    {canDecideAccess(profile) && disputes.length > 0 && <div className="stack-form">
       <h4 className="detail-subheading">Zugang nach Rückbuchung</h4>
-      <p className="muted">Der Ausgang des Falls entscheidet nichts über den Zugang. {open.length
-        ? 'Solange ein Fall offen ist, lässt sich hier nichts festhalten.'
-        : 'Ein gewonnener Fall erlaubt keinen Entzug.'}</p>
+      <p className="muted">Der Ausgang des Falls entscheidet nichts über den Zugang.
+        {open.length
+          ? ' Solange der Fall läuft, lässt sich der Zugang nur vorläufig sperren — nicht entziehen.'
+          : ' Ein gewonnener Fall erlaubt keinen Entzug.'}</p>
       <Field label="Entscheidung" id="dispute-decision"><select id="dispute-decision" value={decision}
         onChange={e => setDecision(e.target.value as typeof decision)}>
         <option value="kept">Zugang bleibt bestehen</option>
-        <option value="revoked">Zugang entziehen</option></select></Field>
+        {open.length > 0 && <option value="suspended">Zugang vorläufig sperren</option>}
+        {open.length === 0 && <option value="revoked">Zugang entziehen</option>}</select></Field>
       <Field label="Begründung" id="dispute-decision-reason"><input id="dispute-decision-reason"
         value={decisionReason} onChange={e => setDecisionReason(e.target.value)} maxLength={60}
         pattern="[a-z_]{3,60}" required/></Field>
-      {['won', 'lost', 'closed'].map(value => { const settled = disputes.filter(dispute => dispute.status === value);
+      {open.length > 0 && <button type="button" className="button button-secondary" disabled={!!busy}
+        onClick={() => void send('dispute-decision', `/admin/disputes/${open[open.length - 1].id}/access-decision`,
+          { decision: decision === 'suspended' ? 'suspended' : 'kept', reason: decisionReason },
+          'Vorläufige Entscheidung festgehalten.')}>
+        {busy === 'dispute-decision' ? 'Bitte warten …' : 'Vorläufige Entscheidung festhalten (Fall läuft)'}</button>}
+      {open.length === 0 && ['won', 'lost', 'closed'].map(value => { const settled = disputes.filter(dispute => dispute.status === value);
         if (!settled.length) return null;
         return <button key={value} type="button" className="button button-secondary" disabled={!!busy}
           onClick={() => void send('dispute-decision', `/admin/disputes/${settled[settled.length - 1].id}/access-decision`,

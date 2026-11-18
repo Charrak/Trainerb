@@ -6,6 +6,8 @@ import { Sessions, type SessionContext } from './sessions';
 import { apiError, bodyObject, requireUuid } from './security';
 import { getConfig } from './config';
 import { Refunds } from './refunds';
+import { Outbox } from './outbox';
+import { fulfilPaidOrder } from './fulfilment';
 
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
 
@@ -32,7 +34,7 @@ const DISPUTE_STATUSES = ['warning', 'open', 'won', 'lost', 'closed'] as const;
 @Injectable()
 export class Disputes {
   constructor(private readonly db: Database, private readonly sessions: Sessions,
-              private readonly refunds: Refunds) {}
+              private readonly refunds: Refunds, private readonly outbox: Outbox) {}
 
   private async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     try { return await this.db.$transaction(work, { timeout: 20_000 }); } catch (error) { this.dbError(error); }
@@ -71,6 +73,36 @@ export class Disputes {
     if (ctx.session.kind !== 'backoffice' || !ctx.permissionKeys.has(permission)) {
       throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
     }
+  }
+
+  /**
+   * Give a parked order its access back once the case that blocked it is over.
+   *
+   * Called after a case is resolved. It only touches orders that are actually
+   * `blocked` and paid, and it never resurrects a cancelled or charged-back one:
+   * a lost case leaves the order `charged_back`, and that is a different fact.
+   */
+  private async releaseBlockedOrder(tx: Prisma.TransactionClient, orderId: string) {
+    const order = await tx.order.findUnique({ where: { id: orderId },
+      select: { payment_state: true, fulfillment_state: true } });
+    if (!order || order.payment_state !== 'paid' || order.fulfillment_state !== 'blocked') return;
+    const stillOpen = await this.pendingFor(tx, orderId);
+    if (stillOpen) return;
+    await fulfilPaidOrder(tx, orderId, this.outbox);
+  }
+
+  /**
+   * The case that currently stands between a paid order and its access, if any.
+   *
+   * `warning` and `open` mean the bank is still deciding. Granting access then
+   * would hand out a course for money that may be gone tomorrow, so fulfilment
+   * refuses instead of guessing. A resolved case never blocks: `won` means the
+   * money stayed, and after `lost` the money is a bookkeeping fact, not a reason
+   * to withhold what was bought.
+   */
+  async pendingFor(tx: Prisma.TransactionClient | Database, orderId: string) {
+    return tx.dispute.findFirst({ where: { order_id: orderId, status: { in: ['warning', 'open'] } },
+      select: { id: true, status: true, provider_dispute_id: true, amount_cents: true } });
   }
 
   /**
@@ -122,11 +154,20 @@ export class Disputes {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
       const order = await tx.order.findUnique({ where: { id: orderId }, include: { attempts: true } });
       if (!order) throw missing();
-      const attempt = order.attempts.find(candidate => candidate.status === 'succeeded');
-      if (!attempt) throw apiError(409, 'PAYMENT_NOT_TRACKED', 'Zu dieser Bestellung liegt kein bestätigter Zahlungsversuch vor.');
-      // A dispute is only meaningful for money that the provider actually holds.
+      // A case can be announced *before* the money is booked — the bank may know
+      // about a problem we have not confirmed yet. What cannot happen is a case
+      // about a payment that does not exist at all.
+      const attempt = order.attempts.find(candidate => candidate.status === 'succeeded') ??
+        order.attempts.find(candidate => candidate.status === 'pending' || candidate.status === 'created');
+      if (!attempt) throw apiError(409, 'PAYMENT_NOT_TRACKED', 'Zu dieser Bestellung liegt kein Zahlungsversuch vor.');
+      if (attempt.status !== 'succeeded' && order.payment_state !== 'awaiting') {
+        throw apiError(409, 'ORDER_NOT_DISPUTABLE', 'Für diese Bestellung ist kein Streitfall möglich.');
+      }
+      // A dispute is only meaningful for money that the provider holds or is
+      // about to hold.
       if (order.payment_state !== 'paid' && order.payment_state !== 'refunded' &&
-          order.payment_state !== 'charged_back' && order.payment_state !== 'review') {
+          order.payment_state !== 'charged_back' && order.payment_state !== 'review' &&
+          order.payment_state !== 'awaiting') {
         throw apiError(409, 'ORDER_NOT_DISPUTABLE', 'Für diese Bestellung ist kein Streitfall möglich.');
       }
       const environment = getConfig().appEnv === 'production' ? 'live' : 'test';
@@ -161,6 +202,13 @@ export class Disputes {
           currency: order.currency, status, reason_code: reasonCode, opened_at: new Date(), resolved_at: resolvedAt } });
       }
 
+      // Money can only be gone if it ever arrived. A case reported before the
+      // transfer is booked stays a notice; it becomes money gone at the moment
+      // the payment exists.
+      if (status === 'lost' && order.payment_state === 'awaiting') {
+        throw apiError(409, 'ORDER_NOT_PAID',
+          'Der Zahlungseingang ist noch nicht gebucht. Der Fall bleibt angekündigt, bis die Zahlung verbucht ist.');
+      }
       // A lost case is money gone: the order shows it, and the payment evidence
       // stays. `refunded` is reserved for money we returned ourselves.
       if (status === 'lost' && order.payment_state !== 'charged_back') {
@@ -182,6 +230,8 @@ export class Disputes {
         action: existing ? 'dispute.updated' : 'dispute.opened', target_type: 'dispute', target_ref: disputeId,
         after_safe: { order_id: orderId, status, amount_cents: amountText, reason_code: reasonCode,
           previous_status: existing?.status ?? null } } });
+      // A resolved case releases an order that was parked because of it.
+      if (resolvedAt) await this.releaseBlockedOrder(tx, orderId);
       return this.view(tx, disputeId);
     });
   }
@@ -250,18 +300,24 @@ export class Disputes {
     const dispute = await this.db.dispute.findUnique({ where: { id: disputeId },
       select: { order_id: true, status: true } });
     if (!dispute) throw missing();
-    if (dispute.status !== 'lost' && dispute.status !== 'won' && dispute.status !== 'closed') {
-      throw apiError(409, 'DISPUTE_NOT_RESOLVED',
-        'Erst nach dem Ausgang des Streitfalls wird über den Zugang entschieden.');
-    }
     const body = bodyObject(input, ['decision', 'reason', 'access_ids']);
+    // While the bank is still deciding, the only honest access decision is a
+    // provisional one: keep it running or pause it. Ending it (`revoked`) would
+    // be a final judgement on a case that has no outcome yet — and a chargeback
+    // that is later won would have cost the learner the course for nothing.
+    const provisional = dispute.status !== 'lost' && dispute.status !== 'won' && dispute.status !== 'closed';
+    if (provisional && body.decision === 'revoked') {
+      throw apiError(409, 'DISPUTE_NOT_RESOLVED',
+        'Solange der Streitfall läuft, lässt sich der Zugang nur vorläufig sperren, nicht entziehen.');
+    }
     if (dispute.status === 'won' && body.decision === 'revoked') {
       // We won: the money stays. Ending the access would need a different reason
       // than the chargeback, and that is not what this endpoint records.
       throw apiError(409, 'DISPUTE_WON',
         'Ein gewonnener Streitfall ist kein Grund, den Zugang zu entziehen.');
     }
-    await this.refunds.decideAccessFor(ctx, { disputeId, orderId: dispute.order_id }, input);
+    await this.refunds.decideAccessFor(ctx, { disputeId, orderId: dispute.order_id }, input,
+      { provisional });
     return this.view(this.db, disputeId);
   }
 }
