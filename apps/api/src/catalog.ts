@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
+import type { quarantineFile } from './quarantine';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { apiError, bodyObject, requireUuid } from './security';
@@ -144,6 +145,21 @@ export class Catalog {
   }
   private async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     try { return await this.db.$transaction(work, { timeout: 15_000 }); } catch (error) { if (uniqueFailure(error)) throw conflict(); throw error; }
+  }
+
+  async quarantineUpload(ctx: SessionContext, courseId: string, receive: () => ReturnType<typeof quarantineFile>) {
+    requireUuid(courseId);
+    await this.transaction(tx => this.lockCourse(tx, ctx, courseId, 'media.upload'));
+    // Never hold row locks during network I/O. A revoked assignment must also
+    // prevent the receipt from being committed after a slow upload.
+    const meta = await receive();
+    return this.transaction(async tx => {
+      await this.lockCourse(tx, ctx, courseId, 'media.upload');
+      const row = await tx.courseMediaUpload.create({ data: { id: uuidv7(), course_id: courseId, uploaded_by: ctx.user.id, ...meta },
+        select: { id: true, status: true } });
+      await this.audit(tx, ctx, 'media.upload_quarantined', courseId, { upload_id: row.id, size_bytes: meta.size_bytes });
+      return row;
+    });
   }
 
   async publicCourses(limitInput: unknown, cursorInput: unknown) {

@@ -94,11 +94,29 @@ export function AdminCourseDetail({ id }: { id: string }) {
         {canEdit && <AddModule key={reloadKey} version={version} disabled={busy || outdated} mutate={mutate}/>}
       </section>
       </> : null}
+      {profile?.permissions.includes('media.upload') && <QuarantineUpload key={course.id} courseId={course.id} mutate={mutate} disabled={busy || outdated}/>}
       <CoursePublication courseId={course.id} version={version && { id: version.id, revision: version.revision, version: version.version }}
         canPublish={canPublish} onChanged={() => void reload()}/>
       {canAssign && <Staff course={course} canReadUsers={profile?.permissions.includes('users.read') || false} disabled={busy || outdated} mutate={mutate}/>}
     </div>}
   </div>;
+}
+
+function QuarantineUpload({ courseId, mutate, disabled }: { courseId: string; mutate: Mutate; disabled: boolean }) {
+  const [error, setError] = useState('');
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = event.currentTarget;
+    const file = new FormData(form).get('file');
+    if (!(file instanceof File) || !file.size || file.size > 5 * 1024 * 1024) { setError('Bitte eine Datei bis 5 MiB auswählen.'); return; }
+    setError('');
+    const saved = await mutate(`/admin/courses/${courseId}/media/uploads`, 'POST', file, 'Datei in Quarantäne gespeichert. Sie ist nicht freigegeben.');
+    if (saved.ok) form.reset();
+  }
+  return <section className="dashboard-card"><h2>Datei in Quarantäne hochladen</h2>
+    <p>PNG, JPEG oder PDF bis 5 MiB. Die Datei bleibt privat und kann noch nicht im Kurs verwendet werden.</p>
+    <form className="stack-form" onSubmit={submit}><Field id="course-upload" label="Datei"><input type="file" id="course-upload" name="file"
+      accept=".png,.jpg,.jpeg,.pdf" required disabled={disabled}/></Field><Notice message={error}/>
+      <button className="button button-secondary" disabled={disabled}>In Quarantäne hochladen</button></form></section>;
 }
 
 function VersionForm({ version, disabled, mutate }: { version: Version; disabled: boolean; mutate: Mutate }) {

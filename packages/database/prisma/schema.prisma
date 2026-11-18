@@ -23,6 +23,7 @@ model User {
   created_at        DateTime  @default(now()) @db.Timestamptz(6)
   updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
+  quarantine_uploads CourseMediaUpload[]
   uploaded_media   MediaAsset[]
   billing_profiles BillingProfile[]
   roles            UserRole[]             @relation("RoleSubject")
@@ -316,6 +317,24 @@ model AutomationJobAttempt {
 }
 
 // Source-specific and publication constraints are enforced in SQL.
+model CourseMediaUpload {
+  id            String   @id @db.Uuid
+  course_id     String   @db.Uuid
+  uploaded_by   String   @db.Uuid
+  object_key    String   @unique @db.Uuid
+  original_name String   @db.Text
+  mime_detected String   @db.Text
+  size_bytes    Int
+  sha256        Bytes
+  status        String   @default("pending_scan") @db.Text
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  course        Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  uploader      User     @relation(fields: [uploaded_by], references: [id], onDelete: Restrict)
+  @@index([course_id])
+  @@index([uploaded_by])
+  @@map("course_media_uploads")
+}
+
 model MediaAsset {
   id                String    @id @db.Uuid
   source            String    @db.Text
@@ -353,6 +372,7 @@ model Course {
   publications CoursePublication[]
   order_item_courses OrderItemCourse[]
   accesses CourseAccess[]
+  quarantine_uploads CourseMediaUpload[]
   @@map("courses")
 }
 

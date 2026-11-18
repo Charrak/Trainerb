@@ -25,6 +25,7 @@ export type Config = {
   smtpPassword?: string;
   commonPasswords: Set<string>;
   trustProxy: string | false;
+  quarantineStore?: Config['mediaStore'];
   mediaStore?: { origin: string; bucket: string; region: string; accessKeyId: string; secretAccessKey: string };
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
@@ -105,6 +106,15 @@ export function getConfig(): Config {
     mediaStore = { origin: origin.origin, bucket, region, accessKeyId: required('MEDIA_S3_ACCESS_KEY_ID'),
       secretAccessKey: required('MEDIA_S3_SECRET_ACCESS_KEY') };
   }
+  let quarantineStore: Config['mediaStore'];
+  if (['BUCKET', 'ACCESS_KEY_ID', 'SECRET_ACCESS_KEY'].some(k => process.env[`MEDIA_QUARANTINE_${k}`])) {
+    const bucket = required('MEDIA_QUARANTINE_BUCKET'), accessKeyId = required('MEDIA_QUARANTINE_ACCESS_KEY_ID');
+    if (!mediaStore || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) ||
+        bucket === mediaStore.bucket || accessKeyId === mediaStore.accessKeyId) {
+      throw new Error('Quarantine requires a separate private bucket and writer identity on the media store.');
+    }
+    quarantineStore = { ...mediaStore, bucket, accessKeyId, secretAccessKey: required('MEDIA_QUARANTINE_SECRET_ACCESS_KEY') };
+  }
   const paymentEnvironment: 'test' | 'live' = appEnv === 'production' ? 'live' : 'test';
   cached = {
     appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
@@ -113,7 +123,7 @@ export function getConfig(): Config {
     mailFrom: required('MAIL_FROM'), smtpHost, smtpPort, smtpSecure,
     smtpUser: process.env.SMTP_USER || undefined, smtpPassword: process.env.SMTP_PASSWORD || undefined,
     commonPasswords, trustProxy: process.env.TRUST_PROXY_CIDRS || false,
-    stripeSecretKey, stripeWebhookSecret, stripePublishableKey, paymentEnvironment, mediaStore,
+    stripeSecretKey, stripeWebhookSecret, stripePublishableKey, paymentEnvironment, mediaStore, quarantineStore,
   };
   return cached;
 }

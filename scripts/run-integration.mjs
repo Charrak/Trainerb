@@ -28,6 +28,8 @@ const env = { ...process.env, APP_ENV: 'test', NODE_ENV: 'test', DATABASE_URL: d
   MAIL_FROM: 'test@example.invalid', SMTP_HOST: '127.0.0.1', SMTP_PORT: '1025', SMTP_SECURE: 'false',
   TRAINERB_EMBEDDED_PREVIEW_COOKIES: 'false', TRAINERB_DESTRUCTIVE_TEST_DATABASE: 'confirmed' };
 delete env.DATABASE_MIGRATION_URL;
+// Do not inherit operator storage credentials from .env into a destructive test.
+for (const key of Object.keys(env)) if (/^MEDIA_(?:QUARANTINE|S3)_/.test(key)) env[key] = '';
 for (const key of ['SESSION_HMAC_KEY', 'CSRF_HMAC_KEY', 'TOKEN_HMAC_KEY', 'DATA_ENCRYPTION_KEY', 'AUDIT_PSEUDONYMIZATION_KEY']) {
   env[key] = randomBytes(32).toString('base64');
 }
