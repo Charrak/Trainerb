@@ -373,7 +373,7 @@ test('lesson edits serialize, preserve unknown formats and prevent accidental ch
   status(nonempty, 409); assert.equal(nonempty.body.code, 'CHAPTER_NOT_EMPTY');
   assert.ok(await db.courseChapter.findUnique({ where: { id: chapter.id } }));
 
-  // The DB only admits version-bound text rows. A future/unrecognized text
+  // Text blocks must match their version and chapter. A future/unrecognized text
   // shape, if present, must remain read-only instead of being overwritten.
   const unknownId = randomUUID();
   const unknown = { id: unknownId, course_version_id: course.version_id, chapter_id: chapter.id, kind: 'text', position: 99,
@@ -646,6 +646,21 @@ test('publication requires a fresh admin and a complete draft; published version
     subtitle: 'Synthetischer Untertitel', duration_minutes: 30 }), 200);
   status(await releaseAdmin.change('post', `/admin/course-chapters/${chapterResponse.body.id}/contents`,
     { block: { kind: 'paragraph', text: 'Synthetischer Lehrtext.' } }), 201);
+  // Store only references: the public cover and the private lesson asset
+  // are intentionally not interchangeable, even when both are ready images.
+  const makeImage = visibility => db.mediaAsset.create({ data: { id: uuidv7(), source: 's3', storage_key: randomUUID(),
+    original_name: 'bild.jpg', mime_detected: 'image/jpeg', size_bytes: 80n, visibility, status: 'ready' } });
+  const cover = await makeImage('public'), lesson = await makeImage('private');
+  const setCover = id => db.courseVersion.update({ where: { id: course.version_id }, data: { cover_media_id: id } });
+  await assert.rejects(setCover(lesson.id), /COURSE_MEDIA_UNAVAILABLE/); await setCover(cover.id);
+  const mediaRow = { id: uuidv7(), course_version_id: course.version_id, chapter_id: chapterResponse.body.id,
+    kind: 'image', title: 'Lernbild', position: 77, media_asset_id: lesson.id };
+  await assert.rejects(db.chapterContent.create({ data: { ...mediaRow, kind: 'video' } }), /COURSE_MEDIA_UNAVAILABLE/);
+  await assert.rejects(db.chapterContent.create({ data: { ...mediaRow, media_asset_id: cover.id } }), /COURSE_MEDIA_UNAVAILABLE/);
+  await db.chapterContent.create({ data: mediaRow });
+  assert.ok((await releaseAdmin.get(`/admin/courses/${course.id}/publication`)).body.readiness
+    .some(reason => reason.code === 'MEDIA_DELIVERY_NOT_IMPLEMENTED'));
+  await db.chapterContent.delete({ where: { id: mediaRow.id } });
   assert.deepEqual((await releaseAdmin.get(`/admin/courses/${course.id}/publication`)).body.readiness, []);
   status(await releaseAdmin.change('post', '/auth/reauth', { password, recovery_code: releaseRecovery[1] }), 204);
   const published = await releaseAdmin.change('post', `/admin/courses/${course.id}/publish`,
@@ -670,11 +685,23 @@ test('publication requires a fresh admin and a complete draft; published version
 
   // A new draft is copied from the published version and stays editable.
   status(await releaseAdmin.change('post', '/auth/reauth', { password, recovery_code: releaseRecovery[3] }), 204);
+  // Simulate a published media row; the current release API deliberately
+  // cannot publish chapter media until there is an authorized learner route.
+  await db.chapterContent.create({ data: mediaRow });
+  await db.mediaAsset.update({ where: { id: lesson.id }, data: { status: 'quarantined' } });
+  const failedCopy = await releaseAdmin.change('post', `/admin/courses/${course.id}/versions`, {});
+  status(failedCopy, 409); assert.equal(failedCopy.body.code, 'COURSE_MEDIA_UNAVAILABLE');
+  assert.equal(await db.courseVersion.count({ where: { course_id: course.id, state: 'draft' } }), 0);
+  await db.mediaAsset.update({ where: { id: lesson.id }, data: { status: 'ready' } });
   const draft = await releaseAdmin.change('post', `/admin/courses/${course.id}/versions`, {});
   status(draft, 201); assert.equal(draft.body.version, 2);
   const detail = await releaseAdmin.get(`/admin/courses/${course.id}`);
   const copy = detail.body.versions.find(item => item.id === draft.body.version_id);
-  assert.equal(copy.modules.length, 1); assert.equal(copy.modules[0].chapters[0]._count.contents, 1);
+  assert.equal(copy.modules.length, 1); assert.equal(copy.modules[0].chapters[0]._count.contents, 2);
+  assert.equal((await db.courseVersion.findUniqueOrThrow({ where: { id: copy.id } })).cover_media_id, cover.id);
+  const copiedMedia = await db.chapterContent.findFirstOrThrow({ where: { course_version_id: copy.id, kind: 'image' } });
+  assert.equal(copiedMedia.media_asset_id, lesson.id); assert.notEqual(copiedMedia.id, mediaRow.id);
+  assert.equal(copiedMedia.body, null); assert.equal(copiedMedia.position, mediaRow.position);
   const copiedText = await releaseAdmin.get(`/admin/course-chapters/${copy.modules[0].chapters[0].id}/contents`);
   assert.equal(copiedText.body.data[0].body.blocks[0].text, 'Synthetischer Lehrtext.');
   assert.notEqual(copiedText.body.data[0].id, (await db.chapterContent.findFirstOrThrow({ where: { course_version_id: course.version_id } })).id);

@@ -44,6 +44,7 @@ export class Publication {
   /** Translate a database guard into a stable, safe API error. */
   private dbError(error: unknown): never {
     const message = error instanceof Error ? error.message : '';
+    if (message.includes('COURSE_MEDIA_UNAVAILABLE')) throw apiError(409, 'COURSE_MEDIA_UNAVAILABLE', 'Ein verknüpftes Medium ist nicht mehr freigegeben oder passt nicht zur Verwendung.');
     if (message.includes('PRODUCT_INCOMPLETE')) throw apiError(409, 'PRODUCT_INCOMPLETE', 'Ein aktives Produkt braucht vollständige, veröffentlichte Kurszuordnungen (Einzelprodukt: genau ein Kurs, Paket: mindestens zwei verschiedene).');
     if (message.includes('COURSE_STILL_IN_ACTIVE_PRODUCT')) throw apiError(409, 'COURSE_STILL_IN_ACTIVE_PRODUCT', 'Der Kurs wird noch von einem aktiven Produkt verwendet. Deaktiviere das Produkt zuerst.');
     if (message.includes('PRICE_PRODUCT_INACTIVE')) throw apiError(409, 'PRICE_PRODUCT_INACTIVE', 'Bitte aktiviere zuerst das Produkt.');
@@ -71,6 +72,13 @@ export class Publication {
         include: { _count: { select: { contents: true } } } } } } } });
     if (!version) throw missing();
     const blockers: PublicationBlocker[] = [];
+    if (version.cover_media_id && !await tx.mediaAsset.count({ where: { id: version.cover_media_id,
+      status: 'ready', visibility: 'public', mime_detected: { startsWith: 'image/' } } })) {
+      blockers.push({ code: 'COURSE_MEDIA_UNAVAILABLE', message: 'Das Cover ist nicht als öffentliches Bild freigegeben.' });
+    }
+    if (await tx.chapterContent.count({ where: { course_version_id: versionId, media_asset_id: { not: null } } })) {
+      blockers.push({ code: 'MEDIA_DELIVERY_NOT_IMPLEMENTED', message: 'Kapitelmedien können noch nicht im Lernbereich ausgeliefert werden.' });
+    }
     const modules = version.modules.length;
     const chapters = version.modules.reduce((sum, module) => sum + module.chapters.length, 0);
     if (!modules) blockers.push({ code: 'NO_MODULES', message: 'Der Entwurf enthält keine Module.' });
@@ -188,7 +196,7 @@ export class Publication {
       const latest = await tx.courseVersion.findFirst({ where: { course_id: courseId }, orderBy: { version: 'desc' }, select: { version: true } });
       const versionId = uuidv7(), nextVersion = (latest?.version ?? 0) + 1;
       await tx.courseVersion.create({ data: { id: versionId, course_id: courseId, version: nextVersion, state: 'draft',
-        title: published.title, subtitle: published.subtitle, description: published.description as Prisma.InputJsonValue,
+        cover_media_id: published.cover_media_id, title: published.title, subtitle: published.subtitle, description: published.description as Prisma.InputJsonValue,
         duration_minutes: published.duration_minutes, default_access_days: published.default_access_days,
         chapter_completion_mode: published.chapter_completion_mode, expected_module_count: published.expected_module_count,
         expected_chapter_count: published.expected_chapter_count, expected_exams_per_chapter: published.expected_exams_per_chapter,
@@ -205,6 +213,11 @@ export class Publication {
             title: chapter.title, summary: chapter.summary, estimated_minutes: chapter.estimated_minutes, position: chapter.position } });
           for (const content of chapter.contents) {
             const contentId = uuidv7();
+            if (content.media_asset_id) {
+              await tx.chapterContent.create({ data: { id: contentId, course_version_id: versionId, chapter_id: chapterId,
+                kind: content.kind, title: content.title, position: content.position, media_asset_id: content.media_asset_id } });
+              continue;
+            }
             const body = content.body as Prisma.JsonObject;
             const blocks = Array.isArray(body.blocks) ? body.blocks : [];
             // The block id inside the document must stay identical to the row id.
