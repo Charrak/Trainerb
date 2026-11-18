@@ -87,6 +87,15 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Test the scan protocol against an isolated ClamAV daemon
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clamav-daemon
+          # Run as the unprivileged runner with only the temporary test DB/socket,
+          # independently of the distribution service and its system paths.
+          install -m 755 /usr/sbin/clamd "$RUNNER_TEMP/clamd-test"
+          TEST_CLAMD_BINARY="$RUNNER_TEMP/clamd-test" node --test tests/scanner/clamd.test.cjs
+
       - name: Install pinned S3 test gateway
         working-directory: ${{ runner.temp }}
         run: |
