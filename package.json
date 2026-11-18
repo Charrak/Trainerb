@@ -23,7 +23,8 @@
     "test:integration": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && node scripts/run-integration.mjs",
     "typecheck": "npm run build:contracts && npm run db:generate && npm run typecheck --workspace @trainerb/api && npm run typecheck --workspace @trainerb/web",
     "test:e2e": "node --test tests/e2e/*.smoke.cjs",
-    "setup:env": "node scripts/init-env.mjs"
+    "setup:env": "node scripts/init-env.mjs",
+    "retention:run": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/retention.ts"
   },
   "dependencies": {
     "@nestjs/common": "11.2.10",

@@ -128,7 +128,8 @@ export class Disputes {
    * disagreement becomes a visible `409`, not a rewritten book.
    */
   async record(ctx: SessionContext | null, orderIdInput: string, input: unknown,
-               options: { permission?: string } = {}, outcome: { created: boolean } = { created: false }) {
+               options: { permission?: string; source?: 'manual' | 'webhook' } = {},
+               outcome: { created: boolean } = { created: false }) {
     const orderId = requireUuid(orderIdInput);
     const body = bodyObject(input, ['provider_dispute_id', 'amount_cents', 'status', 'reason_code', 'opened_at']);
     const providerDisputeId = typeof body.provider_dispute_id === 'string' ? body.provider_dispute_id.trim() : '';
@@ -171,6 +172,9 @@ export class Disputes {
         throw apiError(409, 'ORDER_NOT_DISPUTABLE', 'Für diese Bestellung ist kein Streitfall möglich.');
       }
       const environment = getConfig().appEnv === 'production' ? 'live' : 'test';
+      // Only a caller that verified a provider signature may claim `webhook`.
+      const syncFields = options.source === 'webhook'
+        ? { sync_source: 'webhook', last_synced_at: new Date() } : { sync_source: 'manual' };
       const existing = await tx.dispute.findUnique({ where: { provider_environment_provider_dispute_id: {
         provider: 'stripe', environment, provider_dispute_id: providerDisputeId } } });
       if (existing && existing.order_id !== orderId) {
@@ -195,11 +199,15 @@ export class Disputes {
         }
         await tx.dispute.update({ where: { id: disputeId }, data: { status,
           reason_code: reasonCode ?? existing.reason_code,
-          resolved_at: resolvedAt ?? existing.resolved_at } });
+          resolved_at: resolvedAt ?? existing.resolved_at,
+          // Where this state came from is part of the record: a webhook report
+          // and a typed-in note carry different weight when the bank asks.
+          ...syncFields } });
       } else {
         await tx.dispute.create({ data: { id: disputeId, order_id: orderId, payment_attempt_id: attempt.id,
           provider: 'stripe', environment, provider_dispute_id: providerDisputeId, amount_cents: amount,
-          currency: order.currency, status, reason_code: reasonCode, opened_at: new Date(), resolved_at: resolvedAt } });
+          currency: order.currency, status, reason_code: reasonCode, opened_at: new Date(), resolved_at: resolvedAt,
+          ...syncFields } });
       }
 
       // Money can only be gone if it ever arrived. A case reported before the
@@ -253,7 +261,8 @@ export class Disputes {
       order_number: dispute.order.order_number, buyer_email: dispute.order.buyer_email_canonical,
       amount_cents: String(dispute.amount_cents), currency: dispute.currency, status: dispute.status,
       reason_code: dispute.reason_code, opened_at: dispute.opened_at, resolved_at: dispute.resolved_at,
-      provider_dispute_id: dispute.provider_dispute_id }));
+      provider_dispute_id: dispute.provider_dispute_id,
+      sync_source: dispute.sync_source, last_synced_at: dispute.last_synced_at }));
     return { data, next_cursor: rows.length > limit && data.length ? data[data.length - 1].id : null,
       totals: { open: await this.db.dispute.count({ where: { status: { in: ['warning', 'open'] } } }),
         lost: await this.db.dispute.count({ where: { status: 'lost' } }) } };
@@ -274,7 +283,8 @@ export class Disputes {
       amount_cents: String(dispute.amount_cents), currency: dispute.currency, status: dispute.status,
       reason_code: dispute.reason_code, provider: dispute.provider, environment: dispute.environment,
       provider_dispute_id: dispute.provider_dispute_id, opened_at: dispute.opened_at,
-      resolved_at: dispute.resolved_at,
+      resolved_at: dispute.resolved_at, last_synced_at: dispute.last_synced_at,
+      sync_source: dispute.sync_source,
       payment: { attempt_amount_cents: String(dispute.attempt.amount_cents),
         paid_cents: String(capacity?.paid_cents ?? 0n),
         refunded_cents: String(capacity?.refunded_cents ?? 0n),

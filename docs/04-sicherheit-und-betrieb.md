@@ -68,14 +68,16 @@ Die Maßnahmen sind ab der ersten Entwicklungsphase zu berücksichtigen, nicht e
 
 | Kategorie | Technischer Startvorschlag / Bedingung |
 |---|---|
-| Abgelaufene Voranmeldungen und ungenutzte Einmaltokens | Nach Ablauf zeitnah, spätestens nach 7 Tagen entfernen; nutzbares geheimes Outbox-Material nach erfolgreicher Zustellung bzw. Ablauf entfernen. |
+| Abgelaufene Voranmeldungen und ungenutzte Einmaltokens | Nach Ablauf zeitnah, spätestens nach 7 Tagen entfernen; nutzbares geheimes Outbox-Material nach erfolgreicher Zustellung bzw. Ablauf entfernen. **Technisch umgesetzt:** `retention:run` löscht abgelaufene `account_tokens` nach `accountTokenDays` (7), Sitzungen nach `sessionDays` (30) und nie zugestellte bzw. endgültig fehlgeschlagene Outbox-Zeilen nach `outboxDays` (90). Der Lauf ändert nichts anderes, schreibt seine Zählwerte als `retention.run` ins Audit-Protokoll und ist wiederholbar. |
 | Abgelaufene Sitzungen | Spätestens 30 Tage nach Ablauf/Widerruf entfernen, sofern keine gesonderte dokumentierte Sicherheitsaufbewahrung besteht. |
 | Kontaktanfragen | Löschtermin nach Bearbeitung gemäß vorab freigegebener Richtlinie setzen; keine unbegrenzte Ablage. |
-| Widerrufsvorgänge | Die Erklärung selbst ist Beweismittel für Frist und Zugang; abgeschlossene Vorgänge daher bis zum Ende der widerrufsrechtlichen Frist aufbewahren, danach nach freigegebener Regel löschen. Die Klartextadresse in `withdrawal_requests.contact_email` ist dafür der Löschkandidat; Eingangszeitpunkt und Vorgangskennung genügen als Nachweis. |
+| Widerrufsvorgänge | Die Erklärung selbst ist Beweismittel für Frist und Zugang; abgeschlossene Vorgänge daher bis zum Ende der widerrufsrechtlichen Frist aufbewahren, danach nach freigegebener Regel löschen. **Technisch umgesetzt:** `npm run retention:run` (bzw. `-- --dry-run`) entfernt nach `withdrawalAddressDays` (Standard 180 Tage ab Entscheidung) die Klartextadresse in `withdrawal_requests.contact_email`, setzt `contact_email_scrubbed_at` und lässt Vorgang, Grund, Zeitpunkte und Adress-HMAC stehen; ein CHECK verlangt genau eine dieser beiden Formen, sodass „entfernt“ und „nie vorhanden“ unterscheidbar bleiben. Der Fall kann danach keinen Bestätigungslink mehr versenden (`409 WITHDRAWAL_EMAIL_REMOVED`). Die Frist ist ein Startwert, keine Rechtsentscheidung. |
 | Technische Logs/Audit | Zugriffsbeschränkt und datensparsam; konkrete Fristen je Ereignistyp vor Livegang begründen und als automatisierte Richtlinie umsetzen. |
 | Newsletter-Nachweise | Einwilligung und Widerruf angemessen beweisbar halten; Dauer, Sperrliste und Löschung vor Livegang rechtlich festlegen. |
 | Rechnungen, Steuer- und Vertragsbelege | Gesetzlich einschlägige Fristen und Beginn individuell bestimmen; gesperrt aufbewahren, danach kontrolliert löschen. |
 | Backups | Technischer Zielwert 30 Tage, verschlüsselt und getrennt; bei Löschung verfallen Sicherungen nach Ablauf, Ausnahmen und Wiederherstellungsvorkehrungen dokumentieren. |
+
+**Nicht durch den Aufbewahrungslauf gelöscht** werden Rechnungen, Gutschriften, Zahlungsereignisse, Streitfälle und Audit-Ereignisse; sie sind Nachweis eines abgeschlossenen Vorgangs und brauchen eine eigene, rechtlich freigegebene Regel. Der Lauf ist bewusst ein eigener CLI-Auftrag (`apps/api/src/cli/retention.ts`), nicht eine Web-Route: er braucht kein Konto, aber eine dokumentierte Zeitplanung.
 
 Ein HMAC einer E-Mail kann weiterhin personenbezogen sein. Pseudonymisierung ersetzt keine Rechtsgrundlage, Löschregel oder Zugriffskontrolle.
 

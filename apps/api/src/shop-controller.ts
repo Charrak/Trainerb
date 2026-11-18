@@ -181,6 +181,21 @@ export class CommerceAdminController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.commerce.updateSettings(ctx, body);
   }
+  @Get('admin/commerce/tax-rates')
+  async taxRates(@Req() req: ApiRequest) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage' });
+    void ctx; return this.commerce.taxRates();
+  }
+  @Post('admin/commerce/tax-rates') @HttpCode(201)
+  async createTaxRate(@Req() req: ApiRequest, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.commerce.createTaxRate(ctx, body);
+  }
+  @Post('admin/commerce/tax-rates/:id/close') @HttpCode(200)
+  async closeTaxRate(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx); return this.commerce.closeTaxRate(ctx, id, body);
+  }
   @Post('admin/commerce/legal') @HttpCode(201)
   async legal(@Req() req: ApiRequest, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'legal.manage', fresh: true });

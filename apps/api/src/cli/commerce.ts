@@ -34,6 +34,24 @@ export async function seedCommerce(db: PrismaClient): Promise<void> {
           wording: drafts[kind], status: 'draft' } });
       }
     }
+    // Turnover tax as data. 19 % is the German standard rate for online
+    // training; 7 % exists for cases where a reduced rate applies. Both are
+    // rows with an open-ended validity, so a change is a new row and never an
+    // edit of history. The seed only creates what is missing.
+    const rates: Array<{ category: string; rate_bp: number; label: string; note: string; is_default: boolean }> = [
+      { category: 'standard', rate_bp: 1900, label: '19 %', is_default: true,
+        note: 'Regelsteuersatz für Online-Training und digitale Kurse in Deutschland.' },
+      { category: 'reduced', rate_bp: 700, label: '7 %', is_default: false,
+        note: 'Ermäßigter Steuersatz; nur anwenden, wenn die Leistung darunter fällt.' },
+    ];
+    for (const rate of rates) {
+      const existing = await tx.taxRate.findFirst({ where: { category: rate.category } });
+      if (!existing) {
+        await tx.taxRate.create({ data: { id: uuidv7(), category: rate.category, rate_bp: rate.rate_bp,
+          label: rate.label, note: rate.note, is_default: rate.is_default,
+          valid_from: new Date('2020-01-01T00:00:00Z') } });
+      }
+    }
     const settings = await tx.commerceSettings.findUnique({ where: { id: 1 } });
     if (!settings) {
       // Placeholder seller data; `sales_enabled` stays false until an operator

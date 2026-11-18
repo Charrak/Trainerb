@@ -125,8 +125,11 @@ export class Invoices {
       lines_snapshot: order.items.map(item => ({ position: item.position, title: item.title_snapshot,
         variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
         discount_cents: String(item.discount_cents), total_gross_cents: String(item.total_gross_cents),
-        // An identifier, not a rate: the document must not invent a tax split.
-        tax_category: item.price.tax_category })) as Prisma.InputJsonValue,
+        tax_category: item.price.tax_category,
+        // The split was computed at checkout and is frozen here: a document
+        // never recomputes tax from a rate that may have changed since.
+        tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
+        net_cents: String(item.net_cents), tax_cents: String(item.tax_cents) })) as Prisma.InputJsonValue,
       total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
       payment_reference: order.payment_reference, recipient_email: recipientEmail ?? null } });
   }

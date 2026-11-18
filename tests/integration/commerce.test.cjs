@@ -213,6 +213,44 @@ test('invoice checkout creates an immutable order, and access appears only after
   assert.equal(placed.body.invoice.total_gross_cents, '19900');
   assert.ok(placed.body.bank.iban); // payment instructions are shown to the buyer
   assert.equal(placed.body.items[0].courses[0].course_id, course.id);
+  // The tax split is stored per position and adds up exactly: 19 % of 199,00 €
+  // are 31,77 € with 167,23 € net — not a rounded percentage of a float.
+  const item = await db.orderItem.findFirstOrThrow({ where: { order_id: placed.body.id } });
+  assert.equal(item.tax_rate_bp, 1900);
+  assert.equal(item.total_gross_cents, 19900n);
+  assert.equal(item.net_cents, 16723n);
+  assert.equal(item.tax_cents, 3177n);
+  assert.equal(item.tax_label, '19 %');
+  const frozen = await db.invoice.findFirstOrThrow({ where: { order_id: placed.body.id } });
+  assert.equal(frozen.lines_snapshot[0].tax_rate_bp, 1900);
+  assert.equal(frozen.lines_snapshot[0].net_cents, '16723');
+  assert.equal(frozen.lines_snapshot[0].tax_cents, '3177');
+  // The database refuses a position whose three numbers do not add up, and one
+  // whose split does not match its rate — a hand-written row cannot fake a tax
+  // breakdown either.
+  await assert.rejects(db.$executeRawUnsafe(
+    `UPDATE order_items SET net_cents = net_cents + 1 WHERE order_id = '${placed.body.id}'::uuid`));
+  await assert.rejects(db.$executeRawUnsafe(
+    `UPDATE order_items SET tax_rate_bp = 700 WHERE order_id = '${placed.body.id}'::uuid`));
+  // The rate is data with a period: it can be closed, and afterwards no sale may
+  // silently fall back to zero percent.
+  const rate = await db.taxRate.findFirstOrThrow({ where: { category: 'standard', valid_until: null } });
+  const closed = await admin.change('post', `/admin/commerce/tax-rates/${rate.id}/close`, {});
+  status(closed, 200);
+  const rates = await admin.get('/admin/commerce/tax-rates'); status(rates, 200);
+  assert.equal(rates.body.data.find(row => row.id === rate.id).current, false);
+  // Reopening the same period is an overlap, not a new row with the same start.
+  const overlap = await admin.change('post', '/admin/commerce/tax-rates',
+    { category: 'standard', rate_bp: '1900', label: '19 %', valid_from: '2021-01-01T00:00:00Z' });
+  status(overlap, 409); assert.equal(overlap.body.code, 'TAX_RATE_OVERLAP');
+  // A rate of 100 % or a malformed one never becomes a row.
+  status(await admin.change('post', '/admin/commerce/tax-rates',
+    { category: 'standard', rate_bp: '9901', label: 'x' }), 422);
+  status(await admin.change('post', '/admin/commerce/tax-rates',
+    { category: 'standard', rate_bp: '19,5', label: 'x' }), 422);
+  // New sales need a current rate again: restore one for the rest of the suite.
+  await admin.change('post', '/admin/commerce/tax-rates',
+    { category: 'standard', rate_bp: '1900', label: '19 %', is_default: true });
 
   // Idempotency: the same key returns the same order instead of a second one.
   const replay = await buyer.change('post', '/orders', body); status(replay, 201);

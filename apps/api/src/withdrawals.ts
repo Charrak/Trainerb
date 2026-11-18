@@ -137,9 +137,14 @@ export class Withdrawals {
       take: limit + 1, orderBy: [{ submitted_at: 'asc' }, { id: 'asc' }],
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       include: { order: { select: { order_number: true, payment_state: true } } } });
+    // `order_number` is repeated at the top level: a list has to be scannable
+    // without unwrapping a nested object for every row, and the flat value is
+    // the *linked* order — `submitted_order_number` stays what the person typed.
     const data = rows.slice(0, limit).map(item => ({ id: item.id, contact_email: item.contact_email,
+      contact_email_scrubbed_at: item.contact_email_scrubbed_at,
       customer_name: item.customer_name, message: item.message, status: item.status,
       submitted_at: item.submitted_at, submitted_order_number: item.submitted_order_number,
+      order_number: item.order?.order_number ?? null,
       order: item.order ? { order_number: item.order.order_number, payment_state: item.order.payment_state } : null,
       identity_verified_at: item.identity_verified_at, processed_at: item.processed_at,
       refund_id: item.refund_id }));
@@ -156,9 +161,12 @@ export class Withdrawals {
         refund: { select: { id: true, status: true, amount_cents: true } },
         processor: { select: { id: true, first_name: true, last_name: true } } } });
     if (!item) throw missing();
-    return { id: item.id, contact_email: item.contact_email, customer_name: item.customer_name,
+    return { id: item.id, contact_email: item.contact_email,
+      contact_email_scrubbed_at: item.contact_email_scrubbed_at,
+      customer_name: item.customer_name,
       message: item.message, status: item.status, submitted_at: item.submitted_at,
       submitted_order_number: item.submitted_order_number,
+      order_number: item.order?.order_number ?? null,
       order: item.order ? { id: item.order.id, order_number: item.order.order_number,
         payment_state: item.order.payment_state, total_gross_cents: String(item.order.total_gross_cents) } : null,
       identity_verified_at: item.identity_verified_at,
@@ -199,6 +207,12 @@ export class Withdrawals {
         expires_at: new Date(now.getTime() + 30 * 60_000) } });
       // `verification_url` is secret and sealed; the public variables carry the
       // submission facts only.
+      // A case whose address was already removed cannot be verified any more;
+      // sending a link there would be a mail to nowhere.
+      if (!item.contact_email) {
+        throw apiError(409, 'WITHDRAWAL_EMAIL_REMOVED',
+          'Die Adresse dieses Vorgangs wurde nach der Aufbewahrungsfrist entfernt.');
+      }
       const outboxId = await this.outbox.notifyGuestCoded(tx, item.contact_email, 'du',
         'withdrawal_verify', { request_reference: caseId.slice(0, 8) }, token,
         { purpose: 'withdrawal' });
@@ -255,7 +269,7 @@ export class Withdrawals {
    */
   async update(ctx: SessionContext, caseIdInput: string, input: unknown) {
     const caseId = requireUuid(caseIdInput);
-    const body = bodyObject(input, ['status', 'order_id', 'decision_reason']);
+    const body = bodyObject(input, ['status', 'order_id', 'decision_reason', 'refund_id']);
     const status = body.status === undefined ? null : body.status;
     if (status !== null && (typeof status !== 'string' || !(CASE_STATUSES as readonly string[]).includes(status))) {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { status: 'Unbekannter Status.' });
@@ -318,18 +332,43 @@ export class Withdrawals {
         throw apiError(409, 'WITHDRAWAL_CLOSE_REASON',
           'Ohne Bestellung lässt sich der Vorgang nur mit einem Grund schließen, der das erklärt.');
       }
+      // A withdrawal is not a refund, but when it *results* in one the case should
+      // say which. The link is one-way and verified: the refund must belong to
+      // the linked order and must actually return money.
+      let refundId = item.refund_id;
+      if (body.refund_id !== undefined && body.refund_id !== null) {
+        const candidate = requireUuid(String(body.refund_id));
+        const refund = await tx.refund.findUnique({ where: { id: candidate },
+          select: { id: true, order_id: true, status: true } });
+        if (!refund) throw missing();
+        if (orderId === null || refund.order_id !== orderId) {
+          throw apiError(409, 'WITHDRAWAL_REFUND_ORDER',
+            'Diese Erstattung gehört nicht zur zugeordneten Bestellung.');
+        }
+        if (refund.status === 'cancelled' || refund.status === 'failed') {
+          throw apiError(409, 'WITHDRAWAL_REFUND_INVALID',
+            'Diese Erstattung ist zurückgezogen oder fehlgeschlagen.');
+        }
+        refundId = refund.id;
+      }
       await tx.withdrawalRequest.update({ where: { id: caseId }, data: { status: nextStatus,
-        order_id: orderId, identity_verified_at: verifiedAt,
+        order_id: orderId, identity_verified_at: verifiedAt, refund_id: refundId,
         ...(closing ? { processed_by: ctx.user.id, processed_at: now, decision_reason: reason } : {}) } });
       await tx.auditEvent.create({ data: { id: uuidv7(), actor_user_id: ctx.user.id, origin: 'user',
         action: 'withdrawal.updated', target_type: 'withdrawal_request', target_ref: caseId,
         after_safe: { status: nextStatus, previous_status: item.status, order_linked: orderId !== null,
-          identity_verified: verifiedAt !== null, decision_reason: reason } } });
+          identity_verified: verifiedAt !== null, decision_reason: reason,
+          refund_linked: refundId !== null } } });
       if (closing) {
         // The outcome is communicated on a durable medium, like the receipt.
         const variables = { decision: nextStatus === 'completed' ? 'angenommen' : 'abgelehnt' };
-        const outboxId = await this.outbox.notifyGuest(tx, item.contact_email, 'du', 'withdrawal_decided', variables);
-        await tx.withdrawalRequest.update({ where: { id: caseId }, data: { confirmation_outbox_id: outboxId } });
+        // No address, no mail: the decision is still recorded on the case.
+        const outboxId = item.contact_email
+          ? await this.outbox.notifyGuest(tx, item.contact_email, 'du', 'withdrawal_decided', variables)
+          : null;
+        if (outboxId) {
+          await tx.withdrawalRequest.update({ where: { id: caseId }, data: { confirmation_outbox_id: outboxId } });
+        }
       }
       return this.view(caseId, tx);
     });

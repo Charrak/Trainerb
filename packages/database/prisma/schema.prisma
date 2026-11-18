@@ -53,6 +53,7 @@ model User {
   refunds_requested Refund[] @relation("RefundRequester")
   access_decisions  OrderAccessDecision[] @relation("AccessDecisionMaker")
   withdrawal_requests_processed WithdrawalRequest[] @relation("WithdrawalProcessor")
+  tax_rates_created            TaxRate[]            @relation("TaxRateCreator")
 
   @@map("users")
 }
@@ -688,6 +689,24 @@ model Order {
   @@map("orders")
 }
 
+model TaxRate {
+  id          String    @id @db.Uuid
+  category    String    @db.Text
+  rate_bp     Int       @db.Integer
+  label       String    @db.Text
+  note        String?   @db.Text
+  valid_from  DateTime  @db.Timestamptz(6)
+  valid_until DateTime? @db.Timestamptz(6)
+  is_default  Boolean   @default(false)
+  created_by  String?   @db.Uuid
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  creator     User?     @relation("TaxRateCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  @@unique([category, valid_from])
+  @@index([category, valid_from])
+  @@map("tax_rates")
+}
+
 model OrderItem {
   order_id          String   @db.Uuid
   product_id        String   @db.Uuid
@@ -699,6 +718,12 @@ model OrderItem {
   unit_gross_cents  BigInt
   discount_cents    BigInt   @default(0)
   total_gross_cents BigInt
+  /// Basis points: 1900 = 19 %. Stored on the position so a document never
+  /// recomputes tax from a rate that may have changed since.
+  tax_rate_bp       Int      @db.Integer
+  net_cents         BigInt
+  tax_cents         BigInt
+  tax_label         String   @db.Text
   created_at        DateTime @default(now()) @db.Timestamptz(6)
   order             Order    @relation(fields: [order_id], references: [id], onDelete: Restrict)
   product           Product  @relation(fields: [product_id], references: [id], onDelete: Restrict)
@@ -985,6 +1010,11 @@ model Dispute {
   reason_code         String?   @db.Text
   opened_at           DateTime  @default(now()) @db.Timestamptz(6)
   resolved_at         DateTime? @db.Timestamptz(6)
+  /// When the provider last reported this case; null for a case staff typed in.
+  last_synced_at      DateTime? @db.Timestamptz(6)
+  /// `webhook` or `manual` — a signature-verified report is worth more than a
+  /// forwarded e-mail, and the list must be able to say which one it is looking at.
+  sync_source         String    @default("manual") @db.Text
   order               Order     @relation(fields: [order_id], references: [id], onDelete: Restrict)
   attempt             PaymentAttempt @relation(fields: [payment_attempt_id, order_id], references: [id, order_id], onDelete: Restrict)
   access_decisions    OrderAccessDecision[]
@@ -997,7 +1027,7 @@ model Dispute {
 model WithdrawalRequest {
   id                     String    @id @db.Uuid
   submitted_order_number String?   @db.Text
-  contact_email          String    @db.Text
+  contact_email          String?    @db.Text
   contact_email_hmac     Bytes     @db.ByteA
   customer_name          String?   @db.Text
   message                String?   @db.Text
@@ -1010,6 +1040,8 @@ model WithdrawalRequest {
   decision_reason        String?   @db.Text
   refund_id              String?   @db.Uuid
   confirmation_outbox_id String?   @db.Uuid
+  /// Set when the readable address was removed; the hash keeps the case identifiable.
+  contact_email_scrubbed_at DateTime? @db.Timestamptz(6)
   order                  Order?    @relation(fields: [order_id], references: [id], onDelete: Restrict)
   processor              User?     @relation("WithdrawalProcessor", fields: [processed_by], references: [id], onDelete: Restrict)
   refund                 Refund?   @relation(fields: [refund_id], references: [id], onDelete: Restrict)

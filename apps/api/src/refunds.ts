@@ -4,6 +4,7 @@ import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { Outbox } from './outbox';
+import { splitGross } from './tax';
 import { apiError, bodyObject, requireUuid } from './security';
 import { getConfig } from './config';
 import { centsToText } from './shop';
@@ -547,10 +548,19 @@ export class Refunds {
     const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-GS-', 'credit_note_number_seq') AS number`;
     const allocated = new Map(refund.allocations.map(row => [row.order_item_product, row.gross_cents]));
     const items = refund.order.items.filter(item => allocated.size === 0 || allocated.has(item.product_id));
-    const lines = items.map((item, index) => ({ position: index + 1, title: item.title_snapshot,
-      variant: item.variant_snapshot, quantity: item.quantity,
-      unit_gross_cents: String(allocated.get(item.product_id) ?? item.unit_gross_cents),
-      discount_cents: '0', total_gross_cents: String(allocated.get(item.product_id) ?? item.total_gross_cents) }));
+    // A credit note carries the same split as the position it corrects: the tax
+    // to be corrected is the tax that was charged, not a new calculation. When a
+    // partial amount is allocated, the tax is derived from *that* amount with the
+    // original rate, so net and tax of the correction add up to the allocation.
+    const lines = items.map((item, index) => {
+      const gross = allocated.get(item.product_id) ?? item.total_gross_cents;
+      const split = splitGross(gross, { rate_bp: item.tax_rate_bp, label: item.tax_label });
+      return { position: index + 1, title: item.title_snapshot,
+        variant: item.variant_snapshot, quantity: item.quantity,
+        unit_gross_cents: String(gross), discount_cents: '0', total_gross_cents: String(gross),
+        tax_category: null, tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
+        net_cents: String(split.net_cents), tax_cents: String(split.tax_cents) };
+    });
     await tx.creditNote.create({ data: { id: uuidv7(), order_id: refund.order_id, refund_id: refund.id,
       original_invoice_id: invoice.id, document_number: numberRow[0].number,
       issuer_snapshot: invoice.seller_snapshot as Prisma.InputJsonValue,

@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api, ApiError, errorMessage, type Profile } from '../lib/api';
-import { dateTime, withdrawalStatusLabels, type AdminWithdrawal } from '../lib/shop';
+import { dateTime, euro, withdrawalStatusLabels, type AdminWithdrawal } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 
 const canHandle = (profile: Profile) => profile.permissions.includes('withdrawals.manage');
 
 type Detail = AdminWithdrawal & { message: string | null;
   order: { id: string; order_number: string; payment_state: string; total_gross_cents: string } | null;
+  decision_reason: string | null;
   processor: string | null;
   refund: { id: string; status: string; amount_cents: string } | null };
 
@@ -78,21 +79,24 @@ export function AdminWithdrawals() {
           {rows.length ? <ul className="plain-list">{rows.map(row => <li key={row.id}>
             <button type="button" className="button button-outline" onClick={() => void api<Detail>(`/admin/withdrawal-requests/${row.id}`)
               .then(setSelected).catch(e => setError(errorMessage(e)))}>
-              {dateTime(row.submitted_at)} · {row.contact_email} · {withdrawalStatusLabels[row.status] ?? row.status}
-              {row.submitted_order_number ? ` · Nr. ${row.submitted_order_number}` : ''}
+              {dateTime(row.submitted_at)} · {row.contact_email ?? 'Adresse entfernt (Aufbewahrung)'}
+              {' '}· {withdrawalStatusLabels[row.status] ?? row.status}
+              {/* The linked order, not the typed number: only that one is a fact. */}
+              {row.order_number ? ` · Bestellung ${row.order_number}` : ''}
             </button></li>)}</ul> : <p className="muted">Keine offenen Vorgänge.</p>}
         </section>
         <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">VORGANG</span>
           <h2>{selected ? withdrawalStatusLabels[selected.status] ?? selected.status : 'Nichts ausgewählt'}</h2></div></div>
           {!selected ? <p className="muted">Wähle links einen Vorgang.</p> : <>
-            <p className="muted">{dateTime(selected.submitted_at)} · {selected.contact_email}
+            <p className="muted">{dateTime(selected.submitted_at)} · {selected.contact_email
+              ?? 'Adresse nach Aufbewahrungsfrist entfernt'}
               {selected.customer_name ? ` · ${selected.customer_name}` : ''}</p>
             {selected.message && <p>„{selected.message}“</p>}
             <p className="muted">Angegebene Bestellnummer: {selected.submitted_order_number ?? 'keine'}
               {' '}(unbestätigte Angabe).</p>
             <p className="muted">Bestätigte Adresse: {selected.identity_verified_at
               ? dateTime(selected.identity_verified_at) : 'noch nicht bestätigt'}
-              {' '}· Bestellung: {selected.order ? selected.order.order_number : 'nicht zugeordnet'}</p>
+              {' '}· Bestellung: {selected.order_number ?? 'nicht zugeordnet'}</p>
 
             {!selected.identity_verified_at && <form className="stack-form" onSubmit={event => {
               event.preventDefault(); void act('code', `/admin/withdrawal-requests/${selected.id}/identity-code`, {},
@@ -136,7 +140,8 @@ export function AdminWithdrawals() {
             {['completed', 'rejected'].includes(selected.status) && <p className="muted">
               Entschieden {dateTime(selected.processed_at)} von {selected.processor ?? 'unbekannt'}
               {selected.decision_reason ? ` · ${selected.decision_reason}` : ''}.
-              {selected.refund ? ` Erstattung ${selected.refund.status}.` : ' Keine Erstattung verknüpft.'}</p>}
+              {selected.refund ? ` Erstattung ${selected.refund.status} (${euro(selected.refund.amount_cents)}).`
+                : ' Keine Erstattung verknüpft.'}</p>}
           </>}
         </section>
       </div>}

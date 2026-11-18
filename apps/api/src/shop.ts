@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
+import { requireRates, splitGross } from './tax';
 import { apiError, bodyObject, keyedHash, normalizeEmail, requireUuid } from './security';
 import { billingAddress, couponCode, discountFor, idempotencyKey, optionalCouponCode, paymentMethod,
   type BillingAddress } from './commerce-validation';
@@ -278,6 +279,13 @@ export class Shop {
             title: link.course.versions[0]!.title,
             access_days: link.access_days_override ?? link.course.versions[0]!.default_access_days ?? null })) });
       }
+      // Same lookup as the guest path, so an account sale can never be taxed
+      // differently from a guest sale of the same product.
+      const rates = await requireRates(tx, lines.map(line => line.taxCategory), now);
+      // The split is attached to the position, not recomputed later: the row and
+      // the document must show the same three numbers forever.
+      const splits = new Map(lines.map(line => [line.productId,
+        splitGross(line.unit, rates.get(line.taxCategory)!)]));
       const subtotal = lines.reduce((sum, line) => sum + line.unit, 0n);
       let discount = 0n;
       let couponId: string | null = null;
@@ -322,7 +330,9 @@ export class Shop {
       for (const [index, line] of lines.entries()) {
         await tx.orderItem.create({ data: { order_id: orderId, product_id: line.productId, price_id: line.priceId,
           position: index + 1, title_snapshot: line.title, variant_snapshot: line.variant, unit_gross_cents: line.unit,
-          discount_cents: 0n, total_gross_cents: line.unit } });
+          discount_cents: 0n, total_gross_cents: line.unit,
+          tax_rate_bp: splits.get(line.productId)!.rate_bp, net_cents: splits.get(line.productId)!.net_cents,
+          tax_cents: splits.get(line.productId)!.tax_cents, tax_label: splits.get(line.productId)!.label } });
         for (const course of line.courses) {
           await tx.orderItemCourse.create({ data: { order_id: orderId, order_item_product: line.productId,
             course_id: course.course_id, course_version_id: course.course_version_id,
@@ -447,7 +457,8 @@ export class Shop {
     const state = stateInput === undefined || stateInput === '' ? null : String(stateInput);
     // `unlinked` is not a payment state: it filters paid guest orders that still
     // have no account, which is exactly the set a human has to resolve.
-    if (state !== null && !['awaiting', 'paid', 'cancelled', 'review', 'unlinked', 'refunded'].includes(state)) {
+    if (state !== null &&
+        !['awaiting', 'paid', 'cancelled', 'review', 'unlinked', 'refunded', 'charged_back'].includes(state)) {
       throw apiError(422, 'INVALID_STATE', 'Unbekannter Status.');
     }
     const limit = limitInput === undefined ? 25 : Number(limitInput);
@@ -474,6 +485,7 @@ export class Shop {
     return { data, next_cursor: rows.length > limit && data.length ? data[data.length - 1].id : null,
       totals: { awaiting: await this.db.order.count({ where: { payment_state: 'awaiting' } }),
         paid: await this.db.order.count({ where: { payment_state: 'paid' } }),
+        charged_back: await this.db.order.count({ where: { payment_state: 'charged_back' } }),
         refunded: await this.db.order.count({ where: { payment_state: 'refunded' } }) } };
   }
 
