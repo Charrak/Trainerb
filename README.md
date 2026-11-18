@@ -32,7 +32,7 @@ Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), di
 
 ## Lokal starten
 
-Voraussetzungen: **Node.js 24**, npm, Docker mit Compose und freie lokale Ports 3000, 4000, 5432, 6379, 1025 und 8025. Die Compose-Datei ist nur für synthetische Entwicklungsdaten gedacht; ihre Zugangsdaten und Images sind kein Produktionssetup. Die Datenbank-Initialisierung legt die Entwicklungs- und Testdatenbank nur beim ersten Erstellen des Docker-Volumes an.
+Voraussetzungen: **Node.js 24** (gepinnt in `.nvmrc`: `nvm use`; `engines` bricht auf einem anderen Major ab), npm, Docker mit Compose und freie lokale Ports 3000, 4000, 5432, 6379, 1025 und 8025. Die Compose-Datei ist nur für synthetische Entwicklungsdaten gedacht; ihre Zugangsdaten und Images sind kein Produktionssetup. Die Datenbank-Initialisierung legt die Entwicklungs- und Testdatenbank nur beim ersten Erstellen des Docker-Volumes an.
 
 ```bash
 npm ci

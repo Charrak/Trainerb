@@ -4,6 +4,13 @@
 
 Die [README](../README.md) enthält die lokalen Start- und Testbefehle. Dieses Dokument ergänzt den Ist-Zustand und benennt ausdrücklich offene Punkte; das restliche Konzept beschreibt weiterhin den Zielzustand.
 
+## 7.0 Laufzeitumgebung und Werkzeuge
+
+- **Node 24 ist verbindlich** (`engines: ">=24 <25"`): Der Testlauf besteht ausschließlich aus `node --test`, die Suites nutzen dessen stabilen Reporter- und Mock-Schnittstellen. Gepinnt in `.nvmrc` (`24`) und in der CI (`.github/workflows/ci.yml`, `node-version: '24'`). Ein abweichender Major bricht bewusst ab, statt sich auf zufällig kompatible Zwischenversionen zu verlassen.
+- **npm ist nicht gepinnt** und braucht es nicht: Das Lockfile ist Version 3 und wird von npm 10 wie 11 gelesen. Ein `packageManager`-Feld fehlt absichtlich — es würde eine npm-Version erzwingen, die nicht zu jeder Node-Distribution passt, und den Einstieg ohne Gewinn erschweren.
+- **PostgreSQL 16 und Redis** sind Laufzeitvoraussetzungen; die Anwendung spricht ausschließlich über `DATABASE_URL`/`REDIS_URL` und braucht keinen Prisma-Query-Engine-Binary-Pfad (`PRISMA_QUERY_ENGINE_LIBRARY` und `PRISMA_SCHEMA_ENGINE_BINARY` werden nur von Sonderfällen gesetzt).
+- **Optionale Testvariablen** (`E2E_*`, `TRAINERB_TEST_INBOX`, `TRAINERB_DESTRUCTIVE_TEST_DATABASE`) gehören nicht in `.env`, sondern in die jeweilige Testzeile — sie sind in der README bei den Smoke-Tests dokumentiert.
+
 ## 7.1 Datenbank und Migrationen
 
 - Die Migrationen liegen unter `packages/database/prisma/migrations/`: `202611150001_phase1_identity` für Identität, `202611150002_phase2_course_drafts` für Kursentwürfe und `202611150003_phase2_chapter_contents` für geschützte Inhaltsbausteine sowie `202611150004_phase2_product_drafts` für Produkt- und Preisentwürfe sowie `202611150005_phase2_publication` für Veröffentlichung und Produktaktivierung, `202611150006`–`202611150009` für Konten-/Gastkauf, Commerce, Erstattungen und Streitfälle/Widerruf (u. a. `btree_gist`, `course_publications`, `products_activation_metadata`, Trigger und Exclusion-Constraints). Anwendungs-UUIDs sind UUIDv7; PostgreSQL erzeugt keine IDs als Default. Das SQL enthält unter anderem die Unicode-Namensfunktion, versionsübergreifende Fremdschlüssel und Check-Constraints, die Prisma nicht selbst abbildet.
