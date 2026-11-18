@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { AwsClient } from 'aws4fetch';
-import { Prisma, type CourseMediaUpload } from '@prisma/client';
+import { Prisma, type PrismaClient, type CourseMediaUpload } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
-import type { Database } from './database';
 import type { Config } from './config';
 
 type Receipt = Pick<CourseMediaUpload, 'id' | 'object_key' | 'size_bytes' | 'sha256'>;
@@ -66,15 +65,15 @@ export async function inspectUpload(row: Receipt, store: NonNullable<Config['med
 
 // The scan holds only a receipt lock, not a course or user lock. Bounded I/O;
 // a crash rolls back the result, and parallel jobs skip the in-flight receipt.
-export async function scanNext(db: Database, inspect: (row: Receipt) => Promise<Verdict>, retryId?: string) {
+export async function scanNext(db: PrismaClient, inspect: (row: Receipt) => Promise<Verdict>, retryId?: string) {
   return db.$transaction(async tx => {
     const [row] = await tx.$queryRaw<Receipt[]>`SELECT id, object_key, size_bytes, sha256 FROM course_media_uploads
       WHERE ${retryId ? Prisma.sql`id = ${retryId}::uuid AND status = 'scan_error'` : Prisma.sql`status = 'pending_scan'`}
       ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
     if (!row) return null;
     const verdict = await inspect(row);
-    await tx.courseMediaUpload.update({ where: { id: row.id }, data: { ...verdict, scanned_at: new Date() } });
-    await tx.auditEvent.create({ data: { id: uuidv7(), origin: 'system', action: 'media.scanned',
+    await tx.courseMediaUpload.update({ where: { id: row.id }, select: { id: true }, data: { ...verdict, scanned_at: new Date() } });
+    await tx.auditEvent.create({ select: { id: true }, data: { id: uuidv7(), origin: 'system', action: 'media.scanned',
       target_type: 'course_media_upload', target_ref: row.id, after_safe: verdict } });
     return { id: row.id, ...verdict };
   }, { timeout: 35_000 });
