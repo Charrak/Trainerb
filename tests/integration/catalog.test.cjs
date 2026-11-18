@@ -333,7 +333,7 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
     const detail = await instructor.get(`/admin/courses/${courseB.id}`); status(detail, 200);
     const report = detail.body.quarantine_uploads.find(upload => upload.id === row.id);
     assert.equal(report.status, 'scan_error'); assert.equal(report.scan_error, 'storage'); assert.ok(report.scanned_at);
-    assert.deepEqual(Object.keys(report).sort(), ['approved_at','id','original_name','scan_error','scanned_at','status']);
+    assert.deepEqual(Object.keys(report).sort(), ['approved_at','id','original_name','promoted_asset_id','promotion_error','scan_error','scanned_at','status']);
     status(await participant.get(`/admin/courses/${courseB.id}`), 403);
     // An explicit retry is serialized; terminal verdicts cannot be retried.
     const results = await Promise.all([1, 2].map(() => scanNext(db, async () => ({ status: 'infected', scan_error: null }), row.id)));
@@ -348,7 +348,8 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
 test('editorial approval is separate from scanning, course-bound and recorded exactly once', async () => {
   const assets = await db.mediaAsset.count();
   const receipt = await db.courseMediaUpload.create({ data: { id: uuidv7(), course_id: courseB.id, uploaded_by: instructorUser.id,
-    object_key: randomUUID(), original_name: 'Test.png', mime_detected: 'image/png', size_bytes: 1, sha256: Buffer.alloc(32) } });
+    object_key: randomUUID(), original_name: 'Test.png', mime_detected: 'image/png', size_bytes: 1,
+    sha256: require('node:crypto').createHash('sha256').update('A').digest() } });
   const path = `/admin/courses/${courseB.id}/media/uploads/${receipt.id}/approve`;
   status(await instructor.change('post', path, {}), 403);
   await db.authSession.updateMany({ where: { user_id: adminUser.id, kind: 'backoffice' }, data: { reauthenticated_at: null } });
@@ -363,6 +364,10 @@ test('editorial approval is separate from scanning, course-bound and recorded ex
     await db.courseMediaUpload.update({ where: { id: receipt.id }, data: { status: verdict, scanned_at: new Date(), scan_error: verdict === 'scan_error' ? 'scanner' : null } });
     if (verdict !== 'clean') status(await admin.change('post', path, {}), 409);
   }
+  const { promoteNext } = require('../../apps/api/dist/media-promote');
+  const store = require('../../apps/api/dist/config').getConfig().mediaStore;
+  const stores = { source: { ...store, bucket: 'trainerb-quarantine' }, destination: { ...store, bucket: 'promotion-destination' } };
+  assert.equal(await promoteNext(db, stores), null); // even clean is not sufficient
   const responses = await Promise.all([admin.change('post', path, {}), admin.change('post', path, {})]);
   assert.deepEqual(responses.map(r => r.status).sort(), [200, 409]);
   const saved = await db.courseMediaUpload.findUniqueOrThrow({ where: { id: receipt.id } });
@@ -371,6 +376,30 @@ test('editorial approval is separate from scanning, course-bound and recorded ex
   assert.equal(details.body.quarantine_uploads.find(r => r.id === receipt.id).approved_at, saved.approved_at.toISOString());
   assert.equal(await db.auditEvent.count({ where: { action: 'media.upload_approved', actor_user_id: adminUser.id, target_ref: courseB.id } }), 1);
   assert.equal(await db.mediaAsset.count(), assets);
+  if (!process.env.TRAINERB_TEST_S3_ORIGIN) return;
+  const { AwsClient } = require('aws4fetch');
+  const client = new AwsClient({ ...store, service: 's3', retries: 0 });
+  const src = `${store.origin}/${stores.source.bucket}/${receipt.object_key}`, dest = `${store.origin}/${stores.destination.bucket}`;
+  assert.equal((await promoteNext(db, stores)).error, 'storage'); // missing source
+  assert.equal(await promoteNext(db, stores), null); // no automatic retry loop
+  assert.equal((await client.fetch(src, { method: 'PUT', body: 'B' })).status, 200);
+  assert.equal((await promoteNext(db, stores, receipt.id)).error, 'integrity'); // same size, changed hash
+  assert.equal((await client.fetch(src, { method: 'PUT', body: 'A' })).status, 200);
+  assert.equal((await promoteNext(db, stores, receipt.id)).error, 'destination'); // missing destination
+  assert.equal(await db.mediaAsset.count(), assets);
+  assert.equal((await client.fetch(dest, { method: 'PUT' })).status, 200);
+  const promoted = (await Promise.all([1,2].map(() => promoteNext(db, stores, receipt.id)))).filter(Boolean);
+  assert.equal(promoted.length, 1); assert.equal(promoted[0].error, null);
+  const asset = await db.mediaAsset.findUniqueOrThrow({ where: { id: promoted[0].asset_id } });
+  assert.equal(asset.status, 'ready'); assert.equal(asset.visibility, 'private'); assert.equal(asset.uploaded_by, receipt.uploaded_by);
+  assert.equal(asset.original_name, receipt.original_name); assert.deepEqual(asset.sha256, receipt.sha256);
+  assert.notEqual(asset.storage_key, receipt.object_key);
+  const target = `${dest}/${asset.storage_key}`; assert.equal((await fetch(target)).status, 403);
+  assert.equal(await (await client.fetch(target)).text(), 'A');
+  assert.equal((await db.courseMediaUpload.findUniqueOrThrow({ where: { id: receipt.id } })).promoted_asset_id, asset.id);
+  assert.equal(await db.auditEvent.count({ where: { action: 'media.promoted', target_ref: receipt.id } }), 1);
+  assert.equal(await promoteNext(db, stores), null); assert.equal(await promoteNext(db, stores, receipt.id), null);
+
 });
 
 test('a concurrent unassignment and edit serialize on the course and leave no subsequent access', async () => {

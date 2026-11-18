@@ -13,7 +13,7 @@ export type Version = { id: string; version: number; state: string; title: strin
   chapter_completion_mode: string; expected_module_count: number | null; expected_chapter_count: number | null;
   expected_exams_per_chapter: number | null; revision: number; modules: Module[] };
 export type CourseDetail = { id: string; slug: string; status: string; visibility: string; versions: Version[];
-  quarantine_uploads: { id: string; original_name: string; status: string; scanned_at: string | null; scan_error: string | null; approved_at: string | null }[];
+  quarantine_uploads: { id: string; original_name: string; status: string; scanned_at: string | null; scan_error: string | null; approved_at: string | null; promoted_asset_id: string | null; promotion_error: string | null }[];
   staff?: { user_id: string; scope_role: string }[] };
 export const visibilityLabels: Record<string, string> = { private: 'Privat', public: 'Öffentlich', unlisted: 'Nicht gelistet' };
 export const modeLabels: Record<string, string> = { self_confirm: 'Selbst bestätigen', all_chapter_exams: 'Alle Kapitelprüfungen bestehen',

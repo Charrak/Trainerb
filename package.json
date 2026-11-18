@@ -24,6 +24,7 @@
     "typecheck": "npm run build:contracts && npm run db:generate && npm run typecheck --workspace @trainerb/api && npm run typecheck --workspace @trainerb/web",
     "test:e2e": "node --test tests/e2e/*.smoke.cjs",
     "setup:env": "node scripts/init-env.mjs",
+    "media:promote": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-promote.ts",
     "media:scan": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-scan.ts",
     "retention:run": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/retention.ts"
   },

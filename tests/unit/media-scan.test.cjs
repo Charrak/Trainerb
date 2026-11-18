@@ -39,3 +39,17 @@ test('standalone scanner needs no API secrets and rejects invalid storage or cre
     assert.throws(() => scanConfig({ ...env, ...invalid }));
   }
 });
+
+test('promotion only accepts a separate destination and dedicated identity, without API/scan secrets', () => {
+  const { promotionConfig } = require('../../apps/api/dist/media-scan-config');
+  const env = { DATABASE_URL: 'postgresql://worker@db/test', MEDIA_S3_ENDPOINT: 'https://objects.example.invalid',
+    MEDIA_S3_REGION: 'eu-central-1', MEDIA_QUARANTINE_BUCKET: 'private-quarantine', MEDIA_S3_BUCKET: 'delivery-private',
+    MEDIA_PROMOTE_ACCESS_KEY_ID: 'promoter', MEDIA_PROMOTE_SECRET_ACCESS_KEY: 'unit-test-only' };
+  assert.equal(promotionConfig(env).destination.bucket, 'delivery-private');
+  assert.equal(promotionConfig(env).source.bucket, 'private-quarantine');
+  for (const key of Object.keys(env)) assert.throws(() => promotionConfig({ ...env, [key]: '' }));
+  for (const override of [{ MEDIA_S3_BUCKET: env.MEDIA_QUARANTINE_BUCKET }, { MEDIA_S3_BUCKET: '../public' },
+    { MEDIA_SCAN_ACCESS_KEY_ID: 'promoter' }, { MEDIA_QUARANTINE_ACCESS_KEY_ID: 'promoter' }, { MEDIA_S3_ACCESS_KEY_ID: 'promoter' }]) {
+    assert.throws(() => promotionConfig({ ...env, ...override }));
+  }
+});
