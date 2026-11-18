@@ -3,8 +3,14 @@ import type { NextConfig } from 'next';
 // The browser only calls relative /api paths. This server-side rewrite keeps
 // private API addresses out of browser code and preserves a single origin.
 const internalApi = process.env.API_INTERNAL_ORIGIN || 'http://127.0.0.1:4000';
+// Development previews are served through a proxy host, so the dev server must
+// accept that origin. It is configured, not hardcoded, and only in development:
+// next.config is evaluated at build time, so this must never reach production.
+const devOrigins = (process.env.ALLOWED_DEV_ORIGINS ?? '')
+  .split(',').map(entry => entry.trim()).filter(Boolean);
+
 const config: NextConfig = {
-  allowedDevOrigins: ['*.e2b.app'],
+  ...(process.env.NODE_ENV !== 'production' && devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   devIndicators: false,
   // The optional React debug stream otherwise makes development-page
   // hydration depend on an HMR WebSocket, which some preview proxies block.
