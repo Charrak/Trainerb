@@ -449,3 +449,16 @@ test('manual access grants are audited and never create an order or invoice', as
   status(revoked, 200);
   status(await fixture.browser.get('/me/courses/commerce-kurs'), 404);
 });
+
+test('public imprint only exposes activated wording, including before sales open', async () => {
+  const audience = new Browser();
+  await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: false } });
+  const wording = 'Synthetischer Anbieter\nAusschließlich Testdaten';
+  const draft = await admin.change('post', '/admin/commerce/legal', { kind: 'imprint', wording });
+  status(draft, 201);
+  assert.equal((await audience.get('/shop/config')).body.legal.imprint, undefined);
+  status(await admin.change('post', `/admin/commerce/legal/${draft.body.id}/activate`, {}), 200);
+  const config = await audience.get('/shop/config'); status(config, 200);
+  assert.equal(config.body.sales_enabled, false);
+  assert.equal(config.body.legal.imprint.wording, wording);
+});

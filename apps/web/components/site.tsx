@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { liveSite } from '../lib/site-stage';
 import type { ReactNode } from 'react';
 
 export function Brand() {
@@ -19,8 +20,8 @@ export function Header() {
   </nav></div></header>;
 }
 export function Footer() {
-  return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note"><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb. Zugang nach bestätigtem Zahlungseingang.</span><br/>
-      <span><a href="/widerruf">Vertrag widerrufen</a> · Die Bestätigung mit Datum und Uhrzeit ist dein Fristbeleg.</span></div></footer>;
+  return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note">{!liveSite && <><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb.</span></>}
+      <nav aria-label="Rechtliche Informationen"><Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav></div></footer>;
 }
 export function Shell({ children }: { children: ReactNode }) {
   return <><Header/><main id="inhalt">{children}</main><Footer/></>;

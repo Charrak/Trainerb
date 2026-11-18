@@ -5,13 +5,13 @@ const invalid = (field: string, message = 'Ungültiger Wert.'): never => {
 };
 
 /** Free text with a hard length bound; control characters and lone surrogates are rejected. */
-export function plainText(value: unknown, field: string, max: number, optional = false): string | null {
+export function plainText(value: unknown, field: string, max: number, optional = false, multiline = false): string | null {
   if (optional && (value === undefined || value === null || value === '')) return null;
   if (typeof value !== 'string') return invalid(field);
-  const text = value.normalize('NFC').trim();
+  const text = (multiline ? value.replace(/\r\n/g, '\n') : value).normalize('NFC').trim();
   if (!text) return optional ? null : invalid(field, 'Pflichtfeld.');
   if (Array.from(text).length > max || /\p{Cs}/u.test(text) ||
-      Array.from(text).some(char => /\p{Cc}/u.test(char)) || /[\u2028\u2029]/u.test(text)) return invalid(field);
+      Array.from(text).some(char => /\p{Cc}/u.test(char) && !(multiline && char === '\n')) || /[\u2028\u2029]/u.test(text)) return invalid(field);
   return text;
 }
 

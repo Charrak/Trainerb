@@ -1,5 +1,6 @@
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 
 loadEnv({ path: resolve(__dirname, '../../../.env'), quiet: true });
@@ -72,12 +73,15 @@ export function getConfig(): Config {
   const keyValues = [key('SESSION_HMAC_KEY'), key('CSRF_HMAC_KEY'), key('TOKEN_HMAC_KEY'),
     key('DATA_ENCRYPTION_KEY'), key('AUDIT_PSEUDONYMIZATION_KEY')];
   if (new Set(keyValues.map(x => x.toString('hex'))).size !== keyValues.length) throw new Error('Security keys must be independent.');
-  const passwordFile = process.env.COMMON_PASSWORDS_FILE || resolve(__dirname, '../../../packages/database/data/common-passwords.txt');
-  const commonPasswords = new Set(readFileSync(passwordFile, 'utf8').split(/\r?\n/)
-    .map(x => x.trim().normalize('NFC').toLowerCase()).filter(x => x && !x.startsWith('#')));
+  const root = resolve(__dirname, '../../..');
+  const passwordFile = resolve(root, process.env.COMMON_PASSWORDS_FILE || 'packages/database/data/common-passwords.txt.gz');
+  const file = readFileSync(passwordFile);
+  const entries = (text: string) => text.split(/\r?\n/).map(x => x.trim().normalize('NFC').toLowerCase()).filter(x => x && !x.startsWith('#'));
+  const commonPasswords = new Set(entries((passwordFile.endsWith('.gz') ? gunzipSync(file) : file).toString('utf8')));
   if (!commonPasswords.size || (appEnv === 'production' && commonPasswords.size < 10000)) {
     throw new Error('Configure an adequate locally managed common-password list before production.');
   }
+  for (const word of entries(readFileSync(resolve(root, 'packages/database/data/common-passwords.txt'), 'utf8'))) commonPasswords.add(word);
   const smtpPort = Number(process.env.SMTP_PORT || '1025');
   if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) throw new Error('Invalid SMTP_PORT.');
   const smtpSecure = process.env.SMTP_SECURE === 'true';

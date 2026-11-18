@@ -81,3 +81,11 @@ test('preview cookies are partitioned only with explicit HTTPS development opt-i
     assert.match(invalid.stderr, /only for HTTPS development/);
   }
 });
+
+test('production accepts the packaged password list but rejects the small local supplement on its own', () => {
+  const env = { APP_ENV: 'production', SMTP_HOST: 'smtp.example.invalid', SMTP_SECURE: 'true' };
+  const packaged = cookieProbe({ ...env, COMMON_PASSWORDS_FILE: 'packages/database/data/common-passwords.txt.gz' });
+  assert.equal(packaged.status, 0, packaged.stderr);
+  const small = cookieProbe(env);
+  assert.notEqual(small.status, 0); assert.match(small.stderr, /common-password list/);
+});
