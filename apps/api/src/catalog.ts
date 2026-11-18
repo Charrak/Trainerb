@@ -162,6 +162,21 @@ export class Catalog {
     });
   }
 
+  async approveUpload(ctx: SessionContext, courseId: string, uploadId: string, input: unknown) {
+    requireUuid(courseId); requireUuid(uploadId); bodyObject(input, []);
+    return this.transaction(async tx => {
+      await this.lockCourse(tx, ctx, courseId, 'courses.publish', true, true);
+      const receipt = await tx.courseMediaUpload.findFirst({ where: { id: uploadId, course_id: courseId }, select: { id: true } });
+      if (!receipt) throw missing();
+      const approvedAt = new Date();
+      const result = await tx.courseMediaUpload.updateMany({ where: { id: uploadId, course_id: courseId, status: 'clean', approved_at: null },
+        data: { approved_at: approvedAt, approved_by: ctx.user.id } });
+      if (!result.count) throw apiError(409, 'UPLOAD_NOT_APPROVABLE', 'Der Upload muss ohne Fund geprüft sein und darf noch keine Freigabe haben.');
+      await this.audit(tx, ctx, 'media.upload_approved', courseId, { upload_id: uploadId });
+      return { id: uploadId, approved_at: approvedAt };
+    });
+  }
+
   async publicCourses(limitInput: unknown, cursorInput: unknown) {
     const limit = limitInput === undefined ? 25 : Number(limitInput);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw apiError(422, 'INVALID_LIMIT', 'Ungültige Seitengröße.');
@@ -223,7 +238,7 @@ export class Catalog {
       const roles = await this.currentActor(tx, ctx, 'courses.read');
       const course = await tx.course.findFirst({ where: { id: courseId, ...scopeWhere(ctx.user.id, roles) },
         include: { quarantine_uploads: { orderBy: [{ created_at: 'desc' }, { id: 'desc' }], take: 25,
-          select: { id: true, original_name: true, status: true, scanned_at: true, scan_error: true } },
+          select: { id: true, original_name: true, status: true, scanned_at: true, scan_error: true, approved_at: true } },
           versions: { where: { state: 'draft' }, orderBy: { version: 'desc' }, include: { modules: { orderBy: { position: 'asc' },
           include: { chapters: { orderBy: { position: 'asc' }, include: { _count: { select: { contents: true } } } } } } } },
           ...(globalRole(roles) ? { staff: { select: { user_id: true, scope_role: true }, orderBy: [{ user_id: 'asc' }, { scope_role: 'asc' }] } } : {}) } });

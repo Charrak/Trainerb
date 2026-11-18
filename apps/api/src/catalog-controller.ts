@@ -32,6 +32,12 @@ export class CatalogController {
     await this.limiter.hit('media-upload', ctx.user.id, 20, 15 * 60_000);
     return this.catalog.quarantineUpload(ctx, id, () => quarantineFile(req, res));
   }
+  @Post('admin/courses/:id/media/uploads/:uploadId/approve') @HttpCode(200)
+  async approveUpload(@Req() req: ApiRequest, @Param('id') id: string, @Param('uploadId') uploadId: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.publish', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx);
+    return this.catalog.approveUpload(ctx, id, uploadId, body);
+  }
   @Post('admin/courses') async create(@Req() req: ApiRequest, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.create' });
     await this.sessions.verifyCsrf(req, ctx); return this.catalog.create(ctx, body);

@@ -23,7 +23,8 @@ model User {
   created_at        DateTime  @default(now()) @db.Timestamptz(6)
   updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
-  quarantine_uploads CourseMediaUpload[]
+  quarantine_uploads CourseMediaUpload[] @relation("MediaUploader")
+  media_approvals CourseMediaUpload[] @relation("MediaApprover")
   uploaded_media   MediaAsset[]
   billing_profiles BillingProfile[]
   roles            UserRole[]             @relation("RoleSubject")
@@ -329,9 +330,13 @@ model CourseMediaUpload {
   status        String   @default("pending_scan") @db.Text
   scanned_at    DateTime? @db.Timestamptz(6)
   scan_error    String?   @db.Text
+  approved_by   String?   @db.Uuid
+  approved_at   DateTime? @db.Timestamptz(6)
   created_at    DateTime @default(now()) @db.Timestamptz(6)
   course        Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
-  uploader      User     @relation(fields: [uploaded_by], references: [id], onDelete: Restrict)
+  approver      User?    @relation("MediaApprover", fields: [approved_by], references: [id], onDelete: Restrict)
+  @@index([approved_by])
+  uploader      User     @relation("MediaUploader", fields: [uploaded_by], references: [id], onDelete: Restrict)
   @@index([course_id])
   @@index([uploaded_by])
   @@map("course_media_uploads")
