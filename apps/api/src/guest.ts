@@ -6,6 +6,7 @@ import { Database } from './database';
 import { Sessions, type ApiRequest, type SessionContext } from './sessions';
 import { Outbox } from './outbox';
 import { Invoices } from './invoices';
+import { requireRates, splitGross } from './tax';
 import { apiError, bodyObject, keyedHash, normalizeEmail, randomToken, requireName, requireString, seal } from './security';
 import { billingAddress, idempotencyKey, optionalCouponCode, paymentMethod, type BillingAddress } from './commerce-validation';
 import { getConfig } from './config';
@@ -348,6 +349,13 @@ export class GuestCheckout {
             title: link.course.versions[0]!.title,
             access_days: link.access_days_override ?? link.course.versions[0]!.default_access_days ?? null })) });
       }
+      // The rate is looked up per category for today and stored on the position
+      // with the split. A category without a configured rate stops the sale.
+      const rates = await requireRates(tx, lines.map(line => line.taxCategory), now);
+      // The split is attached to the position, not recomputed later: the row and
+      // the document must show the same three numbers forever.
+      const splits = new Map(lines.map(line => [line.productId,
+        splitGross(line.unit, rates.get(line.taxCategory)!)]));
       const subtotal = lines.reduce((sum, line) => sum + line.unit, 0n);
       let discount = 0n, couponId: string | null = null;
       const identityHmac = keyedHash(getConfig().auditKey, 'coupon-guest', proof.email_canonical);
@@ -400,7 +408,9 @@ export class GuestCheckout {
       for (const [index, line] of lines.entries()) {
         await tx.orderItem.create({ data: { order_id: orderId, product_id: line.productId, price_id: line.priceId,
           position: index + 1, title_snapshot: line.title, variant_snapshot: line.variant, unit_gross_cents: line.unit,
-          discount_cents: 0n, total_gross_cents: line.unit } });
+          discount_cents: 0n, total_gross_cents: line.unit,
+          tax_rate_bp: splits.get(line.productId)!.rate_bp, net_cents: splits.get(line.productId)!.net_cents,
+          tax_cents: splits.get(line.productId)!.tax_cents, tax_label: splits.get(line.productId)!.label } });
         for (const course of line.courses) {
           await tx.orderItemCourse.create({ data: { order_id: orderId, order_item_product: line.productId,
             course_id: course.course_id, course_version_id: course.course_version_id,

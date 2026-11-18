@@ -7,6 +7,7 @@ import { getConfig } from './config';
 import { apiError } from './security';
 import { Outbox } from './outbox';
 import { fulfilPaidOrder } from './fulfilment';
+import { Disputes } from './disputes';
 
 const unavailable = () => apiError(409, 'STRIPE_UNAVAILABLE', 'Kartenzahlung ist derzeit nicht eingerichtet.');
 
@@ -24,7 +25,8 @@ type StripeSessionFacts = { id: string; paymentIntentId: string | null; amount: 
  */
 @Injectable()
 export class StripePayments {
-  constructor(private readonly db: Database, private readonly outbox: Outbox) {}
+  constructor(private readonly db: Database, private readonly outbox: Outbox,
+              private readonly disputes: Disputes) {}
 
   private readonly client = getConfig().stripeSecretKey
     ? new Stripe(getConfig().stripeSecretKey!, { maxNetworkRetries: 2 }) : null;
@@ -79,6 +81,12 @@ export class StripePayments {
     try {
       event = this.client.webhooks.constructEvent(rawBody, signature, webhookSecret);
     } catch { throw apiError(400, 'INVALID_SIGNATURE', 'Ungültige Signatur.'); }
+    // Chargebacks arrive as their own family of events and never carry a
+    // checkout session; they are routed before the payment branch.
+    if (event.type.startsWith('charge.dispute.')) {
+      await this.applyDisputeEvent(event);
+      return { received: true };
+    }
     if (event.type !== 'checkout.session.completed' && event.type !== 'checkout.session.async_payment_succeeded') {
       return { received: true };
     }
@@ -91,6 +99,52 @@ export class StripePayments {
     if (!/^[0-9a-f-]{36}$/.test(orderId)) throw apiError(400, 'INVALID_WEBHOOK', 'Ungültige Anfrage.');
     await this.applyPaidEvent(facts, event.id, event.type);
     return { received: true };
+  }
+
+  /**
+   * A provider-reported chargeback.
+   *
+   * Nothing here decides anything: the event is translated into the same
+   * `Disputes.record` call staff use, marked `webhook`, and that function keeps
+   * every rule (one row per provider reference, no changed amounts, a lost case
+   * is money gone, a resolved case releases a blocked order). A case the provider
+   * reports twice updates the row and bumps `last_synced_at`.
+   */
+  private async applyDisputeEvent(event: Stripe.Event): Promise<void> {
+    const dispute = event.data.object as Stripe.Dispute;
+    const intentId = typeof dispute.payment_intent === 'string'
+      ? dispute.payment_intent : dispute.payment_intent?.id ?? '';
+    if (!intentId) return;
+    // The order is found through the payment we booked, not through metadata a
+    // provider may not send on this event type.
+    const attempt = await this.db.paymentAttempt.findFirst({ where: { provider: 'stripe',
+      provider_payment_id: intentId, status: 'succeeded' }, select: { order_id: true } });
+    if (!attempt) {
+      // A chargeback about a payment we never booked is not silently attached to
+      // an arbitrary order; the delivery is acknowledged so Stripe stops retrying.
+      return;
+    }
+    const status = disputeStatus(dispute.status);
+    try {
+      // `warning_*` are pre-dispute notices; they keep the dispute id and are
+      // told apart by status, exactly as the shared recorder expects.
+      await this.disputes.record(null, attempt.order_id, {
+        provider_dispute_id: dispute.id,
+        amount_cents: String(dispute.amount),
+        status,
+        reason_code: dispute.reason ? dispute.reason.replace(/[^a-z_]/g, '_').slice(0, 60) : null,
+      }, { source: 'webhook' });
+    } catch (error) {
+      const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 500;
+      // A refusal by our own rules is final: retrying the same delivery would
+      // fail identically forever. It is written down for a human instead, with
+      // the provider's reference, so nothing disappears.
+      if (!Number.isFinite(status) || status >= 500) throw error;
+      await this.db.auditEvent.create({ data: { id: uuidv7(), actor_user_id: null, origin: 'provider',
+        action: 'dispute.webhook_rejected', target_type: 'order', target_ref: attempt.order_id,
+        after_safe: { provider_dispute_id: dispute.id, provider_status: dispute.status,
+          reported_status: status, reason: error instanceof Error ? error.message : 'unbekannt' } } });
+    }
   }
 
   private async applyPaidEvent(facts: StripeSessionFacts, eventId: string, eventType: string): Promise<void> {
@@ -134,6 +188,23 @@ export class StripePayments {
       // exists, including linking a guest order to its account.
       await fulfilPaidOrder(tx, order.id, this.outbox);
     });
+  }
+}
+
+/**
+ * Stripe's case states mapped onto ours. `warning_needs_response` is a notice
+ * that a chargeback may come; it is recorded as `warning`, not as an open case.
+ */
+function disputeStatus(status: Stripe.Dispute.Status | null | undefined): string {
+  switch (status) {
+    case 'warning_needs_response':
+    case 'warning_under_review':
+    case 'warning_closed': return 'warning';
+    case 'needs_response':
+    case 'under_review': return 'open';
+    case 'won': return 'won';
+    case 'lost': return 'lost';
+    default: return 'open';
   }
 }
 

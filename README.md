@@ -1,6 +1,6 @@
 # Online-Akademie – Konzept und Entwicklungsstand
 
-**Stand: 15.11.2026 · Phase 3 (Kaufstrecke) in Entwicklung · nicht produktionsreif**
+**Stand: 15.11.2026 · Phase 4 (Kaufkonto, Rechnung, Steuern, Aufbewahrung) in Entwicklung · nicht produktionsreif**
 
 Verantwortlich: Soufian Charrak
 
@@ -21,11 +21,14 @@ Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), di
 - **Lernbereich als Folge des Kaufs:** `/konto/kurse` und `/lernen/<kurs>` zeigen die freigeschalteten, veröffentlichten Kapitel als reinen Text (kein HTML, Links mit `rel="noopener noreferrer nofollow"`) und speichern den Kapitelabschluss idempotent. Der Zugang wird bei jeder Anfrage erneut geprüft.
 - **Verwaltung** unter `/admin/bestellungen` (Zahlung bestätigen, stornieren, Beleg prüfen) und `/admin/commerce` (Verkauf freischalten, Rechnungssteller, Bankverbindung, Zahlungsziel, Rechtstexte anlegen und aktivieren). Alle schreibenden Aktionen verlangen eine frische Bestätigung.
 - **Erstattungen und Korrekturbelege:** Teil- und Vollerstattung durch die Verwaltung (Vorschlag mit `refunds.propose`, Ausführung mit `refunds.manage` und frischer Bestätigung), Deckelung durch Anbieterzahlbetrag und Datenbank-Trigger, positionsgenaue Zuordnung ohne erfundene Steuersätze, Gutschrift-PDF je Erstattung im eigenen Nummernkreis (`TB-GS-JJJJ-NNNNNN`), Download im Konto unter `/konto/rechnungen` und per Support. Die Frage „behält die Person den Kurs?“ ist eine eigene, dokumentierte Entscheidung (`kept`/`suspended`/`revoked`); ein noch nicht begonnener Zugang wird gesperrt statt gelöscht, und der Zahlnachweis verschwindet nie.
-- **Rückbuchungen (Streitfälle):** `/admin/disputes` und das Bestellbild erfassen Anbieterfälle (`warning`/`open`/`won`/`lost`/`closed`). Ein verlorener Fall setzt die Bestellung auf `charged_back`, mindert den erstattbaren Betrag und ist nicht stornierbar; derselbe Anbieterfall aktualisiert sich statt sich zu duplizieren. Es entsteht keine Gutschrift, und der Zugang wird nie automatisch entzogen — die Entscheidung bleibt ein eigener, dokumentierter Schritt.
+- **Keine Sackgassen:** Ein Widerruf ohne auffindbare Bestellung lässt sich mit einem passenden Grund ablehnen (Annehmen verlangt die Bestellung); ein laufender Streitfall verhindert die Freischaltung, parkt die bezahlte Bestellung sichtbar als „gesperrt“ und gibt sie nach einem gewonnenen Fall wieder frei — während der Fall läuft, ist der Zugang nur vorläufig zu entscheiden.
+- **Rückbuchungen (Streitfälle):** `/admin/streitfaelle` (Liste mit Herkunft und letztem Anbieterabgleich) und das Bestellbild erfassen Anbieterfälle (`warning`/`open`/`won`/`lost`/`closed`). Fälle kommen auch **ohne Zutun** über den signaturgeprüften Provider-Webhook (`charge.dispute.*`) und laufen durch dieselben Regeln wie eine manuelle Erfassung; `sync_source` hält fest, ob eine Anbietermeldung oder ein Mensch den Stand gesetzt hat. Ein verlorener Fall setzt die Bestellung auf `charged_back`, mindert den erstattbaren Betrag und ist nicht stornierbar; derselbe Anbieterfall aktualisiert sich statt sich zu duplizieren. Es entsteht keine Gutschrift, und der Zugang wird nie automatisch entzogen — die Entscheidung bleibt ein eigener, dokumentierter Schritt.
+- **Umsatzsteuer als Daten:** `tax_rates` hält Sätze mit Gültigkeitszeitraum (19 % `standard` als Regelsteuersatz für Online-Training/digitale Kurse in Deutschland und Vorgabe, 7 % `reduced` vorhanden, nicht vorgewählt). Jede Position speichert Netto, Steuer und Satz beim Kauf — `gross = net + tax` und die Ratenkonsistenz sind Datenbank-Constraints —, und Rechnung wie Gutschrift weisen die Steuer **je Satz** aus. Ein Satz wird nie überschrieben, sondern als neuer Zeitraum angelegt; ohne gültigen Satz bricht der Verkauf mit `TAX_RATE_MISSING` ab. Sonderfälle und Befreiungen bleiben offen und sind als Datenzeile zu pflegen.
+- **Aufbewahrung:** `npm run retention:run` (mit `-- --dry-run` zum Prüfen) entfernt abgelaufene Einmaltokens, alte bzw. widerrufene Sitzungen, endgültig fehlgeschlagene Mail-Outbox-Zeilen und — nach Frist — die Klartextadresse abgeschlossener Widerrufsfälle. Rechnungen, Gutschriften, Zahlungen, Streitfälle und Audit-Ereignisse werden nicht angetastet. Der Lauf protokolliert sich als `retention.run`.
 - **Öffentlicher Widerruf:** `/widerruf` ohne Anmeldung, gedrosselt, mit immer gleicher Antwort (keine Auskunft über fremde Bestellungen) und Eingangsbestätigung mit Datum und Uhrzeit als Fristbeleg. Die Adresse wird über einen Einmal-Link bestätigt; erst danach ordnet Personal eine passende Bestellung zu (`/admin/widerrufe`). Ein angenommener Widerruf erstattet nichts — die Erstattung bleibt ein separater Vorgang.
-- Automatisierte Unit- und Datenbank-/API-Integrationstests sowie lokale Browser-Smoke-Tests für Identität, Kursentwürfe, Produkt-/Preisentwürfe und die Kaufstrecke.
+- Automatisierte Unit- und Datenbank-/API-Integrationstests sowie lokale Browser-Smoke-Tests für Identität, Kursentwürfe, Produkt-/Preisentwürfe, die Kaufstrecke, Steueraufteilung (`TAX-01`), Aufbewahrung (`RET-01`) und Streitfälle aus Anbietermeldungen (`PAY-04f`).
 
-**Keine Freigabe für echte Kundendaten oder den Produktivbetrieb:** Betriebs- und Sicherheitsabnahme, vollständige Datenschutzprozesse, Schlüsselrotation, Aufbewahrungs-/Löschjobs, restriktive Datenbankrollen, Überwachung, Backup-Restore, CSP und rechtliche Prüfung stehen noch aus. Der Browser-Smoke-Test ersetzt keine vollständige Accessibility- oder Sicherheitsprüfung. SMTP-Status `accepted` bedeutet Anbieterannahme, nicht garantierte Zustellung; bei einem Absturz nach Annahme kann eine Mail erneut gesendet werden. Es gibt keine Zusicherung eines Exactly-once-Mailversands.
+**Keine Freigabe für echte Kundendaten oder den Produktivbetrieb:** Betriebs- und Sicherheitsabnahme, vollständige Datenschutzprozesse, Schlüsselrotation, Löschprozesse für personenbezogene Daten, restriktive Datenbankrollen, Überwachung, Backup-Restore, CSP und rechtliche Prüfung stehen noch aus. Der Browser-Smoke-Test ersetzt keine vollständige Accessibility- oder Sicherheitsprüfung. SMTP-Status `accepted` bedeutet Anbieterannahme, nicht garantierte Zustellung; bei einem Absturz nach Annahme kann eine Mail erneut gesendet werden. Es gibt keine Zusicherung eines Exactly-once-Mailversands.
 
 ## Lokal starten
 
@@ -92,6 +95,7 @@ npm test                 # Unit-Tests; baut zuerst Contracts und API
 npm run test:integration # löscht Anwendungsdaten in der dedizierten *_test-Datenbank!
 npm run typecheck
 npm run build
+npm run retention:run -- --dry-run   # zeigt, was der Aufbewahrungslauf entfernen würde
 ```
 
 ### Continuous Integration

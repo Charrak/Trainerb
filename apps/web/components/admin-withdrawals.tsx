@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api, ApiError, errorMessage, type Profile } from '../lib/api';
-import { dateTime, withdrawalStatusLabels, type AdminWithdrawal } from '../lib/shop';
+import { dateTime, euro, withdrawalStatusLabels, type AdminWithdrawal } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 
 const canHandle = (profile: Profile) => profile.permissions.includes('withdrawals.manage');
 
 type Detail = AdminWithdrawal & { message: string | null;
   order: { id: string; order_number: string; payment_state: string; total_gross_cents: string } | null;
+  decision_reason: string | null;
   processor: string | null;
   refund: { id: string; status: string; amount_cents: string } | null };
 
@@ -28,7 +29,10 @@ export function AdminWithdrawals() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState('');
-  const [note, setNote] = useState('');
+  // The vocabulary comes from the API, which validates with the same list and is
+  // backed by a database CHECK — the drop-down cannot invent a reason.
+  const [reasons, setReasons] = useState<{ code: string; label: string; closes_without_order: boolean }[]>([]);
+  const [reason, setReason] = useState('');
   const allowed = !!profile && canHandle(profile);
 
   async function load() {
@@ -46,6 +50,10 @@ export function AdminWithdrawals() {
       if (!active) return; setProfile(user);
       if (!canHandle(user)) { setError('Für diesen Bereich fehlt die Berechtigung.'); return; }
       void load();
+      void api<{ data: { code: string; label: string; closes_without_order: boolean }[] }>(
+        '/admin/withdrawal-requests/decision-reasons').then(page => {
+          setReasons(page.data); setReason(page.data[0]?.code ?? '');
+        }).catch(() => undefined);
     }).catch(e => { if (active) setError(errorMessage(e)); });
     return () => { active = false; };
   }, []);
@@ -54,7 +62,7 @@ export function AdminWithdrawals() {
     setBusy(label); setError(''); setSuccess('');
     try {
       const result = await api<Detail>(path, 'POST', payload);
-      setSuccess(message); setSelected(result); setNote(''); void load();
+      setSuccess(message); setSelected(result); void load();
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
   }
 
@@ -71,21 +79,24 @@ export function AdminWithdrawals() {
           {rows.length ? <ul className="plain-list">{rows.map(row => <li key={row.id}>
             <button type="button" className="button button-outline" onClick={() => void api<Detail>(`/admin/withdrawal-requests/${row.id}`)
               .then(setSelected).catch(e => setError(errorMessage(e)))}>
-              {dateTime(row.submitted_at)} · {row.contact_email} · {withdrawalStatusLabels[row.status] ?? row.status}
-              {row.submitted_order_number ? ` · Nr. ${row.submitted_order_number}` : ''}
+              {dateTime(row.submitted_at)} · {row.contact_email ?? 'Adresse entfernt (Aufbewahrung)'}
+              {' '}· {withdrawalStatusLabels[row.status] ?? row.status}
+              {/* The linked order, not the typed number: only that one is a fact. */}
+              {row.order_number ? ` · Bestellung ${row.order_number}` : ''}
             </button></li>)}</ul> : <p className="muted">Keine offenen Vorgänge.</p>}
         </section>
         <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">VORGANG</span>
           <h2>{selected ? withdrawalStatusLabels[selected.status] ?? selected.status : 'Nichts ausgewählt'}</h2></div></div>
           {!selected ? <p className="muted">Wähle links einen Vorgang.</p> : <>
-            <p className="muted">{dateTime(selected.submitted_at)} · {selected.contact_email}
+            <p className="muted">{dateTime(selected.submitted_at)} · {selected.contact_email
+              ?? 'Adresse nach Aufbewahrungsfrist entfernt'}
               {selected.customer_name ? ` · ${selected.customer_name}` : ''}</p>
             {selected.message && <p>„{selected.message}“</p>}
             <p className="muted">Angegebene Bestellnummer: {selected.submitted_order_number ?? 'keine'}
               {' '}(unbestätigte Angabe).</p>
             <p className="muted">Bestätigte Adresse: {selected.identity_verified_at
               ? dateTime(selected.identity_verified_at) : 'noch nicht bestätigt'}
-              {' '}· Bestellung: {selected.order ? selected.order.order_number : 'nicht zugeordnet'}</p>
+              {' '}· Bestellung: {selected.order_number ?? 'nicht zugeordnet'}</p>
 
             {!selected.identity_verified_at && <form className="stack-form" onSubmit={event => {
               event.preventDefault(); void act('code', `/admin/withdrawal-requests/${selected.id}/identity-code`, {},
@@ -96,29 +107,41 @@ export function AdminWithdrawals() {
                 Schritt lässt sich keine Bestellung zuordnen.</p>
             </form>}
 
-            {!['completed', 'rejected'].includes(selected.status) && <form className="stack-form" onSubmit={event => {
-              event.preventDefault();
-              void act('decide', `/admin/withdrawal-requests/${selected.id}`,
-                { status: 'completed', decision_reason: note }, 'Vorgang angenommen und Ergebnis mitgeteilt.'); }}>
-              <Field label="Begründung" id="withdrawal-note" hint="Kurzcode, z. B. within_deadline.">
-                <input id="withdrawal-note" value={note} onChange={e => setNote(e.target.value)}
-                  maxLength={60} pattern="[a-z_]{3,60}" required/></Field>
-              <div className="title-actions">
-                <button className="button button-primary" disabled={!!busy || selected.identity_verified_at === null}>
-                  {busy === 'decide' ? 'Bitte warten …' : 'Widerruf annehmen'}</button>
-                <button type="button" className="button button-secondary" disabled={!!busy || !note}
-                  onClick={() => void act('reject', `/admin/withdrawal-requests/${selected.id}`,
-                    { status: 'rejected', decision_reason: note }, 'Vorgang abgelehnt und Ergebnis mitgeteilt.')}>
-                  Ablehnen</button>
-              </div>
-              <p className="muted">Ein angenommener Widerruf erstattet nichts. Die Erstattung erfolgt bewusst
-                separat in der Bestellung.</p>
-            </form>}
+            {!['completed', 'rejected'].includes(selected.status) && (() => {
+              // Accepting needs the order it cancels; declining does not. The API
+              // offers exactly the reasons that may close a case without one.
+              const chosen = reasons.find(entry => entry.code === reason);
+              const canAccept = selected.order !== null && chosen !== undefined && !chosen.closes_without_order;
+              const canDecline = chosen !== undefined && (selected.order !== null || chosen.closes_without_order);
+              return <form className="stack-form" onSubmit={event => {
+                event.preventDefault();
+                void act('decide', `/admin/withdrawal-requests/${selected.id}`,
+                  { status: 'completed', decision_reason: reason }, 'Vorgang angenommen und Ergebnis mitgeteilt.'); }}>
+                <Field label="Entscheidungsgrund" id="withdrawal-reason">
+                  <select id="withdrawal-reason" value={reason} onChange={e => setReason(e.target.value)}>
+                    {reasons.map(entry => <option key={entry.code} value={entry.code}>{entry.label}</option>)}
+                  </select></Field>
+                <div className="title-actions">
+                  <button className="button button-primary"
+                    disabled={!!busy || selected.identity_verified_at === null || !canAccept}>
+                    {busy === 'decide' ? 'Bitte warten …' : 'Widerruf annehmen'}</button>
+                  <button type="button" className="button button-secondary" disabled={!!busy || !canDecline}
+                    onClick={() => void act('reject', `/admin/withdrawal-requests/${selected.id}`,
+                      { status: 'rejected', decision_reason: reason }, 'Vorgang abgelehnt und Ergebnis mitgeteilt.')}>
+                    Ablehnen</button>
+                </div>
+                {selected.order === null && <p className="muted">Ohne zugeordnete Bestellung lässt sich der
+                  Vorgang nur ablehnen — zum Beispiel mit „Keine passende Bestellung auffindbar“.</p>}
+                <p className="muted">Ein angenommener Widerruf erstattet nichts. Die Erstattung erfolgt bewusst
+                  separat in der Bestellung.</p>
+              </form>;
+            })()}
 
             {['completed', 'rejected'].includes(selected.status) && <p className="muted">
               Entschieden {dateTime(selected.processed_at)} von {selected.processor ?? 'unbekannt'}
               {selected.decision_reason ? ` · ${selected.decision_reason}` : ''}.
-              {selected.refund ? ` Erstattung ${selected.refund.status}.` : ' Keine Erstattung verknüpft.'}</p>}
+              {selected.refund ? ` Erstattung ${selected.refund.status} (${euro(selected.refund.amount_cents)}).`
+                : ' Keine Erstattung verknüpft.'}</p>}
           </>}
         </section>
       </div>}

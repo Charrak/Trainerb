@@ -19,13 +19,40 @@ import { apiError } from './security';
  *    participant name from the order, and the usual activation mail is queued.
  * In every case the buyer never gains access to an account they did not prove
  * control over.
+ *
+ * Money that the bank has already taken back, or is still deciding about, must
+ * not turn into access. A lost chargeback leaves the order `charged_back` and
+ * never reaches this function; a running one (`warning`, `open`) reaches it and
+ * is refused, so the caller can park the order. Granting first and asking later
+ * would hand out a course for money that may be gone tomorrow.
  */
+/** What fulfilment did, so a caller can report it without guessing. */
+export type FulfilmentOutcome =
+  | { status: 'fulfilled' }
+  | { status: 'blocked_by_dispute'; dispute_id: string; dispute_status: string };
+
 export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: string,
-                                     outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> }): Promise<void> {
+                                     outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> }): Promise<FulfilmentOutcome> {
   const order = await tx.order.findUnique({ where: { id: orderId } });
   if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
   if (order.payment_state !== 'paid') {
     throw apiError(409, 'ORDER_NOT_PAID', 'Ein Zugang kann erst nach bestätigter Zahlung entstehen.');
+  }
+  // An open chargeback is a question, not an answer. Until the bank decides, no
+  // access is granted and the order is parked visibly as `blocked`.
+  //
+  // This returns instead of throwing on purpose: the caller's transaction also
+  // records the payment (the money *did* arrive), and an exception here would
+  // roll that back and leave the payment invisible. Parking keeps both facts —
+  // money received, access withheld pending a decision.
+  const pending = await tx.dispute.findFirst({ where: { order_id: orderId,
+    status: { in: ['warning', 'open'] } }, select: { id: true, status: true } });
+  if (pending) {
+    await tx.order.update({ where: { id: orderId }, data: { fulfillment_state: 'blocked' } });
+    await tx.auditEvent.create({ data: { id: uuidv7(), origin: 'system',
+      action: 'fulfilment.blocked_by_dispute', target_type: 'order', target_ref: orderId,
+      after_safe: { dispute_id: pending.id, dispute_status: pending.status } } });
+    return { status: 'blocked_by_dispute', dispute_id: pending.id, dispute_status: pending.status };
   }
   const userId = order.user_id ?? await linkGuestAccount(tx, order, outbox);
   const items = await tx.orderItemCourse.findMany({ where: { order_id: orderId },
@@ -44,6 +71,7 @@ export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: str
   await tx.order.update({ where: { id: orderId }, data: { fulfillment_state: 'fulfilled', fulfilled_at: now } });
   await tx.couponReservation.updateMany({ where: { order_id: orderId, status: 'reserved' },
     data: { status: 'redeemed', resolved_at: now, user_id: userId } });
+  return { status: 'fulfilled' };
 }
 
 /**

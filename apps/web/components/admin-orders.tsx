@@ -29,14 +29,14 @@ export function AdminOrders() {
   const [profile, setProfile] = useState<Profile>();
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [state, setState] = useState('awaiting');
-  const [totals, setTotals] = useState<{ awaiting: number; paid: number; refunded: number }>();
+  const [totals, setTotals] = useState<{ awaiting: number; paid: number; refunded: number; charged_back?: number }>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const allowed = !!profile && canRead(profile);
   async function load(filter = state) {
     setError('');
     try {
-      const page = await api<{ data: AdminOrder[]; totals: { awaiting: number; paid: number; refunded: number } }>(
+      const page = await api<{ data: AdminOrder[]; totals: { awaiting: number; paid: number; refunded: number; charged_back?: number } }>(
         `/admin/orders?state=${encodeURIComponent(filter)}`);
       setOrders(page.data); setTotals(page.totals);
     } catch (e) {
@@ -57,15 +57,17 @@ export function AdminOrders() {
   return <div className="account-page content-width">
     <div className="dashboard-title"><div><span className="eyebrow"><span className="eyebrow-line"/> GESCHÜTZTE VERWALTUNG</span>
       <h1>Bestellungen<span className="accent-dot">.</span></h1><p>Zahlungseingänge buchen, stornieren und Zugänge prüfen.</p></div>
-      <div className="title-actions"><Link className="button button-secondary" href="/admin/commerce">Zahlung &amp; Recht <Arrow/></Link>
+      <div className="title-actions"><Link className="button button-primary" href="/admin/streitfaelle">Streitfälle <Arrow/></Link>
+        <Link className="button button-secondary" href="/admin/commerce">Zahlung &amp; Recht <Arrow/></Link>
         <Link className="button button-outline" href="/admin">← Nutzerverwaltung</Link></div></div>
     <div className="course-feedback"><Notice message={error}/></div>
     {loading ? <p className="muted">Bestellungen werden geladen …</p> : allowed && <>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">ÜBERSICHT</span>
         <h2>Offene und bezahlte Bestellungen</h2>
-        <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt · ${totals.refunded} erstattet` : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
+        <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt · ${totals.refunded} erstattet`
+          + (totals.charged_back ? ` · ${totals.charged_back} zurückgebucht` : '') : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
         <div className="choice-row" role="group" aria-label="Statusfilter">
-          {['awaiting', 'paid', 'unlinked', 'review', 'refunded', 'cancelled', ''].map(value => <label key={value || 'all'}>
+          {['awaiting', 'paid', 'unlinked', 'review', 'refunded', 'charged_back', 'cancelled', ''].map(value => <label key={value || 'all'}>
             <input type="radio" checked={state === value} onChange={() => { setState(value); void load(value); }}/>
             {value === '' ? 'Alle' : value === 'unlinked' ? 'Ohne Konto' : paymentStateLabels[value]}</label>)}
         </div>
@@ -303,7 +305,7 @@ function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, rel
   const [amount, setAmount] = useState('');
   const [status, setStatus] = useState<'warning' | 'open' | 'won' | 'lost' | 'closed'>('open');
   const [reasonCode, setReasonCode] = useState('product_not_received');
-  const [decision, setDecision] = useState<'kept' | 'revoked'>('kept');
+  const [decision, setDecision] = useState<'kept' | 'suspended' | 'revoked'>('kept');
   const [decisionReason, setDecisionReason] = useState('chargeback_lost');
   if (!canHandleDisputes(profile)) return null;
   const disputes = order.disputes ?? [];
@@ -356,20 +358,26 @@ function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, rel
       <button className="button button-secondary" disabled={!!busy || !providerDisputeId || !amount}>
         {busy === 'dispute' ? 'Bitte warten …' : 'Streitfall erfassen'}</button>
     </form>
-    {canDecideAccess(profile) && disputes.some(dispute => ['won', 'lost', 'closed'].includes(dispute.status)) &&
-      <div className="stack-form">
+    {canDecideAccess(profile) && disputes.length > 0 && <div className="stack-form">
       <h4 className="detail-subheading">Zugang nach Rückbuchung</h4>
-      <p className="muted">Der Ausgang des Falls entscheidet nichts über den Zugang. {open.length
-        ? 'Solange ein Fall offen ist, lässt sich hier nichts festhalten.'
-        : 'Ein gewonnener Fall erlaubt keinen Entzug.'}</p>
+      <p className="muted">Der Ausgang des Falls entscheidet nichts über den Zugang.
+        {open.length
+          ? ' Solange der Fall läuft, lässt sich der Zugang nur vorläufig sperren — nicht entziehen.'
+          : ' Ein gewonnener Fall erlaubt keinen Entzug.'}</p>
       <Field label="Entscheidung" id="dispute-decision"><select id="dispute-decision" value={decision}
         onChange={e => setDecision(e.target.value as typeof decision)}>
         <option value="kept">Zugang bleibt bestehen</option>
-        <option value="revoked">Zugang entziehen</option></select></Field>
+        {open.length > 0 && <option value="suspended">Zugang vorläufig sperren</option>}
+        {open.length === 0 && <option value="revoked">Zugang entziehen</option>}</select></Field>
       <Field label="Begründung" id="dispute-decision-reason"><input id="dispute-decision-reason"
         value={decisionReason} onChange={e => setDecisionReason(e.target.value)} maxLength={60}
         pattern="[a-z_]{3,60}" required/></Field>
-      {['won', 'lost', 'closed'].map(value => { const settled = disputes.filter(dispute => dispute.status === value);
+      {open.length > 0 && <button type="button" className="button button-secondary" disabled={!!busy}
+        onClick={() => void send('dispute-decision', `/admin/disputes/${open[open.length - 1].id}/access-decision`,
+          { decision: decision === 'suspended' ? 'suspended' : 'kept', reason: decisionReason },
+          'Vorläufige Entscheidung festgehalten.')}>
+        {busy === 'dispute-decision' ? 'Bitte warten …' : 'Vorläufige Entscheidung festhalten (Fall läuft)'}</button>}
+      {open.length === 0 && ['won', 'lost', 'closed'].map(value => { const settled = disputes.filter(dispute => dispute.status === value);
         if (!settled.length) return null;
         return <button key={value} type="button" className="button button-secondary" disabled={!!busy}
           onClick={() => void send('dispute-decision', `/admin/disputes/${settled[settled.length - 1].id}/access-decision`,
@@ -490,6 +498,74 @@ export function AdminCommerce() {
           <button className="button button-secondary" disabled={!!busy}>{busy === 'legal' ? 'Bitte warten …' : 'Fassung als Entwurf anlegen'}</button>
         </form>
       </section>
+      <TaxRates busy={busy} setBusy={setBusy} setError={setError} setSuccess={setSuccess}/>
     </div>}
   </div>;
+}
+
+type TaxRateRow = { id: string; category: string; rate_bp: number; label: string; note: string | null;
+  valid_from: string; valid_until: string | null; is_default: boolean; current: boolean };
+
+/**
+ * Tax rates as periods, not as a setting.
+ *
+ * A percentage that is edited in place would rewrite every past document's
+ * story. So the form only ever *adds* a period, and closing one is the only
+ * change an existing row allows. Positions already sold keep the rate they were
+ * charged with.
+ */
+function TaxRates({ busy, setBusy, setError, setSuccess }: {
+  busy: string; setBusy: (value: string) => void;
+  setError: (value: string) => void; setSuccess: (value: string) => void }) {
+  const [rows, setRows] = useState<TaxRateRow[]>([]);
+  const [category, setCategory] = useState('standard');
+  const [rate, setRate] = useState('1900');
+  const [label, setLabel] = useState('19 % USt.');
+  const [isDefault, setIsDefault] = useState(false);
+  async function load() {
+    try { const page = await api<{ data: TaxRateRow[] }>('/admin/commerce/tax-rates'); setRows(page.data); }
+    catch (e) { setError(errorMessage(e)); }
+  }
+  useEffect(() => { void load(); /* once: the list is reloaded after each change */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function add(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy('tax'); setError(''); setSuccess('');
+    try {
+      await api('/admin/commerce/tax-rates', 'POST', { category, rate_bp: rate, label, is_default: isDefault });
+      setIsDefault(false); await load();
+      setSuccess('Steuersatz ab heute hinterlegt. Frühere Belege bleiben unverändert.');
+    } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
+  }
+  async function close(row: TaxRateRow) {
+    setBusy(row.id); setError(''); setSuccess('');
+    try { await api(`/admin/commerce/tax-rates/${row.id}/close`, 'POST', {}); await load();
+      setSuccess('Zeitraum beendet. Der Satz gilt bis zum angegebenen Zeitpunkt weiter.');
+    } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
+  }
+  return <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">03 / STEUERN</span>
+    <h2>Steuersätze</h2><p>Umsatzsteuer ist ein Datenwert mit Gültigkeitszeitraum, keine Konstante im Code.
+      Bereits verkaufte Positionen behalten den damals berechneten Satz.</p></div></div>
+    {rows.length ? <div className="legal-version-group">{rows.map(row => <div key={row.id} className="legal-version-row">
+      <span>{row.category} · {(row.rate_bp / 100).toFixed(2).replace('.', ',')} % · {row.label}
+        {' '}· ab {dateTime(row.valid_from)}{row.valid_until ? ` bis ${dateTime(row.valid_until)}` : ' (offen)'}
+        {row.is_default ? ' · Standard' : ''}</span>
+      {row.current && <button type="button" className="inline-button text-link" disabled={!!busy}
+        onClick={() => void close(row)}>Beenden</button>}
+    </div>)}</div> : <p className="muted">Noch kein Steuersatz hinterlegt — Verkäufe würden abbrechen.</p>}
+    <div className="inner-divider"/>
+    <form onSubmit={add} className="stack-form">
+      <div className="field-row">
+        <Field label="Kategorie" id="tax-category" hint="Wie im Produkt hinterlegt, z. B. standard.">
+          <input id="tax-category" value={category} onChange={e => setCategory(e.target.value)} maxLength={64} required/></Field>
+        <Field label="Satz in Basispunkten" id="tax-rate" hint="1900 = 19 %. Keine Kommazahlen.">
+          <input id="tax-rate" inputMode="numeric" value={rate} onChange={e => setRate(e.target.value)} maxLength={4} required/></Field>
+      </div>
+      <Field label="Bezeichnung auf dem Beleg" id="tax-label">
+        <input id="tax-label" value={label} onChange={e => setLabel(e.target.value)} maxLength={60} required/></Field>
+      <div className="choice-row"><label><input type="checkbox" checked={isDefault}
+        onChange={e => setIsDefault(e.target.checked)}/> Als Vorgabe für neue Produkte</label></div>
+      <button className="button button-secondary" disabled={!!busy}>{busy === 'tax' ? 'Bitte warten …' : 'Zeitraum anlegen'}</button>
+    </form>
+  </section>;
 }

@@ -8,10 +8,12 @@
  *     price or settings row is read here, so re-rendering next year produces
  *     the same document. That is also why there is no "generated at" stamp:
  *     the issue date is part of the snapshot, the render time is not.
- *  2. **No invented tax.** `tax_category` is a free identifier without a rate
- *     (see docs/02 and docs/07). The document therefore prints gross amounts
- *     and says so; it never splits a net amount or a VAT rate that nobody has
- *     approved.
+ *  2. **Tax is snapshot data, never recomputed.** The split (rate, net, tax) was
+ *     determined at checkout and frozen in `lines_snapshot`; this renderer only
+ *     prints it. A document from 2026 must not change because a rate changed in
+ *     2027. Positions without a split (older rows, credit notes derived from
+ *     them) fall back to a gross-only statement — the renderer never invents a
+ *     rate.
  *
  * The output is a PDF 1.4 file with the standard Helvetica fonts and
  * `WinAnsiEncoding`, which covers the German characters (ä ö ü ß € – „ “).
@@ -55,7 +57,10 @@ type Buyer = {
   postal_code?: unknown; city?: unknown; region?: unknown; country?: unknown; vat_id?: unknown;
 };
 type Line = { position?: unknown; title?: unknown; variant?: unknown; quantity?: unknown;
-  unit_gross_cents?: unknown; discount_cents?: unknown; total_gross_cents?: unknown };
+  unit_gross_cents?: unknown; discount_cents?: unknown; total_gross_cents?: unknown;
+  /** basis points, e.g. 1900 for 19 % — present once the split is stored */
+  tax_rate_bp?: unknown; tax_label?: unknown;
+  net_cents?: unknown; tax_cents?: unknown };
 
 const PAGE_WIDTH = 595.28;
 const PAGE_HEIGHT = 841.89;
@@ -318,8 +323,43 @@ function writeLineTable(layout: Layout, lines: Line[], currency: string): void {
   }
 }
 
+type TaxGroup = { rate_bp: number; label: string; net: bigint; tax: bigint; gross: bigint };
+
+/** The tax block of a document: one line per rate, never a blended average. */
+function taxGroups(lines: Line[]): TaxGroup[] {
+  const groups = new Map<string, TaxGroup>();
+  for (const line of lines) {
+    const rate = Number(line.tax_rate_bp);
+    if (!Number.isFinite(rate)) continue;
+    const key = `${rate}:${String(line.tax_label ?? '')}`;
+    const group = groups.get(key) ?? { rate_bp: rate, label: String(line.tax_label ?? `${rate / 100} %`),
+      net: 0n, tax: 0n, gross: 0n };
+    group.net += BigInt(String(line.net_cents ?? '0'));
+    group.tax += BigInt(String(line.tax_cents ?? '0'));
+    group.gross += BigInt(String(line.total_gross_cents ?? '0'));
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((left, right) => right.rate_bp - left.rate_bp);
+}
+
 function writeTotals(layout: Layout, invoice: InvoiceSnapshot, currency: string): void {
   layout.rule(14, 0.9);
+  const lines = Array.isArray(invoice.lines_snapshot) ? invoice.lines_snapshot as Line[] : [];
+  const groups = taxGroups(lines);
+  if (groups.length) {
+    // Net, tax and gross per rate — the three numbers a German invoice needs.
+    for (const group of groups) {
+      layout.line(`Nettobetrag (${group.label})`, { size: 9, alignRightAt: columnX.total - 110 });
+      layout.at(columnX.total, layout.y, formatEuroCents(group.net, currency),
+        { size: 9, alignRightAt: columnX.total });
+      layout.y -= LINE_HEIGHT;
+      layout.line(`Umsatzsteuer ${group.label}`, { size: 9, alignRightAt: columnX.total - 110 });
+      layout.at(columnX.total, layout.y, formatEuroCents(group.tax, currency),
+        { size: 9, alignRightAt: columnX.total });
+      layout.y -= LINE_HEIGHT;
+    }
+    layout.space(4);
+  }
   const label = invoice.document?.kind === 'credit_note' ? 'Gutschriftbetrag (brutto)' : 'Gesamtbetrag (brutto)';
   layout.line(`${label}: ${formatEuroCents(invoice.total_gross_cents, currency)}`,
     { size: 12, bold: true, gap: 22, alignRightAt: columnX.total });
@@ -342,9 +382,15 @@ function writePaymentNotice(layout: Layout, invoice: InvoiceSnapshot, seller: Se
     if (invoice.due_at) layout.line(`Bitte überweisen Sie den Betrag bis ${formatDate(invoice.due_at)}.`, { size: 9 });
     layout.space(6);
   }
-  layout.paragraph('Alle Beträge sind Bruttobeträge inklusive der gesetzlichen Umsatzsteuer, soweit für die ' +
-    'jeweilige Leistung anwendbar. Eine Aufteilung nach Steuersätzen erfolgt nicht, solange keine geprüften ' +
-    'Steuersätze hinterlegt sind.', { size: 8 });
+  // The notice must describe what the document actually shows. With a stored
+  // split it names the rate; without one it says so instead of implying zero.
+  const lines = Array.isArray(invoice.lines_snapshot) ? invoice.lines_snapshot as Line[] : [];
+  const groups = taxGroups(lines);
+  const notice = groups.length
+    ? 'Alle Beträge sind Bruttobeträge. Die Umsatzsteuer ist je Steuersatz ausgewiesen und im Gesamtbetrag enthalten.'
+    : 'Alle Beträge sind Bruttobeträge. Für diese Positionen ist kein Steuersatz hinterlegt; eine Aufteilung ' +
+      'erfolgt daher nicht.';
+  layout.paragraph(notice, { size: 8 });
   if (clean(invoice.recipient_email, 254)) {
     layout.line(`Rechnung bereitgestellt an ${clean(invoice.recipient_email, 254)}.`, { size: 8 });
   }

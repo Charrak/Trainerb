@@ -24,6 +24,98 @@ export class Commerce {
       target_type: targetType, target_ref: target, ...(details ? { after_safe: details } : {}) } });
   }
 
+  /**
+   * Tax rates: read them, add a period, retire one early.
+   *
+   * A rate is never edited in place. Changing a percentage means inserting a new
+   * row from a date and closing the old period the day before — otherwise an
+   * invoice issued last year would silently claim a different rate today.
+   */
+  async taxRates() {
+    const rows = await this.db.taxRate.findMany({ orderBy: [{ category: 'asc' }, { valid_from: 'desc' }] });
+    return { data: rows.map(row => ({ id: row.id, category: row.category, rate_bp: row.rate_bp,
+      label: row.label, note: row.note, valid_from: row.valid_from, valid_until: row.valid_until,
+      is_default: row.is_default, current: row.valid_until === null })) };
+  }
+
+  async createTaxRate(ctx: SessionContext, input: unknown) {
+    const body = bodyObject(input, ['category', 'rate_bp', 'label', 'note', 'valid_from', 'is_default']);
+    const category = typeof body.category === 'string' ? body.category.trim() : '';
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(category)) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { category: 'Ungültige Kategorie.' });
+    }
+    // Basis points as a string, so "19" and "19.0" cannot silently become 19 %.
+    const rawRate = String(body.rate_bp ?? '');
+    if (!/^[0-9]{1,4}$/.test(rawRate) || Number(rawRate) > 9900) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+        { rate_bp: 'Satz in Basispunkten angeben (1900 = 19 %).' });
+    }
+    const rateBp = Number(rawRate);
+    const label = typeof body.label === 'string' ? body.label.trim() : '';
+    if (!label || label.length > 60) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { label: 'Bezeichnung angeben.' });
+    }
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
+    if (note.length > 500) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { note: 'Notiz zu lang.' });
+    }
+    const validFrom = body.valid_from === undefined ? new Date()
+      : new Date(String(body.valid_from));
+    if (Number.isNaN(validFrom.getTime())) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { valid_from: 'Datum ungültig.' });
+    }
+    return this.db.$transaction(async tx => {
+      await this.staffActor(tx, ctx, 'settings.manage');
+      await tx.$queryRaw`SELECT id FROM tax_rates WHERE category = ${category} FOR UPDATE`;
+      const overlapping = await tx.taxRate.findFirst({ where: { category,
+        valid_from: { lte: validFrom }, OR: [{ valid_until: null }, { valid_until: { gt: validFrom } }] } });
+      if (overlapping) {
+        // A gap or an overlap would make "the rate on that day" ambiguous.
+        throw apiError(409, 'TAX_RATE_OVERLAP',
+          'Für diesen Zeitraum ist bereits ein Steuersatz hinterlegt. Beende den bisherigen Zeitraum zuerst.');
+      }
+      const isDefault = body.is_default === true;
+      if (isDefault) {
+        await tx.taxRate.updateMany({ where: { is_default: true }, data: { is_default: false } });
+      }
+      const id = uuidv7();
+      await tx.taxRate.create({ data: { id, category, rate_bp: rateBp, label,
+        note: note || null, valid_from: validFrom, is_default: isDefault, created_by: ctx.user.id } });
+      await this.audit(tx, ctx, 'tax_rate.created', 'tax_rate', id,
+        { category, rate_bp: rateBp, valid_from: validFrom.toISOString(), is_default: isDefault });
+      return { id, category, rate_bp: rateBp, label, valid_from: validFrom, is_default: isDefault };
+    });
+  }
+
+  /**
+   * End a rate's period. Rows are never deleted: an old invoice may still point
+   * at the rate it was issued with.
+   */
+  async closeTaxRate(ctx: SessionContext, idInput: string, input: unknown) {
+    const id = requireUuid(idInput);
+    const body = bodyObject(input, ['valid_until']);
+    const validUntil = body.valid_until === undefined ? new Date() : new Date(String(body.valid_until));
+    if (Number.isNaN(validUntil.getTime())) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { valid_until: 'Datum ungültig.' });
+    }
+    return this.db.$transaction(async tx => {
+      await this.staffActor(tx, ctx, 'settings.manage');
+      const row = await tx.taxRate.findUnique({ where: { id } });
+      if (!row) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
+      if (row.valid_until !== null) {
+        throw apiError(409, 'TAX_RATE_CLOSED', 'Dieser Zeitraum ist bereits beendet.');
+      }
+      if (validUntil <= row.valid_from) {
+        throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+          { valid_until: 'Das Ende muss nach dem Beginn liegen.' });
+      }
+      await tx.taxRate.update({ where: { id }, data: { valid_until: validUntil,
+        is_default: false } });
+      await this.audit(tx, ctx, 'tax_rate.closed', 'tax_rate', id, { valid_until: validUntil.toISOString() });
+      return { id, valid_until: validUntil };
+    });
+  }
+
   /** Public configuration facts the checkout needs; no internal numbers leak. */
   async publicConfig() {
     const settings = await this.db.commerceSettings.findUnique({ where: { id: 1 } });

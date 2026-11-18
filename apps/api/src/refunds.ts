@@ -4,6 +4,7 @@ import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { Outbox } from './outbox';
+import { splitGross } from './tax';
 import { apiError, bodyObject, requireUuid } from './security';
 import { getConfig } from './config';
 import { centsToText } from './shop';
@@ -372,9 +373,14 @@ export class Refunds {
    * started yet is suspended rather than revoked, because the money question may
    * still be clarified and the grant is not worthless — a cancelled future grant
    * cannot be resumed as easily as a suspended one.
+   *
+   * A **provisional** decision (a running chargeback) is either `kept` or
+   * `suspended`, and it always suspends an exception: while the bank decides, the
+   * money may be gone tomorrow, so no new access may start. Only a resolved case
+   * may revoke.
    */
   async decideAccessFor(ctx: SessionContext, origin: { refundId?: string; disputeId?: string,
-    orderId: string }, input: unknown) {
+    orderId: string }, input: unknown, options: { provisional?: boolean } = {}) {
     const body = bodyObject(input, ['decision', 'reason', 'access_ids']);
     const decision = body.decision;
     if (decision !== 'revoked' && decision !== 'kept' && decision !== 'suspended') {
@@ -404,9 +410,17 @@ export class Refunds {
           refund_id: origin.refundId ?? null, dispute_id: origin.disputeId ?? null, access_id: access.id,
           decision, reason, decided_by: ctx.user.id, decided_at: now } });
         if (decision === 'kept') {
-          if (access.revoked_at || access.suspended_at) {
+          // `kept` lifts a previous suspension only once the case is over. During
+          // a running case it records the intent to keep the access but leaves the
+          // suspension in place: the money question is still open, so nothing
+          // starts in the meantime.
+          if (!options.provisional && (access.revoked_at || access.suspended_at)) {
             await tx.courseAccess.update({ where: { id: access.id },
               data: { suspended_at: null, suspend_reason: null } });
+          } else if (options.provisional && !access.revoked_at && !access.suspended_at &&
+                     access.starts_at > now) {
+            await tx.courseAccess.update({ where: { id: access.id },
+              data: { suspended_at: now, suspend_reason: reason } });
           }
         } else if (decision === 'suspended') {
           if (!access.revoked_at) {
@@ -534,10 +548,19 @@ export class Refunds {
     const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-GS-', 'credit_note_number_seq') AS number`;
     const allocated = new Map(refund.allocations.map(row => [row.order_item_product, row.gross_cents]));
     const items = refund.order.items.filter(item => allocated.size === 0 || allocated.has(item.product_id));
-    const lines = items.map((item, index) => ({ position: index + 1, title: item.title_snapshot,
-      variant: item.variant_snapshot, quantity: item.quantity,
-      unit_gross_cents: String(allocated.get(item.product_id) ?? item.unit_gross_cents),
-      discount_cents: '0', total_gross_cents: String(allocated.get(item.product_id) ?? item.total_gross_cents) }));
+    // A credit note carries the same split as the position it corrects: the tax
+    // to be corrected is the tax that was charged, not a new calculation. When a
+    // partial amount is allocated, the tax is derived from *that* amount with the
+    // original rate, so net and tax of the correction add up to the allocation.
+    const lines = items.map((item, index) => {
+      const gross = allocated.get(item.product_id) ?? item.total_gross_cents;
+      const split = splitGross(gross, { rate_bp: item.tax_rate_bp, label: item.tax_label });
+      return { position: index + 1, title: item.title_snapshot,
+        variant: item.variant_snapshot, quantity: item.quantity,
+        unit_gross_cents: String(gross), discount_cents: '0', total_gross_cents: String(gross),
+        tax_category: null, tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
+        net_cents: String(split.net_cents), tax_cents: String(split.tax_cents) };
+    });
     await tx.creditNote.create({ data: { id: uuidv7(), order_id: refund.order_id, refund_id: refund.id,
       original_invoice_id: invoice.id, document_number: numberRow[0].number,
       issuer_snapshot: invoice.seller_snapshot as Prisma.InputJsonValue,

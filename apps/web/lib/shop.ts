@@ -78,10 +78,17 @@ export const withdrawalStatusLabels: Record<string, string> = {
   received: 'Eingegangen', identity_check: 'Adresse prüfen', in_progress: 'In Bearbeitung',
   completed: 'Angenommen', rejected: 'Abgelehnt',
 };
-export type AdminWithdrawal = { id: string; contact_email: string; customer_name: string | null;
+export type AdminWithdrawal = { id: string; contact_email: string | null; customer_name: string | null;
   status: string; submitted_at: string; submitted_order_number: string | null;
   order_number: string | null; identity_verified_at: string | null; processed_at: string | null;
-  decision_reason: string | null };
+  decision_reason: string | null; refund_id: string | null;
+  contact_email_scrubbed_at?: string | null };
+
+/** One chargeback case as the list shows it. */
+export type AdminDispute = { id: string; order_id: string; order_number: string; buyer_email: string | null;
+  amount_cents: string; currency: string; status: string; reason_code: string | null;
+  opened_at: string; resolved_at: string | null; provider_dispute_id: string;
+  sync_source?: 'manual' | 'webhook'; last_synced_at?: string | null };
 
 export const disputeStatusLabels: Record<string, string> = {
   warning: 'Angekündigt', open: 'Offen', won: 'Gewonnen', lost: 'Verloren', closed: 'Geschlossen',
