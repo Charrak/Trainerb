@@ -163,6 +163,17 @@ export class MailWorker {
       if (payload.purpose !== key || !/^[A-Za-z0-9_-]{43}$/.test(payload.token)) throw new Error('Invalid secret payload.');
       variables.code = code;
       variables.verify_url = `${getConfig().publicBaseUrl}/kasse/bestaetigen#token=${encodeURIComponent(payload.token)}`;
+    } else if (key === 'dispute_opened') {
+      // Internal notice: money facts only. The order number and the reason are
+      // checked like every other public variable so a manual case cannot smuggle
+      // free text (or an address) into a staff inbox.
+      for (const name of ['order_number', 'amount', 'reason', 'status']) {
+        const value = publicVars[name];
+        if (typeof value !== 'string' || !/^[A-Za-z0-9 .,:_/-]{1,64}$/.test(value)) {
+          throw new Error('Invalid template variables.');
+        }
+        variables[name] = value;
+      }
     } else if (!['password_changed', 'email_changed_old'].includes(key)) {
       throw new Error('Unsupported mail template.');
     }

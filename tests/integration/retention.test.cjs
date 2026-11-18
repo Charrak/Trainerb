@@ -121,6 +121,38 @@ test('a chargeback is recorded from a provider report and keeps its source', asy
   assert.equal(created.status, 'open');
   assert.equal(created.sync_source, 'webhook');
   assert.ok(created.last_synced_at);
+  // The people who can act are told once, when the case opens — not again for
+  // every provider update, and never the buyer's address.
+  // Scoped to this order: other files open disputes of their own.
+  const noticeWhere = { template_version: { template: { key: 'dispute_opened' } },
+    variables_public: { path: ['order_number'], equals: order.order_number } };
+  const mails = await db.emailOutbox.findMany({ where: noticeWhere });
+  assert.ok(mails.length >= 1, 'opening a case notifies staff');
+  for (const mail of mails) {
+    assert.ok(!JSON.stringify(mail.variables_public).includes('@'), 'no address travels with it');
+  }
+  const countAfterOpen = mails.length;
+  // A redelivery of the still-open case is not a new case and must stay silent.
+  await disputes.record(null, order.id, { ...body }, { source: 'webhook' });
+  assert.equal(await db.emailOutbox.count({ where: noticeWhere }),
+    countAfterOpen, 'an update to an open case does not mail again');
+  // The notice must actually be deliverable: the worker renders it from the
+  // queued job, and the mail it produces names the order without any address.
+  const { MailWorker } = require('../../apps/api/dist/mail-worker');
+  const sent = [];
+  const worker = new MailWorker(db, { sendMail: async message => {
+    sent.push(message); return { accepted: [message.to], messageId: message.messageId }; } });
+  for (const mail of mails) {
+    const job = await db.automationJob.findFirst({ where: { kind: 'email.send', ref_id: mail.id } });
+    if (job) await worker.runOne(job.id);
+  }
+  assert.equal(sent.length, mails.length, 'every queued notice reaches the transport');
+  for (const message of sent) {
+    assert.match(message.subject, /Rückbuchung/);
+    assert.ok(message.text.includes(order.order_number), 'the mail names the order');
+    assert.ok(!message.text.includes('@'), 'no address in the rendered mail');
+    assert.ok(!/[\r\n]/.test(message.subject));
+  }
   // A repeated delivery updates the same row instead of opening a second case.
   const updated = await disputes.record(null, order.id, { ...body, status: 'won' }, { source: 'webhook' });
   assert.equal(updated.id, created.id);

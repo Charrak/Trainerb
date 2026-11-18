@@ -118,6 +118,7 @@ Die Seitenbausteine verwenden sichere Inhaltsblöcke. Beliebige Skripte, unkontr
    Wird eine Zahlung bestätigt, während ein Fall läuft, vergibt das System **keinen** Zugang: Die Bestellung steht dann auf „gesperrt“ und trägt im Audit den Grund. Gewinnt der Fall, wird sie automatisch freigegeben; verliert er, bleibt sie gesperrt.
 4. **Nichts automatisch.** Ein Streitfall löst weder Erstattung noch Kontosperre aus. Prüfliste: `/admin/streitfaelle` — Fälle filtern nach Stand, mit Bestellnummer, Betrag, Herkunft (**Anbietermeldung** vs. **manuell erfasst**) und Zeitpunkt des letzten Anbieterabgleichs. Ein Klick öffnet die Bestellung mit der Fallakte.
 5. **Woher der Stand kommt.** Gemeldete Fälle kommen über den signaturgeprüften Anbieter-Webhook (`charge.dispute.*`) und werden dort mit denselben Regeln verbucht wie eine manuelle Erfassung; ein `warning_*` des Anbieters ist „angekündigt“, nicht offen. Lehnt die Fachlogik eine Zustellung ab (z. B. abweichender Betrag), wird das als `dispute.webhook_rejected` auditiert und der Fall bleibt für Menschen sichtbar — nichts verschwindet still.
+6. **Wer davon erfährt.** Wird ein Fall neu eröffnet, legt das System für jedes aktive Konto mit dem Recht `refunds.manage` eine Mail `dispute_opened` in die Outbox (Bestellnummer, Betrag, Grund, Stand — nie die Adresse des Käufers). Nur die Eröffnung meldet sich — auch dann, wenn ein Mensch den Fall manuell erfasst; jede Aktualisierung desselben Falls bleibt still. Wer das Recht nicht hat, bekommt auch keine Meldung.
 
 ### 6.3.3 Widerrufe
 
