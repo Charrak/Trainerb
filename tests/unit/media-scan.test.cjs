@@ -25,3 +25,17 @@ test('local INSTREAM scan sends exact bytes and accepts only a complete clamd ve
     for (reply of ['stream: OK', 'stream: scanner error ERROR\0', 'bogus OK\0', '']) await assert.rejects(scanBytes(sample, path));
   } finally { await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('standalone scanner needs no API secrets and rejects invalid storage or credentials', () => {
+  const { scanConfig } = require('../../apps/api/dist/media-scan-config');
+  const env = { DATABASE_URL: 'postgresql://worker@db/test', MEDIA_S3_ENDPOINT: 'https://objects.example.invalid',
+    MEDIA_S3_REGION: 'eu-central-1', MEDIA_QUARANTINE_BUCKET: 'private-quarantine', MEDIA_SCAN_ACCESS_KEY_ID: 'reader',
+    MEDIA_SCAN_SECRET_ACCESS_KEY: 'unit-test-only', MEDIA_SCAN_CLAMD_SOCKET: '/tmp/clamd.sock' };
+  assert.equal(scanConfig(env).store.bucket, env.MEDIA_QUARANTINE_BUCKET);
+  for (const key of Object.keys(env)) assert.throws(() => scanConfig({ ...env, [key]: '' }));
+  for (const invalid of [{ MEDIA_S3_ENDPOINT: 'http://objects.example.invalid' }, { MEDIA_S3_ENDPOINT: 'https://host/path' },
+    { MEDIA_SCAN_CLAMD_SOCKET: 'relative' }, { MEDIA_S3_BUCKET: env.MEDIA_QUARANTINE_BUCKET },
+    { MEDIA_QUARANTINE_ACCESS_KEY_ID: 'reader' }, { MEDIA_S3_ACCESS_KEY_ID: 'reader' }]) {
+    assert.throws(() => scanConfig({ ...env, ...invalid }));
+  }
+});

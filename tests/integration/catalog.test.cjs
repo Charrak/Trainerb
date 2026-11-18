@@ -311,7 +311,18 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
     const { scanNext, inspectUpload } = require('../../apps/api/dist/media-scan');
     const missingSocket = '/tmp/trainerb-clamd-unconfigured.sock';
     const inspect = receipt => inspectUpload(receipt, cfg.quarantineStore, missingSocket);
-    const failed = await scanNext(db, inspect);
+    // Exercise the deployed entry point, not just its helpers. No API env, session
+    // keys, upload credentials or Redis. Only this disposable S3 uses a test root.
+    const cli = require('node:child_process').spawnSync(process.execPath, [require.resolve('../../apps/api/dist/cli/media-scan')], {
+      cwd: require('node:os').tmpdir(), timeout: 40000, encoding: 'utf8', env: {
+        DATABASE_URL: process.env.DATABASE_URL, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
+        MEDIA_S3_ENDPOINT: cfg.mediaStore.origin, MEDIA_S3_REGION: cfg.mediaStore.region,
+        MEDIA_QUARANTINE_BUCKET: cfg.quarantineStore.bucket, MEDIA_SCAN_ACCESS_KEY_ID: cfg.mediaStore.accessKeyId,
+        MEDIA_SCAN_SECRET_ACCESS_KEY: cfg.mediaStore.secretAccessKey, MEDIA_SCAN_CLAMD_SOCKET: missingSocket,
+      },
+    });
+    assert.equal(cli.status, 1, cli.stderr);
+    const { event, ...failed } = JSON.parse(cli.stdout.trim()); assert.equal(event, 'media.scanned');
     assert.deepEqual(failed, { id: row.id, status: 'scan_error', scan_error: 'scanner' });
     assert.equal(await scanNext(db, inspect), null); // errors do not starve the queue
     // Same length, different bytes: the object cannot receive a scanner verdict.
