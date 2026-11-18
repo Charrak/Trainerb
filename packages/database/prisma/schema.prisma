@@ -23,6 +23,7 @@ model User {
   created_at        DateTime  @default(now()) @db.Timestamptz(6)
   updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
+  uploaded_media   MediaAsset[]
   billing_profiles BillingProfile[]
   roles            UserRole[]             @relation("RoleSubject")
   grants           UserRole[]             @relation("RoleGranter")
@@ -312,6 +313,26 @@ model AutomationJobAttempt {
   job               AutomationJob @relation(fields: [automation_job_id], references: [id], onDelete: Restrict)
   @@unique([automation_job_id, attempt_no])
   @@map("automation_job_attempts")
+}
+
+// Source-specific and publication constraints are enforced in SQL.
+model MediaAsset {
+  id                String    @id @db.Uuid
+  source            String    @db.Text
+  storage_key       String?   @unique @db.Text
+  video_external_id String?   @unique @db.Text
+  original_name     String    @db.Text
+  mime_detected     String    @db.Text
+  size_bytes        BigInt
+  sha256            Bytes?
+  visibility        String    @default("private") @db.Text
+  status            String    @default("pending_scan") @db.Text
+  uploaded_by       String?   @db.Uuid
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  uploader          User?     @relation(fields: [uploaded_by], references: [id], onDelete: Restrict)
+  @@index([uploaded_by])
+  @@map("media_assets")
 }
 
 // Phase 2 foundation. Publishing is deliberately locked in the SQL migration
