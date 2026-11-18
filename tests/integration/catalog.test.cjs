@@ -308,6 +308,29 @@ test('course uploads are bounded, scoped, and end in a separate private quaranti
     assert.deepEqual(Buffer.from(await (await client.fetch(url)).arrayBuffer()), png);
     assert.equal(await db.mediaAsset.count(), assets);
     assert.equal(await db.auditEvent.count({ where: { target_ref: courseB.id, action: 'media.upload_quarantined' } }), 1);
+    const { scanNext, inspectUpload } = require('../../apps/api/dist/media-scan');
+    const missingSocket = '/tmp/trainerb-clamd-unconfigured.sock';
+    const inspect = receipt => inspectUpload(receipt, cfg.quarantineStore, missingSocket);
+    const failed = await scanNext(db, inspect);
+    assert.deepEqual(failed, { id: row.id, status: 'scan_error', scan_error: 'scanner' });
+    assert.equal(await scanNext(db, inspect), null); // errors do not starve the queue
+    // Same length, different bytes: the object cannot receive a scanner verdict.
+    assert.equal((await client.fetch(url, { method: 'PUT', body: Buffer.alloc(png.length) })).status, 200);
+    assert.equal((await scanNext(db, inspect, row.id)).scan_error, 'integrity');
+    assert.equal((await client.fetch(url, { method: 'DELETE' })).status, 204);
+    assert.equal((await scanNext(db, inspect, row.id)).scan_error, 'storage');
+    const detail = await instructor.get(`/admin/courses/${courseB.id}`); status(detail, 200);
+    const report = detail.body.quarantine_uploads.find(upload => upload.id === row.id);
+    assert.equal(report.status, 'scan_error'); assert.equal(report.scan_error, 'storage'); assert.ok(report.scanned_at);
+    assert.deepEqual(Object.keys(report).sort(), ['id','original_name','scan_error','scanned_at','status']);
+    status(await participant.get(`/admin/courses/${courseB.id}`), 403);
+    // An explicit retry is serialized; terminal verdicts cannot be retried.
+    const results = await Promise.all([1, 2].map(() => scanNext(db, async () => ({ status: 'infected', scan_error: null }), row.id)));
+    assert.equal(results.filter(Boolean).length, 1);
+    assert.equal(await scanNext(db, inspect, row.id), null);
+    assert.equal(await db.auditEvent.count({ where: { action: 'media.scanned', target_ref: row.id } }), 4);
+    assert.equal(await db.mediaAsset.count(), assets);
+
   } finally { cfg.quarantineStore = undefined; }
 });
 

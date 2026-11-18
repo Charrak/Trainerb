@@ -95,6 +95,7 @@ export function AdminCourseDetail({ id }: { id: string }) {
       </section>
       </> : null}
       {profile?.permissions.includes('media.upload') && <QuarantineUpload key={course.id} courseId={course.id} mutate={mutate} disabled={busy || outdated}/>}
+      <ScanResults uploads={course.quarantine_uploads}/>
       <CoursePublication courseId={course.id} version={version && { id: version.id, revision: version.revision, version: version.version }}
         canPublish={canPublish} onChanged={() => void reload()}/>
       {canAssign && <Staff course={course} canReadUsers={profile?.permissions.includes('users.read') || false} disabled={busy || outdated} mutate={mutate}/>}
@@ -117,6 +118,17 @@ function QuarantineUpload({ courseId, mutate, disabled }: { courseId: string; mu
     <form className="stack-form" onSubmit={submit}><Field id="course-upload" label="Datei"><input type="file" id="course-upload" name="file"
       accept=".png,.jpg,.jpeg,.pdf" required disabled={disabled}/></Field><Notice message={error}/>
       <button className="button button-secondary" disabled={disabled}>In Quarantäne hochladen</button></form></section>;
+}
+
+function ScanResults({ uploads }: { uploads: CourseDetail['quarantine_uploads'] }) {
+  if (!uploads.length) return null;
+  const statuses: Record<string, string> = { pending_scan: 'Wartet auf Prüfung', clean: 'Ohne Fund – weiterhin privat',
+    infected: 'Fund – gesperrt', scan_error: 'Prüffehler – gesperrt' };
+  const errors: Record<string, string> = { storage: 'Objekt nicht lesbar', integrity: 'Größe oder Prüfsumme weicht ab', scanner: 'Kein gültiges Prüfergebnis' };
+  return <section className="dashboard-card"><h2>Prüfergebnisse</h2><p>Die letzten 25 Uploads dieses Kurses. Für neue Ergebnisse die Seite neu laden.</p>
+    <ul>{uploads.map(row => <li key={row.id}><strong>{row.original_name}</strong>: {statuses[row.status] ?? 'Unbekannt – gesperrt'}
+      {row.scan_error && ` (${errors[row.scan_error] ?? 'Prüfung fehlgeschlagen'})`}{row.scanned_at && ` · ${new Date(row.scanned_at).toLocaleString('de-DE')}`}
+      {row.scan_error && <small> · Beleg {row.id}</small>}</li>)}</ul></section>;
 }
 
 function VersionForm({ version, disabled, mutate }: { version: Version; disabled: boolean; mutate: Mutate }) {
