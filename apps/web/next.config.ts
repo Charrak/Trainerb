@@ -26,8 +26,10 @@ const config: NextConfig = {
       // Development previews are embedded in Arena's iframe. Production must
       // refuse framing (and additionally receive a reviewed CSP at the proxy).
       ...(process.env.NODE_ENV === 'production' ? [{ key: 'X-Frame-Options', value: 'DENY' }] : []),
-      { key: 'Cache-Control', value: 'no-store' },
-    ] }];
+    ] }, ...['api', 'konto', 'admin', 'lernen', 'kasse', 'bestellung', 'warenkorb', 'mfa',
+      'anmelden', 'registrieren', 'passwort-vergessen', 'aktivierung-erneut', 'test-postfach', 'widerruf'].map(area => ({
+      source: `/${area}/:path*`, headers: [{ key: 'Cache-Control', value: 'no-store' }],
+    }))];
   },
 };
 export default config;

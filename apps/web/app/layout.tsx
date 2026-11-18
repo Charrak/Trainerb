@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { liveSite } from '../lib/site-stage';
 
 export const metadata: Metadata = {
-  title: 'Trainer B Akademie – Entwicklungsversion',
-  description: 'Entwicklungsversion der Online-Akademie mit Kontozugang und Kursentwürfen.',
+  title: liveSite ? 'Trainer B Akademie' : 'Trainer B Akademie – Entwicklungsversion',
+  description: 'Online-Akademie mit Kurskatalog und persönlichem Lernbereich.',
   robots: { index: false, follow: false },
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -190,10 +190,10 @@ export class Commerce {
   async createLegalVersion(ctx: SessionContext, input: unknown) {
     const body = bodyObject(input, ['kind', 'wording']);
     const kind = body.kind;
-    if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy') {
+    if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy' && kind !== 'imprint') {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { kind: 'Unbekanntes Dokument.' });
     }
-    const wording = plainText(body.wording, 'wording', 20_000);
+    const wording = plainText(body.wording, 'wording', 20_000, false, true);
     if (!wording) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { wording: 'Pflichtfeld.' });
     return this.db.$transaction(async tx => {
       await this.staffActor(tx, ctx, 'legal.manage');
