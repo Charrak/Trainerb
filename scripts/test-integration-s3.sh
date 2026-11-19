@@ -2,6 +2,7 @@
 # Isolated HTTPS object store: no writes to an operator's S3 endpoint.
 set -euo pipefail
 command -v versitygw >/dev/null || { echo 'Install versitygw v1.11.0 first.' >&2; exit 1; }
+command -v "${TEST_CLAMD_BINARY:-clamd}" >/dev/null || { echo 'Install clamd or set TEST_CLAMD_BINARY for the media workflow test.' >&2; exit 1; }
 work=$(mktemp -d)
 pid=''
 cleanup() {

@@ -105,7 +105,9 @@ jobs:
           tar xzf gateway.tar.gz "$archive/versitygw"
           echo "$PWD/$archive" >> "$GITHUB_PATH"
 
-      - name: Integration tests (including private HTTPS object delivery)
+      - name: Integration tests (including upload through learner download)
+        env:
+          TEST_CLAMD_BINARY: ${{ runner.temp }}/clamd-test
         run: bash scripts/test-integration-s3.sh
 
       - name: Build
