@@ -91,7 +91,7 @@ jobs:
       - name: Test the scan protocol against an isolated ClamAV daemon
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clamav-daemon postgresql-client-16
+          sudo apt-get install -y --no-install-recommends clamav-daemon
           # Run as the unprivileged runner with only the temporary test DB/socket,
           # independently of the distribution service and its system paths.
           install -m 755 /usr/sbin/clamd "$RUNNER_TEMP/clamd-test"
@@ -116,7 +116,22 @@ jobs:
           E2E_ALLOW_TEST_DATA: 'yes'
           TEST_DATABASE_URL: postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/cert_drill_test
           TEST_REDIS_URL: redis://127.0.0.1:6379/14
-        run: PATH="/usr/lib/postgresql/16/bin:$PATH" npm run test:certificates:restore
+        run: |
+          # Use the exact service image for the clients; no runner-specific apt version.
+          # Both commands receive the private archive path as their last argument.
+          mkdir -p "$RUNNER_TEMP/pg-clients"
+          cat > "$RUNNER_TEMP/pg-clients/pg_dump" <<'SH'
+          #!/bin/bash
+          set -eu
+          archive="${!#}"
+          exec docker run --rm --network host --user "$(id -u):$(id -g)" \
+            -v "$(dirname "$archive"):$(dirname "$archive")" \
+            -e PGHOST -e PGPORT -e PGUSER -e PGDATABASE -e PGPASSWORD -e PGCONNECT_TIMEOUT \
+            postgres:16.15 "${0##*/}" "$@"
+          SH
+          chmod 755 "$RUNNER_TEMP/pg-clients/pg_dump"
+          ln -s pg_dump "$RUNNER_TEMP/pg-clients/pg_restore"
+          PATH="$RUNNER_TEMP/pg-clients:$PATH" npm run test:certificates:restore
 
       - name: Build
         run: npm run build
