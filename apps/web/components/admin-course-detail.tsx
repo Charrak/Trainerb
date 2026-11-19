@@ -129,7 +129,9 @@ function ScanResults({ uploads, courseId, canApprove, disabled, mutate }: { uplo
     <ul>{uploads.map(row => <li key={row.id}><strong>{row.original_name}</strong>: {statuses[row.status] ?? 'Unbekannt – gesperrt'}
       {row.scan_error && ` (${errors[row.scan_error] ?? 'Prüfung fehlgeschlagen'})`}{row.scanned_at && ` · ${new Date(row.scanned_at).toLocaleString('de-DE')}`}
       {row.scan_error && <small> · Beleg {row.id}</small>}
-      {row.approved_at ? <strong> · Redaktionell freigegeben am {new Date(row.approved_at).toLocaleString('de-DE')} – noch nicht übernommen</strong>
+      {row.promoted_asset_id ? <strong> · Als privates Kursmedium übernommen</strong>
+        : row.promotion_error ? <strong> · Übernahme fehlgeschlagen ({row.promotion_error === 'destination' ? 'Zielspeicher' : errors[row.promotion_error]}), Beleg {row.id}</strong>
+        : row.approved_at ? <strong> · Redaktionell freigegeben am {new Date(row.approved_at).toLocaleString('de-DE')} – noch nicht übernommen</strong>
         : canApprove && row.status === 'clean' && <button className="button button-secondary" disabled={disabled} onClick={() => {
           if (window.confirm(`„${row.original_name}“ für die spätere Übernahme als privates Kursmedium freigeben?`))
             void mutate(`/admin/courses/${courseId}/media/uploads/${row.id}/approve`, 'POST', {}, 'Freigabe gespeichert. Die Datei bleibt in Quarantäne.');

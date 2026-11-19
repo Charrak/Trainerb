@@ -334,6 +334,9 @@ model CourseMediaUpload {
   approved_at   DateTime? @db.Timestamptz(6)
   created_at    DateTime @default(now()) @db.Timestamptz(6)
   course        Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  promoted_asset_id String? @unique @db.Uuid
+  promoted_asset MediaAsset? @relation(fields: [promoted_asset_id], references: [id], onDelete: Restrict)
+  promotion_error String? @db.Text
   approver      User?    @relation("MediaApprover", fields: [approved_by], references: [id], onDelete: Restrict)
   @@index([approved_by])
   uploader      User     @relation("MediaUploader", fields: [uploaded_by], references: [id], onDelete: Restrict)
@@ -343,6 +346,7 @@ model CourseMediaUpload {
 }
 
 model MediaAsset {
+  source_upload CourseMediaUpload?
   id                String    @id @db.Uuid
   source            String    @db.Text
   storage_key       String?   @unique @db.Text

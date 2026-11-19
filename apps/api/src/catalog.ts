@@ -238,7 +238,7 @@ export class Catalog {
       const roles = await this.currentActor(tx, ctx, 'courses.read');
       const course = await tx.course.findFirst({ where: { id: courseId, ...scopeWhere(ctx.user.id, roles) },
         include: { quarantine_uploads: { orderBy: [{ created_at: 'desc' }, { id: 'desc' }], take: 25,
-          select: { id: true, original_name: true, status: true, scanned_at: true, scan_error: true, approved_at: true } },
+          select: { id: true, original_name: true, status: true, scanned_at: true, scan_error: true, approved_at: true, promoted_asset_id: true, promotion_error: true } },
           versions: { where: { state: 'draft' }, orderBy: { version: 'desc' }, include: { modules: { orderBy: { position: 'asc' },
           include: { chapters: { orderBy: { position: 'asc' }, include: { _count: { select: { contents: true } } } } } } } },
           ...(globalRole(roles) ? { staff: { select: { user_id: true, scope_role: true }, orderBy: [{ user_id: 'asc' }, { scope_role: 'asc' }] } } : {}) } });

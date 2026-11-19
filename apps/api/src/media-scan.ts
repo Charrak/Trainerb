@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
+import { readVerified } from './quarantine-read';
 import { createConnection } from 'node:net';
-import { AwsClient } from 'aws4fetch';
 import { Prisma, type PrismaClient, type CourseMediaUpload } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import type { Config } from './config';
@@ -36,29 +35,8 @@ export function scanBytes(bytes: Buffer, path: string): Promise<'clean' | 'infec
 }
 
 export async function inspectUpload(row: Receipt, store: NonNullable<Config['mediaStore']>, socket: string): Promise<Verdict> {
-  let bytes: Buffer;
-  try {
-    const client = new AwsClient({ ...store, service: 's3', retries: 0 });
-    const response = await client.fetch(`${store.origin}/${store.bucket}/${row.object_key}`, {
-      redirect: 'error', signal: AbortSignal.timeout(8000) });
-    if (response.status !== 200 || !response.body) {
-      await response.body?.cancel(); return { status: 'scan_error', scan_error: 'storage' };
-    }
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = []; let total = 0;
-    for (;;) {
-      const { value, done } = await reader.read(); if (done) break;
-      total += value.length;
-      if (total > row.size_bytes || total > 5 * 1024 * 1024) {
-        await reader.cancel(); return { status: 'scan_error', scan_error: 'integrity' };
-      }
-      chunks.push(value);
-    }
-    bytes = Buffer.concat(chunks, total);
-    if (total !== row.size_bytes || !createHash('sha256').update(bytes).digest().equals(row.sha256)) {
-      return { status: 'scan_error', scan_error: 'integrity' };
-    }
-  } catch { return { status: 'scan_error', scan_error: 'storage' }; }
+  const bytes = await readVerified(row, store);
+  if (!Buffer.isBuffer(bytes)) return { status: 'scan_error', scan_error: bytes };
   try { return { status: await scanBytes(bytes, socket), scan_error: null }; }
   catch { return { status: 'scan_error', scan_error: 'scanner' }; }
 }
