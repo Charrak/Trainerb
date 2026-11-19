@@ -70,7 +70,8 @@ jobs:
           # against anything that does not end in `_test`.
           psql -h 127.0.0.1 -U trainerb -d postgres -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE trainerb_test OWNER trainerb;' \
-            -c 'CREATE DATABASE cert_drill_test OWNER trainerb;'
+            -c 'CREATE DATABASE cert_drill_test OWNER trainerb;' \
+            -c 'CREATE DATABASE cert_browser_e2e_test OWNER trainerb;'
 
       - name: Prepare a local environment
         run: |
@@ -136,7 +137,13 @@ jobs:
       - name: Build
         run: npm run build
 
-      # End-to-end tests need a browser. Playwright's Chromium is not part of the
-      # dependency set, so this stays a manual step until it is added on purpose.
-      - name: Note about end-to-end tests
-        run: echo '::notice::E2E smoke tests need Playwright/Chromium and are not part of CI yet.'
+      - name: Browser acceptance (certificates and backoffice)
+        env:
+          E2E_ALLOW_TEST_DATA: 'yes'
+          TEST_DATABASE_URL: postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/cert_browser_e2e_test
+          TEST_REDIS_URL: redis://127.0.0.1:6379/13
+        run: |
+          npx --no-install playwright install --with-deps --only-shell chromium
+          python3 -m venv "$RUNNER_TEMP/pdf-check"
+          "$RUNNER_TEMP/pdf-check/bin/pip" install PyMuPDF==1.26.7
+          PATH="$RUNNER_TEMP/pdf-check/bin:$PATH" node scripts/run-integration.mjs --certificate-browser

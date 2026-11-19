@@ -73,6 +73,7 @@ async function register(name) {
 async function login(browser, email) { return browser.change('post', '/auth/login', { email, password }); }
 async function enroll(browser, email) {
   const logged = await login(browser, email); status(logged, 202); assert.equal(logged.body.status, 'mfa_enrollment_required');
+  for(const path of ['/admin/audit-events','/admin/dashboard','/admin/automation-jobs','/admin/certificate-mail-template']) status(await browser.get(path),403);
   status(await browser.get('/admin/courses'), 403); // preauth is not a backoffice session
   const setup = await browser.change('post', '/auth/mfa/enrollment/start', {}); status(setup, 200);
   const totp = new OTPAuth.TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(setup.body.secret) });
@@ -162,6 +163,55 @@ test('drafts remain private; public routes and backoffice require correct permis
   assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
+});
+
+test('dashboard scopes are derived from roles and current course assignments, not query parameters', async () => {
+  const path='/admin/dashboard';status(await new Browser().get(path),401);status(await participant.get(path),403);
+  assert.deepEqual((await support.get(path)).body,{scope:'basic',public_courses:0});
+  assert.deepEqual((await admin.get(path)).body,{scope:'global',courses:2,completions:0});
+  assert.deepEqual((await instructor.get(path)).body,{scope:'assigned',courses:0,completions:0});
+  status(await manager.get(path+'?scope=global'),400);
+  const scoped=await db.courseStaff.create({data:{course_id:courseB.id,user_id:managerUser.id,assigned_by:adminUser.id,scope_role:'manager'}});
+  try {assert.deepEqual((await manager.get(path)).body,{scope:'assigned',courses:1,completions:0});}
+  finally {await db.courseStaff.deleteMany({where:{course_id:scoped.course_id,user_id:managerUser.id}});}
+  assert.deepEqual((await manager.get(path)).body,{scope:'assigned',courses:0,completions:0});
+});
+
+test('mail workspace denies callers without the specific backoffice permissions', async () => {
+  const template='/admin/certificate-mail-template', jobs='/admin/automation-jobs';
+  for (const area of [template,jobs]) {
+    status(await new Browser().get(area),401);
+    for(const viewer of [participant,support,manager,instructor]) status(await viewer.get(area),403);
+  }
+  status(await support.change('post',template+'/drafts',{}),403);
+  status(await support.change('post',jobs+'/'+uuidv7()+'/retry',{}),403);
+});
+
+test('audit reader requires MFA and audit.read; bounded pages omit free text and private payloads', async () => {
+  const endpoint = '/admin/audit-events', filtered = endpoint+'?scope=certificates';
+  status(await new Browser().get(endpoint),401);
+  for (const viewer of [participant, manager, instructor, support]) status(await viewer.get(endpoint),403);
+  status(await admin.get(endpoint+'?scope=invalid'),422);
+  status(await admin.get(endpoint+'?before=invalid'),404);
+  status(await admin.get(endpoint+'?include=after_safe'),400);
+  const ref = uuidv7();
+  const rows = Array.from({length:26}, (_,i) => ({ id:uuidv7(), action:'certificate.issued', origin:'system',
+    target_type:'certificate', target_ref:i === 25 ? 'private@example.invalid' : ref,
+    after_safe:{ note:'private note' }, reason_code:'private_reason' }));
+  await db.auditEvent.createMany({data:rows});
+  const first = await admin.get(filtered); status(first,200);
+  assert.equal(first.body.data.length,25);
+  assert.equal(first.body.next_cursor, first.body.data.at(-1).id);
+  const top = first.body.data[0];
+  assert.equal(top.id,rows[25].id); assert.equal(top.target_id,null);
+  assert.deepEqual(Object.keys(top).sort(),['action','created_at','id','origin','target_id','target_type']);
+  assert.equal(first.body.data[1].target_id,ref);
+  assert.doesNotMatch(JSON.stringify(first.body),/private@example|private note|private_reason/);
+  const second = await admin.get(filtered+'&before='+first.body.next_cursor); status(second,200);
+  assert.deepEqual(second.body.data.map(x=>x.id),[rows[0].id]); assert.equal(second.body.next_cursor,null);
+  // Existing course/user events are present without the certificate filter.
+  const general = await admin.get(endpoint+'?before='+rows[0].id); status(general,200);
+  assert.ok(general.body.data.some(x => x.target_type !== 'certificate'));
 });
 
 test('strict validation, unique positions and simultaneous creation preserve invariants and audit', async () => {
@@ -1381,6 +1431,7 @@ test('certificate queue: retry, private immutable PDF after expiry, public verif
   await db.user.update({where:{id:user.id},data:{status:'active'}});
   assert.equal(await worker(),true); assert.equal(await noticeCount(),2);
   assert.equal(await db.certificate.count({where:{completion_id:record.id,status:'valid'}}),1);
+  assert.equal((await admin.get('/admin/dashboard')).body.completions,1);
   assert.deepEqual(await verify(doc.snapshot.token),{status:'revoked'});
   // A POST limit applies even to unknown codes, and responses disclose no identities.
   const publicRequest=()=>request(server).post('/api/v1/certificates/verify').send({token:'?' });
@@ -1398,3 +1449,55 @@ test('browser certificate acceptance: SMTP, private PDF, verification, revocatio
     await db.user.update({where:{id:owner.id},data:{first_name:'Élodie-Luise Friederike Antonia',last_name:'Groß-Schönfeld von Winterstein-Hohenweide'}});
     await require('../e2e/certificate-acceptance.cjs').exercise({admin, participant, ownerEmail:owner.email_canonical});
   });
+
+test('backoffice mail: version pinning, concurrent publishing, private monitoring and retry only before SMTP', async () => {
+  const template = '/admin/certificate-mail-template', jobs = '/admin/automation-jobs';
+  const confirmation=()=>admin.change('post','/auth/reauth',{password,recovery_code:adminRecovery[7]});
+  const ctx=await contextFor(admin);
+  await db.authSession.update({where:{id:ctx.session.id},data:{reauthenticated_at:new Date(Date.now()-360000)}});
+  const initial=await admin.get(template);status(initial,200);const old=initial.body.published;
+  const draft={base_id:old.id,subject:'Dein Dokument',text:'Hallo {{first_name}}, deine Urkunde ist bereit.'};
+  const save=(body,opts)=>admin.change('post',template+'/drafts',body,opts);
+  status(await save(draft),403);status(await confirmation(),204);
+  status(await save(draft,{noCsrf:true}),403);
+  status(await participant.change('post',template+'/drafts',draft),403);
+  for(const bad of [{text:'{{token}}'},{text:'<a href="https://example.invalid">Link</a>'},{subject:'Betreff\nzweite Zeile'}]) status(await save({...draft,...bad}),422);
+  const {Outbox}=require('../../apps/api/dist/outbox');const outbox=app.get(Outbox);
+  const owner=(await contextFor(participant)).user;
+  async function mail(){
+    await db.$transaction(tx=>outbox.notify(tx,owner.id,owner.email_original,'Mila','certificate_ready'));
+    const item=await db.emailOutbox.findFirstOrThrow({where:{user_id:owner.id,template_version:{template:{key:'certificate_ready'}}},orderBy:{id:'desc'}});
+    return {item,job:await db.automationJob.findFirstOrThrow({where:{ref_id:item.id}})};
+  }
+  const first=await mail();assert.equal(first.item.template_version_id,old.id);
+  const concurrent=await Promise.all([save(draft),save(draft)]);assert.deepEqual(concurrent.map(r=>r.status).sort(),[201,409]);
+  const v=concurrent.find(r=>r.status===201).body;
+  assert.equal((await admin.get(template)).body.published.id,old.id);
+  const revised=await save({...draft,base_id:v.id,text:'Hallo {{first_name}}, schau in dein Konto.'});status(revised,201);
+  const publish=id=>admin.change('post',template+'/publish',{draft_id:id});status(await publish(v.id),409);
+  assert.deepEqual((await Promise.all([publish(revised.body.id),publish(revised.body.id)])).map(r=>r.status).sort(),[200,409]);
+  const second=await mail();assert.equal(second.item.template_version_id,revised.body.id);
+  const {MailWorker}=require('../../apps/api/dist/mail-worker');const sent=[];
+  const worker=new MailWorker(db,{sendMail:async m=>{sent.push(m);return {accepted:[m.to]};}});
+  await worker.runOne(first.job.id);assert.equal(sent[0].subject,old.subject_template);
+  // Fault before transport; retain the job, bound template and attempt history.
+  await db.automationJob.update({where:{id:second.job.id},data:{max_attempts:1}});
+  await db.emailOutbox.update({where:{id:second.item.id},data:{variables_public:{}}});await worker.runOne(second.job.id);
+  assert.equal(sent.length,1);
+  const failed=await admin.get(jobs+'?status=failed');status(failed,200);
+  const row=failed.body.data.find(j=>j.id===second.job.id);assert.equal(row.error_code,'MAIL_PREPARATION_FAILED');assert.equal(row.retry_candidate,true);
+  assert.deepEqual(Object.keys(row).sort(),['attempts','error_code','finished_at','id','max_attempts','retry_candidate','run_after','status']);
+  const retry=(id,n=1,browser=admin,opts)=>browser.change('post',`${jobs}/${id}/retry`,{expected_attempts:n},opts);
+  status(await retry(second.job.id,1,participant),403);status(await retry(second.job.id,1,admin,{noCsrf:true}),403);
+  status(await retry(second.job.id,2),409);
+  await db.emailOutbox.update({where:{id:second.item.id},data:{variables_public:{first_name:'Mila'}}});
+  assert.deepEqual((await Promise.all([retry(second.job.id),retry(second.job.id)])).map(r=>r.status).sort(),[200,409]);
+  await worker.runOne(second.job.id);assert.equal(sent.length,2);assert.equal(sent[1].text,'Hallo Mila, schau in dein Konto.');
+  status(await retry(second.job.id,2),409);
+  assert.equal(await db.automationJobAttempt.count({where:{automation_job_id:second.job.id}}),2);
+  const third=await mail();await db.automationJob.update({where:{id:third.job.id},data:{max_attempts:1}});
+  const ambiguous=new MailWorker(db,{sendMail:async()=>{throw new Error('transport outcome unknown');}});await ambiguous.runOne(third.job.id);
+  status(await retry(third.job.id),409);assert.equal((await admin.get(jobs+'?status=failed')).body.data.find(j=>j.id===third.job.id).retry_candidate,false);
+  assert.equal(await db.auditEvent.count({where:{target_ref:second.job.id,action:'automation_job.retry_requested'}}),1);
+  status(await admin.get(jobs+'?status=anything'),422);status(await admin.get(jobs+'?payload=1'),400);
+});

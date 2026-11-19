@@ -195,15 +195,17 @@ export class MailWorker {
     const claim = await this.claim(jobId);
     if (!claim) return false;
     if (claim === 'handled') return true;
+    let transportStarted = false;
     try {
       const message = claim.outboxId ? await this.message(claim.outboxId) : null;
       if (!message) { await this.finish(claim, 'cancelled', 'MAIL_NO_LONGER_ELIGIBLE'); return true; }
+      transportStarted = true;
       const info = await this.transport.sendMail(message);
       if (!Array.isArray(info.accepted) || info.accepted.length !== 1) throw new Error('Recipient not accepted.');
       await this.finish(claim, 'succeeded', undefined, info.messageId || message.messageId);
     } catch {
       // Never store a transport exception, recipient, content or a token in logs.
-      await this.finish(claim, 'failed', 'MAIL_DELIVERY_FAILED');
+      await this.finish(claim, 'failed', transportStarted ? 'MAIL_DELIVERY_FAILED' : 'MAIL_PREPARATION_FAILED');
     }
     return true;
   }
