@@ -174,7 +174,7 @@ export class MailWorker {
         }
         variables[name] = value;
       }
-    } else if (!['password_changed', 'email_changed_old'].includes(key)) {
+    } else if (!['password_changed', 'email_changed_old','certificate_ready'].includes(key)) {
       throw new Error('Unsupported mail template.');
     }
     const subject = this.render(item.template_version.subject_template, variables);

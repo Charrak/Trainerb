@@ -132,10 +132,14 @@ export class Auth {
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id}::uuid FOR UPDATE`;
       const current = await tx.user.findUnique({ where: { id: user.id },
         include: { roles: { include: { role: true } }, mfa_factors: { where: { type: 'totp', status: 'active' } } } });
-      if (!current || current.status !== 'active' || current.password_hash !== user.password_hash ||
+      if (!current || current.status !== 'active' || !current.password_hash ||
           current.email_canonical !== email.canonical || !current.email_verified_at) throw invalidLogin();
+      const changed = current.password_hash !== user.password_hash;
+      // A concurrent rehash changes the salt, not the password. Verify against
+      // the locked current hash; a real reset still invalidates the old login.
+      if (changed && !(upgradedHash && await argon2.verify(current.password_hash, password))) throw invalidLogin();
       const privileged = current.roles.some(item => (BACKOFFICE_ROLES as readonly string[]).includes(item.role.key));
-      await tx.user.update({ where: { id: current.id }, data: { last_login_at: new Date(), ...(upgradedHash ? { password_hash: upgradedHash } : {}) } });
+      await tx.user.update({ where: { id: current.id }, data: { last_login_at: new Date(), ...(upgradedHash && !changed ? { password_hash: upgradedHash } : {}) } });
       const cookies = await this.sessions.prepare(tx, req, current.id, privileged ? 'preauth' : 'participant');
       const status = privileged ? (current.mfa_factors.length ? 'mfa_required' : 'mfa_enrollment_required') : 'authenticated';
       return { cookies, status, userId: current.id } as const;

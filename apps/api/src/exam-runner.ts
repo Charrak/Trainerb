@@ -1,3 +1,4 @@
+import { qualificationProfile, recordQualification } from './completion';
 import { Injectable } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { Prisma } from '@prisma/client';
@@ -40,12 +41,13 @@ export class ExamRunner {
     // All starts/submissions for this grant serialize with each other and suspensions.
     await tx.$queryRaw`SELECT id FROM course_access WHERE id=${accessId}::uuid AND user_id=${ctx.user.id}::uuid FOR UPDATE`;
     const a = await tx.courseAccess.findFirst({ where: { id: accessId, user_id: ctx.user.id, revoked_at: null }, select: {
-      course_version_id: true, suspended_at: true, starts_at: true, ends_at: true, version: { select: { chapter_completion_mode: true, state: true } } } });
+      course_version_id: true, suspended_at: true, starts_at: true, ends_at: true, version: { select: { chapter_completion_mode: true, completion_profile: true, state: true } } } });
     if (!a || a.version.state === 'draft') throw missing();
-    if (a.suspended_at || a.starts_at.getTime() > Date.now() || (a.ends_at && a.ends_at.getTime() <= Date.now())) throw apiError(403, 'ACCESS_INACTIVE', 'Kein gültiger Kurszugang.');
+    const checkedAt = new Date();
+    if (a.suspended_at || a.starts_at > checkedAt || (a.ends_at && a.ends_at <= checkedAt)) throw apiError(403, 'ACCESS_INACTIVE', 'Kein gültiger Kurszugang.');
     const exam = await tx.exam.findFirst({ where: { id: examId, course_version_id: a.course_version_id }, select: { chapter_id: true } });
     if (!exam) throw missing();
-    return { versionId: a.course_version_id, mode: a.version.chapter_completion_mode, chapterId: exam.chapter_id };
+    return { checkedAt, versionId: a.course_version_id, profile: a.version.completion_profile, mode: a.version.chapter_completion_mode, chapterId: exam.chapter_id };
   }
   async current(ctx: SessionContext, accessId: string, examId: string) {
     return this.db.$transaction(async tx => {
@@ -87,7 +89,7 @@ export class ExamRunner {
     }
     if (picks.size !== 3) throw invalid();
     return this.db.$transaction(async tx => {
-      const { versionId, mode, chapterId } = await this.scope(tx, ctx, accessId, examId);
+      const { checkedAt, versionId, mode, chapterId, profile } = await this.scope(tx, ctx, accessId, examId);
       const a = await tx.examAttempt.findFirst({ where: { id: attemptId, access_id: accessId, exam_id: examId }, include: paper });
       if (!a) throw missing();
       if (a.result) {
@@ -104,11 +106,12 @@ export class ExamRunner {
       });
       await tx.examAttemptAnswer.createMany({ data: answers });
       await tx.examAttemptResult.create({ data: { attempt_id: a.id, submit_key: submitKey, correct_count: correct, passed: correct === 3 } });
-      const done = await tx.examAttempt.update({ where: { id: a.id }, data: { status: 'submitted', submitted_at: new Date() }, include: paper });
+      const done = await tx.examAttempt.update({ where: { id: a.id }, data: { status: 'submitted', submitted_at: checkedAt }, include: paper });
       if (correct === 3 && mode !== 'self_confirm' && !await tx.exam.count({ where: { chapter_id: chapterId, attempts: { none: { access_id: accessId, result: { passed: true } } } } })) {
         await tx.chapterProgress.upsert({ where: { access_id_chapter_id: { access_id: accessId, chapter_id: chapterId } },
           create: { id: uuidv7(), access_id: accessId, course_version_id: versionId, chapter_id: chapterId }, update: {} });
       }
+      if (correct === 3 && profile === qualificationProfile) await recordQualification(tx, accessId, versionId, done.submitted_at!);
       return view(done);
     });
   }

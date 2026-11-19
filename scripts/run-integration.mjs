@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 config({ quiet: true });
+const certificateBrowser = process.argv.includes('--certificate-browser');
 const database = process.env.TEST_DATABASE_URL;
 const redis = process.env.TEST_REDIS_URL;
 if (!database || !redis) throw new Error('Set TEST_DATABASE_URL and TEST_REDIS_URL for isolated integration tests.');
@@ -23,10 +24,15 @@ if (process.env.DATABASE_URL && sameEndpoint(dbUrl, new URL(process.env.DATABASE
 if (process.env.REDIS_URL && sameEndpoint(redisUrl, new URL(process.env.REDIS_URL), '6379')) {
   throw new Error('TEST_REDIS_URL must not point to the application Redis database.');
 }
+if (certificateBrowser && (process.env.E2E_ALLOW_TEST_DATA !== 'yes' || host(dbUrl) !== 'loopback' || host(redisUrl) !== 'loopback'
+    || !dbUrl.pathname.endsWith('_e2e_test') || process.env.NODE_ENV === 'production')) {
+  throw new Error('Browser acceptance requires explicit E2E_ALLOW_TEST_DATA=yes, isolated loopback services and a *_e2e_test database.');
+}
 const env = { ...process.env, APP_ENV: 'test', NODE_ENV: 'test', DATABASE_URL: database, REDIS_URL: redis,
   PUBLIC_BASE_URL: 'https://academy.test', DATA_ENCRYPTION_KEY_ID: 'integration-ephemeral',
   MAIL_FROM: 'test@example.invalid', SMTP_HOST: '127.0.0.1', SMTP_PORT: '1025', SMTP_SECURE: 'false',
   TRAINERB_EMBEDDED_PREVIEW_COOKIES: 'false', TRAINERB_DESTRUCTIVE_TEST_DATABASE: 'confirmed' };
+env.TRAINERB_CERTIFICATE_BROWSER = certificateBrowser ? 'yes' : 'no';
 delete env.DATABASE_MIGRATION_URL;
 // Do not inherit operator storage credentials from .env into a destructive test.
 for (const key of Object.keys(env)) if (/^MEDIA_(?:QUARANTINE|SCAN|PROMOTE|S3)_/.test(key)) env[key] = '';
@@ -43,7 +49,8 @@ run(['scripts/migrate.mjs']);
 // A Prisma model that the SQL migrations do not back is a runtime 500 waiting
 // to happen; fail the suite before any test runs.
 run(['scripts/check-schema-drift.mjs']);
-run(['--test', '--test-concurrency=1', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
+if (certificateBrowser) run(['--test', '--test-name-pattern=^qualification completion|^browser certificate acceptance', 'tests/integration/catalog.test.cjs']);
+else run(['--test', '--test-concurrency=1', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
   'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs',
   'tests/integration/refunds.test.cjs', 'tests/integration/retention.test.cjs',
   'tests/integration/stripe-webhook.test.cjs']);

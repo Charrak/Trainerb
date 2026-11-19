@@ -108,7 +108,7 @@ before(async () => {
     Object.assign(process.env, { MEDIA_S3_ENDPOINT: process.env.TRAINERB_TEST_S3_ORIGIN, MEDIA_S3_REGION: 'us-east-1',
       MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.TRAINERB_TEST_S3_SECRET });
   }
-  app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
+  app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
   redis = new Redis(process.env.REDIS_URL);
@@ -159,7 +159,7 @@ test('drafts remain private; public routes and backoffice require correct permis
   // the operator has not enabled sales.
   assert.equal((await admin.get('/health')).body.commerce_enabled, true);
   assert.equal((await admin.get('/health')).body.publication_enabled, true);
-  assert.equal((await admin.get('/health')).body.exams_enabled, false);
+  assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
 });
@@ -1271,3 +1271,130 @@ test('published chapter quiz: guarded idempotent start/resume, private grading, 
   assert.ok(copy.pool.questions.every(q => q.status==='draft' && !solution.has(q.id)));
   status(await participant.get(`/enrollments/${access}/exams/${copy.id}/attempts/current`),404);
 });
+
+test('qualification completion requires 84 different passes on this access, not 84 attempts or self-confirmed chapters', async () => {
+  const slug = 'abschluss-fixture', course = await createCourse(slug, { expected_module_count: 14, expected_chapter_count: 42,
+    expected_exams_per_chapter: 2, chapter_completion_mode: 'self_or_all_chapter_exams' });
+  const version = course.version_id, profile = 'qualification_84_v1';
+  status(await admin.change('patch', `/admin/course-versions/${version}`, { revision: 1, completion_profile: profile, expected_module_count: 1 }), 422);
+  status(await admin.change('patch', `/admin/course-versions/${version}`, { revision: 1, completion_profile: profile }), 200);
+  const templateInput = {course_version_id:version,heading:'Testurkunde',issuer:'Synthetischer Aussteller'};
+  status(await participant.change('post','/admin/certificate-templates',templateInput),403);
+  status(await admin.change('post','/admin/certificate-templates',templateInput,{noCsrf:true}),403);
+  const template = await admin.change('post','/admin/certificate-templates',templateInput); status(template,201);
+  status(await admin.change('post',`/admin/certificate-templates/${template.body.id}/approve`,{}),200);
+  await assert.rejects(db.certificateTemplate.update({where:{id:template.body.id},data:{issuer:'Geändert'}}),/TEMPLATE_IMMUTABLE/);
+  const modules = Array.from({ length: 14 }, (_, i) => ({ id: uuidv7(), course_version_id: version, position: i+1, title: `M${i+1}` }));
+  const chapters = modules.flatMap(m => [1,2,3].map(position => ({ id: uuidv7(), course_version_id: version, module_id: m.id, position, title: `K${position}` })));
+  const exams = chapters.flatMap(c => [1,2].map(position => ({ id: uuidv7(), course_version_id: version, chapter_id: c.id, position, title: `P${position}` })));
+  await db.courseModule.createMany({ data: modules }); await db.courseChapter.createMany({ data: chapters }); await db.exam.createMany({ data: exams });
+  // Only the last two tests need a playable pool. The prior attempts below are synthetic storage fixtures.
+  for (const exam of exams.slice(-2)) {
+    const pool = await db.questionPool.create({ data: { id: uuidv7(), exam_id: exam.id, title: 'Testpool' } });
+    for (let i=1; i<=3; i++) {
+      const q = await db.question.create({ data: { id: uuidv7(), exam_id: exam.id, pool_id: pool.id, position: i,
+        question_text: `Testfrage ${i}`, explanation: 'Synthetischer Test.' } });
+      await db.answerOption.createMany({ data: [1,2,3,4].map(position => ({ id:uuidv7(), question_id:q.id, position, option_text:`Option ${position}`, is_correct:position===1 })) });
+      await db.question.update({ where: { id: q.id }, data: { status: 'active' } });
+    }
+  }
+  const readiness = await admin.get(`/admin/courses/${course.id}/publication`); status(readiness,200);
+  assert.ok(readiness.body.readiness.some(item => item.code === 'QUALIFICATION_NOT_READY'));
+  // Isolated DB fixture only; no production bypass or seeded qualification content.
+  await db.courseVersion.update({ where:{ id:version }, data:{ state:'published', published_by:adminUser.id, published_at:new Date() } });
+  await db.course.update({ where:{id:course.id}, data:{status:'published'} });
+  await db.coursePublication.create({ data:{ id:uuidv7(), course_id:course.id, course_version_id:version, version:1, action:'published', actor_user_id:adminUser.id } });
+  const grant = user_id => db.courseAccess.create({data:{id:uuidv7(), course_id:course.id, course_version_id:version, user_id, source:'manual', granted_by:adminUser.id}});
+  const access = (await grant((await contextFor(participant)).user.id)).id, other = (await grant(adminUser.id)).id;
+  await db.chapterProgress.createMany({data:chapters.map(c => ({id:uuidv7(), access_id:access, course_version_id:version, chapter_id:c.id}))});
+  const stub = (access_id, exam_id, attempt_no, passed) => ({ id:uuidv7(), access_id, exam_id, attempt_no, passed });
+  const previous = [...exams.slice(0,82).map(e => stub(access,e.id,1,true)), stub(access,exams[0].id,2,true),
+    stub(access,exams[83].id,1,false), stub(other,exams[83].id,1,true)];
+  // Store the duplicate pass after closing the original attempt: only one attempt may be open at once.
+  for (const batch of [previous.filter(a => a.attempt_no === 1), previous.filter(a => a.attempt_no === 2)]) {
+    await db.examAttempt.createMany({data:batch.map(({passed,...a}) => ({...a, course_version_id:version, start_idempotency_key:randomUUID()}))});
+    await db.examAttemptResult.createMany({data:batch.map(a => ({attempt_id:a.id, submit_key:randomUUID(), correct_count:a.passed?3:2, passed:a.passed}))});
+    await db.examAttempt.updateMany({where:{id:{in:batch.map(a=>a.id)}}, data:{status:'submitted',submitted_at:new Date()}});
+  }
+  async function pass(exam, parallel) {
+    const base = `/enrollments/${access}/exams/${exam.id}/attempts`;
+    const start = await participant.change('post',base,{}, {key:randomUUID()}); status(start,200);
+    const answers = start.body.questions.map(q=>({question_id:q.id, option_id:q.options.find(o=>o.text==='Option 1').id}));
+    const key = randomUUID(), send = () => participant.change('post',`${base}/${start.body.id}/submit`,{answers},{key});
+    for (const res of await Promise.all(parallel ? [send(), send()] : [send()])) {status(res,200); assert.equal(res.body.status,'passed');}
+  }
+  await pass(exams[82],false);
+  const outline = `/me/courses/${slug}`;
+  assert.equal((await participant.get(outline)).body.completed_at,null);
+  assert.equal(await db.completionRecord.count({where:{access_id:access}}),0);
+  assert.equal(await db.certificate.count({where:{course_version_id:version}}),0);
+  await pass(exams[83],true);
+  const records = await db.completionRecord.findMany({where:{course_version_id:version}}); assert.equal(records.length,1);
+  const [record] = records; assert.equal(record.access_id,access); assert.equal(record.completion_profile,profile);
+  assert.deepEqual(new Set(record.evidence_snapshot.exams.map(e=>e.id)),new Set(exams.map(e=>e.id)));
+  assert.equal(record.evidence_snapshot.chapters.length,42);
+  assert.equal((await participant.get(outline)).body.completed_at,record.completed_at.toISOString());
+  assert.equal((await admin.get(outline)).body.completed_at,null);
+  await assert.rejects(db.completionRecord.update({where:{id:record.id},data:{completed_at:new Date()}}), /COMPLETION_RECORD_IMMUTABLE/);
+});
+
+test('certificate queue: retry, private immutable PDF after expiry, public verification, revocation and explicit reissue', async () => {
+  const {issueNextCertificate} = require('../../apps/api/dist/certificate-worker');
+  const {Outbox} = require('../../apps/api/dist/outbox'); const outbox = app.get(Outbox);
+  const {PDFDocument} = require('pdf-lib');
+  const mine = await participant.get('/me/certificates'); status(mine,200); assert.equal(mine.body.data.length,1);
+  const cert=mine.body.data[0]; assert.equal(cert.status,'queued');
+  const path=`/me/certificates/${cert.id}/download`, worker=()=>issueNextCertificate(db,outbox);
+  const noticeCount=()=>db.emailOutbox.count({where:{template_version:{template:{key:'certificate_ready'}}}});
+  status(await participant.get(path),404); assert.equal(await noticeCount(),0);
+  const job=await db.certificate.findUniqueOrThrow({where:{id:cert.id}});
+  const record=await db.completionRecord.findUniqueOrThrow({where:{id:job.completion_id}});
+  await db.courseAccess.update({where:{id:record.access_id}, data:{starts_at:new Date(Date.now()-86400000),ends_at:new Date(Date.now()-1000),suspended_at:new Date(),suspend_reason:'review'}});
+  assert.equal(await worker(),false); await db.courseAccess.update({where:{id:record.access_id},data:{suspended_at:null,suspend_reason:null}});
+  await assert.rejects(issueNextCertificate(db,outbox,async()=>{throw new Error('synthetic render failure');}));
+  assert.equal(await noticeCount(),0);
+  assert.equal((await db.certificate.findUniqueOrThrow({where:{id:cert.id}})).last_error,'ISSUANCE_FAILED');
+  await db.certificate.update({where:{id:cert.id},data:{retry_at:new Date(0)}});
+  assert.deepEqual((await Promise.all([worker(),worker()])).sort(),[false,true]); assert.equal(await noticeCount(),1);
+  const row=await db.certificate.findUniqueOrThrow({where:{id:cert.id}}), doc=unseal(row.document_ciphertext,`certificate:${row.id}`,row.key_id);
+  const user=(await contextFor(participant)).user; assert.equal(doc.snapshot.first_name,user.first_name); assert.equal(doc.snapshot.last_name,user.last_name);
+  assert.equal(doc.snapshot.number,cert.id); assert.equal(doc.snapshot.heading,'Testurkunde');
+  const verify=async token=>(await new Browser().change('post','/certificates/verify',{token})).body;
+  assert.deepEqual(await verify(doc.snapshot.token),{status:'valid'}); assert.deepEqual(await verify('not-a-code'),{status:'unknown'});
+  status(await admin.get(path),404); status(await new Browser().get(path),401);
+  const file=await participant.get(path); status(file,200); assert.match(file.headers['cache-control'],/no-store/);
+  assert.equal((await PDFDocument.load(file.body)).getPageCount(),1); assert.deepEqual(file.body,Buffer.from(doc.pdf,'base64'));
+  await db.user.update({where:{id:user.id},data:{first_name:'Renate'}}); assert.deepEqual((await participant.get(path)).body,file.body);
+  const revoke=`/admin/certificates/${cert.id}/revoke`, reason={reason:'Synthetischer Test'};
+  status(await participant.change('post',revoke,reason),403);
+  status(await admin.change('post',revoke,reason,{noCsrf:true}),403);
+  const staff = await contextFor(admin);
+  await db.authSession.update({where:{id:staff.session.id},data:{reauthenticated_at:new Date(Date.now()-360000)}});
+  status(await admin.change('post',revoke,reason),403);
+  status(await admin.change('post','/auth/reauth',{password,recovery_code:adminRecovery[6]}),204);
+  status(await admin.change('post',revoke,reason),200); status(await participant.get(path),404);
+  assert.deepEqual(await verify(doc.snapshot.token),{status:'revoked'});
+  const reissue=()=>admin.change('post',`/admin/completions/${record.id}/reissue`,{revoked_id:cert.id});
+  const results=await Promise.all([reissue(),reissue()]); results.forEach(r=>status(r,200)); assert.equal(results[0].body.id,results[1].body.id);
+  await db.user.update({where:{id:user.id},data:{status:'deletion_requested'}});
+  assert.equal(await worker(),false); assert.equal(await noticeCount(),1);
+  await db.user.update({where:{id:user.id},data:{status:'active'}});
+  assert.equal(await worker(),true); assert.equal(await noticeCount(),2);
+  assert.equal(await db.certificate.count({where:{completion_id:record.id,status:'valid'}}),1);
+  assert.deepEqual(await verify(doc.snapshot.token),{status:'revoked'});
+  // A POST limit applies even to unknown codes, and responses disclose no identities.
+  const publicRequest=()=>request(server).post('/api/v1/certificates/verify').send({token:'?' });
+  let response;
+  for(let i=0;i<31;i++){response=await publicRequest(); if(response.status===429)break; assert.equal(response.status,200);}
+  status(response,429);
+
+});
+
+// The opt-in runner selects this test and the qualification fixture above, not
+// the queue fault-injection test. The standalone real worker owns the queued job.
+test('browser certificate acceptance: SMTP, private PDF, verification, revocation and replacement',
+  {skip: process.env.TRAINERB_CERTIFICATE_BROWSER !== 'yes', timeout:120000}, async () => {
+    const owner = (await contextFor(participant)).user;
+    await db.user.update({where:{id:owner.id},data:{first_name:'Élodie-Luise Friederike Antonia',last_name:'Groß-Schönfeld von Winterstein-Hohenweide'}});
+    await require('../e2e/certificate-acceptance.cjs').exercise({admin, participant, ownerEmail:owner.email_canonical});
+  });

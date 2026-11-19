@@ -3,6 +3,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import nodemailer from 'nodemailer';
+import { issueNextCertificate } from './certificate-worker';
+import { Outbox } from './outbox';
 import { Database } from './database';
 import { getConfig } from './config';
 import { MailWorker } from './mail-worker';
@@ -11,7 +13,7 @@ import { dispatchDueMail } from './mail-dispatcher';
 async function main() {
   const config = getConfig();
   if (!config.smtpHost) throw new Error('SMTP_HOST is required to start the mail worker.');
-  const db = new Database();
+  const db = new Database(), outbox = new Outbox();
   const transport = nodemailer.createTransport({ host: config.smtpHost, port: config.smtpPort, secure: config.smtpSecure,
     connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000,
     ...(config.smtpUser ? { auth: { user: config.smtpUser, pass: config.smtpPassword || '' } } : {}) });
@@ -37,6 +39,8 @@ async function main() {
         await dispatchDueMail(db, jobId => queue.add('email.send', { job_id: jobId }, {
           jobId, removeOnComplete: true, removeOnFail: true,
         }));
+        try { await issueNextCertificate(db,outbox); }
+        catch { console.error(JSON.stringify({level:'error',event:'certificate_issuance_failed'})); }
         await delay(2_000);
       } catch {
         console.error(JSON.stringify({ level: 'error', event: 'mail_dispatcher_temporary_failure' }));

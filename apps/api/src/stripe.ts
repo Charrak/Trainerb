@@ -12,7 +12,8 @@ import { Disputes } from './disputes';
 const unavailable = () => apiError(409, 'STRIPE_UNAVAILABLE', 'Kartenzahlung ist derzeit nicht eingerichtet.');
 
 type StripeSessionFacts = { id: string; paymentIntentId: string | null; amount: bigint; currency: string;
-  orderId: string };
+  orderId: string; reservedId: string | null };
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Optional Stripe integration.
@@ -36,27 +37,33 @@ export class StripePayments {
   /** Create (or reuse) a hosted Stripe session for an awaiting order. */
   async startSession(orderId: string, userEmail: string): Promise<{ url: string }> {
     if (!this.client) throw unavailable();
-    const order = await this.db.order.findUnique({ where: { id: orderId }, include: { items: true } });
-    if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
-    if (order.payment_method !== 'stripe') throw apiError(409, 'WRONG_PAYMENT_METHOD', 'Diese Bestellung ist nicht für Kartenzahlung vorgesehen.');
-    if (order.payment_state !== 'awaiting') throw apiError(409, 'ORDER_NOT_PAYABLE', 'Diese Bestellung kann nicht mehr bezahlt werden.');
-    const open = await this.db.paymentAttempt.findFirst({ where: { order_id: orderId, provider: 'stripe',
-      status: { in: ['created', 'pending'] } }, orderBy: { created_at: 'desc' } });
-    if (open?.provider_session_id) {
-      const session = await this.client.checkout.sessions.retrieve(open.provider_session_id);
-      // `complete` means the customer finished the form — the money may still be
-      // on its way (SEPA and other delayed methods). Starting a second session
-      // here would invite a second payment for one order.
-      if (session.status === 'complete') {
-        throw apiError(409, 'PAYMENT_IN_PROGRESS',
-          'Die Zahlung ist bereits abgeschlossen und wird noch bestätigt. Bitte warte auf die Bestätigung.');
-      }
+    // Commit a durable provider idempotency key BEFORE the network request. All
+    // concurrent callers (and retries after a process crash) reuse that reservation.
+    const reserve = (expired?: string) => this.db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
+      const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: { orderBy: { position: 'asc' } } } });
+      if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
+      if (order.payment_method !== 'stripe') throw apiError(409, 'WRONG_PAYMENT_METHOD', 'Falsche Zahlungsart.');
+      if (order.payment_state !== 'awaiting') throw apiError(409, 'ORDER_NOT_PAYABLE', 'Diese Bestellung kann nicht mehr bezahlt werden.');
+      const open = await tx.paymentAttempt.findFirst({ where: { order_id: orderId, provider: 'stripe', status: { in: ['created','pending'] } } });
+      if (open && (!expired || open.id !== expired)) return { order, attempt: open };
+      if (open) await tx.paymentAttempt.update({ where: { id: open.id }, data: { status: 'cancelled', failure_code: 'superseded' } });
+      const id = uuidv7();
+      const attempt = await tx.paymentAttempt.create({ data: { id, order_id: orderId, provider: 'stripe', environment: getConfig().paymentEnvironment,
+        provider_idempotency_key: `checkout-${orderId}-${id}`, status: 'created', amount_cents: order.total_gross_cents, currency: order.currency } });
+      return { order, attempt };
+    });
+    let reservation = await reserve();
+    while (reservation.attempt.provider_session_id) {
+      const session = await this.client.checkout.sessions.retrieve(reservation.attempt.provider_session_id);
       if (session.status === 'open' && session.url) return { url: session.url };
+      if (session.status !== 'expired') throw apiError(409, 'PAYMENT_IN_PROGRESS', 'Die Zahlung wird bereits verarbeitet.');
+      reservation = await reserve(reservation.attempt.id);
     }
-    const attemptId = uuidv7();
+    const { order, attempt } = reservation, attemptId = attempt.id;
     const session = await this.client.checkout.sessions.create({
       mode: 'payment',
-      customer_email: userEmail,
+      customer_email: order.buyer_email_original ?? userEmail,
       client_reference_id: orderId,
       // The session must bill in the order's currency, not a hardcoded one: the
       // webhook compares the reported currency with `orders.currency`.
@@ -67,20 +74,10 @@ export class StripePayments {
       payment_intent_data: { metadata: { order_id: orderId, attempt_id: attemptId } },
       success_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=pruefung`,
       cancel_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=abgebrochen`,
-    }, { idempotencyKey: `checkout-${orderId}-${attemptId}` });
-    await this.db.$transaction(async tx => {
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE`;
-      // `payment_attempts_one_open` allows exactly one open attempt per order, and
-      // a replaced attempt is usually `pending`, not `created`. Superseding only
-      // `created` rows therefore made the new row fail the unique index.
-      await tx.paymentAttempt.updateMany({ where: { order_id: orderId, provider: 'stripe',
-        status: { in: ['created', 'pending'] } },
-        data: { status: 'cancelled', failure_code: 'superseded' } });
-      await tx.paymentAttempt.create({ data: { id: attemptId, order_id: orderId, provider: 'stripe',
-        environment: getConfig().paymentEnvironment, provider_session_id: session.id,
-        provider_idempotency_key: `stripe-${attemptId}`, status: 'pending', amount_cents: order.total_gross_cents,
-        currency: order.currency } });
-    });
+    }, { idempotencyKey: attempt.provider_idempotency_key });
+    const saved = await this.db.paymentAttempt.updateMany({ where: { id: attemptId, status: { in: ['created','pending'] }, order: { payment_state: 'awaiting' } },
+      data: { status: 'pending', provider_session_id: session.id } });
+    if (!saved.count) throw apiError(409, 'ORDER_NOT_PAYABLE', 'Diese Bestellung kann nicht mehr bezahlt werden.');
     if (!session.url) throw apiError(502, 'STRIPE_UNAVAILABLE', 'Die Zahlung konnte nicht gestartet werden.');
     return { url: session.url };
   }
@@ -106,10 +103,14 @@ export class StripePayments {
     const session = event.data.object as Stripe.Checkout.Session;
     if (session.payment_status !== 'paid') return { received: true };
     const orderId = session.metadata?.order_id ?? session.client_reference_id ?? '';
+    if (!uuid.test(orderId)) {
+      console.info(JSON.stringify({ event: 'stripe.foreign_session_ignored', provider_event_id: event.id }));
+      return { received: true };
+    }
     const facts: StripeSessionFacts = { id: session.id,
       paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id ?? null,
+      reservedId: session.metadata?.attempt_id && uuid.test(session.metadata.attempt_id) ? session.metadata.attempt_id : null,
       amount: BigInt(session.amount_total ?? 0), currency: (session.currency ?? '').toUpperCase(), orderId };
-    if (!/^[0-9a-f-]{36}$/.test(orderId)) throw apiError(400, 'INVALID_WEBHOOK', 'Ungültige Anfrage.');
     await this.applyPaidEvent(facts, event.id, event.type);
     return { received: true };
   }
@@ -175,7 +176,7 @@ export class StripePayments {
                               order: { id: string; order_number: string; payment_state: string;
                                 total_gross_cents: bigint; currency: string },
                               facts: StripeSessionFacts, eventId: string, eventType: string,
-                              reason: 'amount_mismatch' | 'duplicate_payment' | 'payment_after_cancellation') {
+                              reason: 'amount_mismatch' | 'duplicate_payment' | 'payment_after_cancellation' | 'payment_not_tracked') {
     const settled = ['paid', 'refunded', 'charged_back'].includes(order.payment_state);
     if (!settled && order.payment_state !== 'review') {
       await tx.order.update({ where: { id: order.id }, data: { payment_state: 'review' } });
@@ -191,14 +192,17 @@ export class StripePayments {
 
   private async applyPaidEvent(facts: StripeSessionFacts, eventId: string, eventType: string): Promise<void> {
     await this.db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${facts.orderId}::uuid FOR UPDATE`;
       // Replay protection: the provider event id is unique.
       const seen = await tx.paymentEvent.findFirst({ where: { provider: 'stripe',
         environment: getConfig().paymentEnvironment, provider_event_id: eventId }, select: { id: true } });
       if (seen) return;
-      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${facts.orderId}::uuid FOR UPDATE`;
+
       const order = await tx.order.findUnique({ where: { id: facts.orderId } });
-      if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
-      if (order.payment_method !== 'stripe') throw apiError(409, 'WRONG_PAYMENT_METHOD', 'Zahlungsart passt nicht zur Bestellung.');
+      if (!order || order.payment_method !== 'stripe') {
+        console.info(JSON.stringify({ event: 'stripe.foreign_session_ignored', provider_event_id: eventId }));
+        return;
+      }
       if (facts.amount !== order.total_gross_cents || facts.currency !== order.currency) {
         // An amount mismatch is never auto-accepted: it needs a human decision.
         // But a *later* mismatching delivery must not pull an order that is
@@ -232,11 +236,12 @@ export class StripePayments {
       }
       const now = new Date();
       const attempt = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',
-        OR: [{ provider_session_id: facts.id }, { provider_payment_id: facts.paymentIntentId ?? '__none__' }] },
+        OR: [{ provider_session_id: facts.id }, { provider_payment_id: facts.paymentIntentId ?? '__none__' },
+          ...(facts.reservedId ? [{ id: facts.reservedId, provider_session_id: null, status: 'created' }] : [])] },
         orderBy: { created_at: 'desc' } });
-      if (!attempt) throw apiError(409, 'PAYMENT_NOT_TRACKED', 'Zu dieser Zahlung liegt kein Zahlungsversuch vor.');
+      if (!attempt) { await this.reportSurplus(tx, order, facts, eventId, eventType, 'payment_not_tracked'); return; }
       await tx.paymentAttempt.update({ where: { id: attempt.id }, data: { status: 'succeeded', confirmed_at: now,
-        provider_payment_id: facts.paymentIntentId } });
+        provider_session_id: facts.id, provider_payment_id: facts.paymentIntentId } });
       await tx.paymentAttempt.updateMany({ where: { order_id: order.id, provider: 'stripe', id: { not: attempt.id },
         status: { in: ['created', 'pending'] } }, data: { status: 'cancelled', failure_code: 'superseded' } });
       // A provider callback is a payment confirmation without a human actor;

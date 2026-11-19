@@ -1,3 +1,4 @@
+import { unexpiredGrant } from './access-period';
 import type { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import { apiError } from './security';
@@ -29,10 +30,12 @@ import { apiError } from './security';
 /** What fulfilment did, so a caller can report it without guessing. */
 export type FulfilmentOutcome =
   | { status: 'fulfilled' }
+  | { status: 'needs_review'; reason: string }
   | { status: 'blocked_by_dispute'; dispute_id: string; dispute_status: string };
 
 export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: string,
-                                     outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> }): Promise<FulfilmentOutcome> {
+                                     outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> },
+                                     options?: { staffApprovedBlockedBuyer: true }): Promise<FulfilmentOutcome> {
   const order = await tx.order.findUnique({ where: { id: orderId } });
   if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
   if (order.payment_state !== 'paid') {
@@ -54,16 +57,30 @@ export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: str
       after_safe: { dispute_id: pending.id, dispute_status: pending.status } } });
     return { status: 'blocked_by_dispute', dispute_id: pending.id, dispute_status: pending.status };
   }
+  const park = async (reason: string): Promise<FulfilmentOutcome> => {
+    await tx.order.update({ where: { id: orderId }, data: { fulfillment_state: 'blocked' } });
+    await tx.auditEvent.create({ data: { id: uuidv7(), origin: 'system', action: 'fulfilment.needs_review',
+      target_type: 'order', target_ref: orderId, after_safe: { reason } } });
+    return { status: 'needs_review', reason };
+  };
+  const items = await tx.orderItemCourse.findMany({ where: { order_id: orderId }, orderBy: { order_item_product: 'asc' } });
+  if (!items.length) return park('FULFILMENT_INCOMPLETE');
+  if (!order.user_id && order.identity_kind !== 'guest') return park('ORDER_WITHOUT_BUYER');
   const userId = order.user_id ?? await linkGuestAccount(tx, order, outbox);
-  const items = await tx.orderItemCourse.findMany({ where: { order_id: orderId },
-    orderBy: [{ order_item_product: 'asc' }] });
-  if (!items.length) throw apiError(409, 'FULFILMENT_INCOMPLETE', 'Diese Bestellung enthält keine Kurszuordnung.');
+  if (!userId) return park('ACCOUNT_BLOCKED');
+  await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
+  const buyer = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { status: true } });
+  if (buyer.status === 'deleted' || (buyer.status === 'blocked' && !options?.staffApprovedBlockedBuyer)) return park('ACCOUNT_BLOCKED');
   const now = new Date();
+  // Check the complete bundle before writing any grants. An unrelated active grant
+  // cannot count as fulfilment of this payment (including concurrent checkouts).
+  const existing = await tx.courseAccess.findMany({ where: { user_id: userId, ...unexpiredGrant(now),
+    course_id: { in: items.map(i => i.course_id) } }, select: { course_id: true, order_id: true } });
+  if (existing.some(g => g.order_id !== orderId)) return park('ACCESS_ALREADY_EXISTS');
+  const granted = new Set(existing.map(g => g.course_id));
   for (const item of items) {
-    const existing = await tx.courseAccess.findFirst({ where: { user_id: userId, course_id: item.course_id,
-      revoked_at: null } });
-    // Owning the course twice grants nothing new; the order is still fulfilled.
-    if (existing) continue;
+    if (granted.has(item.course_id)) continue;
+    granted.add(item.course_id);
     const endsAt = item.access_days ? new Date(now.getTime() + item.access_days * 24 * 60 * 60_000) : null;
     await tx.courseAccess.create({ data: { id: uuidv7(), user_id: userId, course_id: item.course_id,
       course_version_id: item.course_version_id, source: 'order', order_id: orderId, starts_at: now, ends_at: endsAt } });
@@ -79,19 +96,14 @@ export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: str
  * idempotent: an already linked order returns its account untouched.
  */
 async function linkGuestAccount(tx: Prisma.TransactionClient, order: Prisma.OrderGetPayload<Record<string, never>>,
-                                outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> }): Promise<string> {
-  if (order.identity_kind !== 'guest') {
-    throw apiError(409, 'ORDER_WITHOUT_BUYER', 'Diese Bestellung hat kein zugeordnetes Konto.');
-  }
+                                outbox?: { issueActivationFor: (tx: Prisma.TransactionClient, userId: string) => Promise<void> }): Promise<string | null> {
   const existing = await tx.user.findUnique({ where: { email_canonical: order.buyer_email_canonical } });
   let userId: string;
   if (existing) {
-    if (existing.status === 'blocked' || existing.status === 'deleted') {
-      // A blocked buyer must not receive access as a side effect of a payment.
-      throw apiError(409, 'ACCOUNT_BLOCKED', 'Zu dieser Bestellung besteht ein gesperrtes Konto. Bitte kläre den Fall manuell.');
-    }
     userId = existing.id;
     await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
+    const current = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+    if (current.status === 'blocked' || current.status === 'deleted' || current.email_canonical !== order.buyer_email_canonical) return null;
   } else {
     const role = await tx.role.findUnique({ where: { key: 'participant' } });
     if (!role) throw new Error('Role catalog is not initialized.');

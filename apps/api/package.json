@@ -9,7 +9,10 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "1.1.1",
     "@trainerb/contracts": "0.1.0",
-    "aws4fetch": "1.0.20"
+    "aws4fetch": "1.0.20",
+    "dejavu-fonts-ttf": "2.37.3",
+    "pdf-lib": "1.17.1"
   }
 }

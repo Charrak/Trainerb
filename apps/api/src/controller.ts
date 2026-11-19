@@ -15,9 +15,9 @@ export class IdentityController {
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   // Publication, commerce and learning access are available behind explicit
-  // permissions; exams and certificates remain unavailable.
-  @Get('health') health() { return { status: 'running', stage: 'phase-3-commerce', commerce_enabled: true,
-    publication_enabled: true, exams_enabled: false, certificates_enabled: false }; }
+  // permissions. Recording a qualification completion does not issue a certificate.
+  @Get('health') health() { return { status: 'running', stage: 'phase-6-certificates', commerce_enabled: true,
+    publication_enabled: true, exams_enabled: true, completion_records_enabled: true, certificates_enabled: true }; }
   @Get('auth/csrf') async csrf(@Req() req: ApiRequest, @Res({passthrough:true}) res: Response) {
     return { csrf_token: await this.sessions.getCsrf(req, res) };
   }

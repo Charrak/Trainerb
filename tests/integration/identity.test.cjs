@@ -258,7 +258,8 @@ test('successful login upgrades an outdated Argon2id hash', async () => {
   const { user } = await register(address('rehash')); await activate(user);
   const oldHash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 8192, timeCost: 2, parallelism: 1 });
   await db.user.update({ where: { id: user.id }, data: { password_hash: oldHash } });
-  assert.equal((await login(new Browser(), address('rehash'))).status, 200);
+  const concurrent = await Promise.all([1, 2].map(() => login(new Browser(), address('rehash'))));
+  for (const response of concurrent) assert.equal(response.status, 200);
   const updated = await db.user.findUniqueOrThrow({ where: { id: user.id } });
   assert.notEqual(updated.password_hash, oldHash);
   assert.equal(argon2.needsRehash(updated.password_hash, { memoryCost: 65536, timeCost: 3, parallelism: 1 }), false);
@@ -500,4 +501,11 @@ test('customer support can find and block participant accounts without gaining s
   assert.equal((await agent.change('put', path, { status: 'active', reason_code: 'correction' })).status, 200);
   assert.equal((await browser.get('/me')).status, 401, 'unblocking must not revive a revoked session');
   assert.equal((await login(new Browser(), user.email_original)).status, 200);
+});
+
+test('successful logins release the shared IP budget; failures follow the address across IPs', async () => {
+  const limiter = app.get(RateLimiter);
+  for (let n=0; n<55; n++) assert.equal(await limiter.checkLogin(`ok-${n}`, 'shared-ip', async () => true), true);
+  for (let n=0; n<15; n++) assert.equal(await limiter.checkLogin('distributed', `source-${n}`, async () => null), null);
+  await assert.rejects(limiter.checkLogin('distributed', 'another-ip', async () => true), error => error.getStatus?.() === 429);
 });

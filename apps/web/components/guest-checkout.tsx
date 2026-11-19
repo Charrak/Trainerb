@@ -305,8 +305,8 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
         <h2>{order.payment_state === 'paid' ? 'Bezahlt' : order.payment_state === 'awaiting' ? 'Zahlung offen'
           : order.payment_state === 'cancelled' ? 'Storniert' : 'In Prüfung'}</h2>
         <p>{order.payment_state === 'paid'
-          ? (order.account_linked ? 'Wir haben ein Konto für dich angelegt und dir eine Aktivierungsmail geschickt.'
-            : 'Deine Zahlung ist eingegangen.')
+          ? (order.fulfillment_state === 'fulfilled' ? 'Dein Zugang ist freigeschaltet.'
+            : 'Deine Zahlung ist eingegangen. Die Freischaltung wird geprüft.')
           : 'Der Zugang wird nach bestätigtem Zahlungseingang freigeschaltet.'}</p></div></div>
         {order.bank && order.payment_state === 'awaiting' && <div className="bank-box"><span className="section-kicker">ÜBERWEISUNG</span>
           <p><strong>{euro(order.total_gross_cents)}</strong>{order.due_at && <> bis {dateOnly(order.due_at)}</>}</p>

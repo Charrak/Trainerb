@@ -1,3 +1,4 @@
+import { unexpiredGrant } from './access-period';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -160,7 +161,7 @@ export class GuestCheckout {
         const proof = await tx.checkoutEmailVerification.findFirst({ where: { cart_id: cart.id,
           verified_at: { not: null } }, orderBy: { created_at: 'desc' } });
         if (proof) {
-          const owned = await tx.courseAccess.findFirst({ where: { revoked_at: null,
+          const owned = await tx.courseAccess.findFirst({ where: { ...unexpiredGrant(now),
             user: { email_canonical: proof.email_canonical },
             course: { products: { some: { product_id: productId } } } }, select: { id: true } });
           if (owned) throw apiError(409, 'ALREADY_OWNED', 'Du hast bereits Zugang zu diesem Inhalt.');
@@ -519,7 +520,8 @@ export class GuestCheckout {
         const user = await tx.user.findUnique({ where: { email_canonical: order.buyer_email_canonical } });
         if (!user) throw apiError(409, 'ORDER_NO_ACCOUNT', 'Zu dieser Adresse besteht kein Konto.');
         await tx.order.update({ where: { id: orderId }, data: { user_id: user.id } });
-        await fulfilPaidOrder(tx, orderId, this.outbox);
+        const outcome = await fulfilPaidOrder(tx, orderId, this.outbox, { staffApprovedBlockedBuyer: true });
+        if (outcome.status !== 'fulfilled') throw apiError(409, 'FULFILMENT_BLOCKED', 'Die Freischaltung ist weiterhin blockiert.');
         await tx.auditEvent.create({ data: { id: uuidv7(), origin: 'user', actor_user_id: ctx.user.id,
           action: 'order.guest_granted_manually', target_type: 'order', target_ref: orderId,
           after_safe: { user_id: user.id, note: note || null } } });
