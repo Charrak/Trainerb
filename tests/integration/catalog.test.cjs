@@ -73,7 +73,7 @@ async function register(name) {
 async function login(browser, email) { return browser.change('post', '/auth/login', { email, password }); }
 async function enroll(browser, email) {
   const logged = await login(browser, email); status(logged, 202); assert.equal(logged.body.status, 'mfa_enrollment_required');
-  for(const path of ['/admin/audit-events','/admin/dashboard','/admin/automation-jobs','/admin/certificate-mail-template']) status(await browser.get(path),403);
+  for(const path of ['/admin/audit-events','/admin/dashboard','/admin/dashboard/finance','/admin/automation-jobs','/admin/certificate-mail-template']) status(await browser.get(path),403);
   status(await browser.get('/admin/courses'), 403); // preauth is not a backoffice session
   const setup = await browser.change('post', '/auth/mfa/enrollment/start', {}); status(setup, 200);
   const totp = new OTPAuth.TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(setup.body.secret) });
@@ -171,6 +171,10 @@ test('dashboard scopes are derived from roles and current course assignments, no
   assert.deepEqual((await admin.get(path)).body,{scope:'global',courses:2,completions:0});
   assert.deepEqual((await instructor.get(path)).body,{scope:'assigned',courses:0,completions:0});
   status(await manager.get(path+'?scope=global'),400);
+  const finance=path+'/finance';status(await new Browser().get(finance),401);
+  for(const viewer of [support,manager,instructor,participant]) status(await viewer.get(finance+'?period=all'),403);
+  status(await admin.get(finance+'?period=last_hour'),422);status(await admin.get(finance+'?environment=live'),400);
+  const empty=await admin.get(finance);status(empty,200);assert.equal(empty.body.payments_cents,'0');assert.equal(empty.body.fees_cents,null);
   const scoped=await db.courseStaff.create({data:{course_id:courseB.id,user_id:managerUser.id,assigned_by:adminUser.id,scope_role:'manager'}});
   try {assert.deepEqual((await manager.get(path)).body,{scope:'assigned',courses:1,completions:0});}
   finally {await db.courseStaff.deleteMany({where:{course_id:scoped.course_id,user_id:managerUser.id}});}

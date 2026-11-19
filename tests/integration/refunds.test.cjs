@@ -285,6 +285,29 @@ test('a partial refund leaves the payment standing and issues one credit note', 
   // separate decisions.
   assert.equal(await db.courseAccess.count({ where: { order_id: order.id, revoked_at: null } }), 1);
 
+  const report = await admin.get('/admin/dashboard/finance?period=all'); status(report,200);
+  assert.equal(report.body.environment,'test'); assert.equal(report.body.starts_at,null);
+  assert.equal(report.body.payments_cents,'19900'); assert.equal(report.body.refunds_cents,'4900');
+  assert.equal(report.body.balance_cents,'15000'); assert.equal(report.body.dispute_face_value_cents,'0');
+  // Fixed test clock: Berlin midnight on the autumn DST transition was still
+  // UTC+2. A refund on that day does not move yesterday's receipt into today.
+  const {financeReport} = require('../../apps/api/dist/finance-report');
+  const asOf = new Date('2025-10-26T12:00:00Z');
+  const rollback = new Error('discard synthetic reporting fixtures');
+  await assert.rejects(db.$transaction(async tx => {
+    await tx.paymentAttempt.update({where:{id:attempt.id},data:{confirmed_at:new Date('2025-10-25T21:59:59.999Z')}});
+    await tx.refund.update({where:{id:refund.body.id},data:{confirmed_at:new Date('2025-10-25T22:00:00Z')}});
+    const synthetic = (amount, environment, status, time) => ({id:uuidv7(),order_id:order.id,provider:'invoice',environment,
+      provider_idempotency_key:key(),status,amount_cents:amount,currency:'EUR',confirmed_at:new Date(time)});
+    const large=9007199254740993n;
+    await tx.paymentAttempt.createMany({data:[synthetic(large,'test','succeeded','2025-10-24T08:00:00Z'),
+      synthetic(3n,'live','succeeded',asOf),synthetic(4n,'test','failed',asOf),synthetic(5n,'test','succeeded','2025-10-26T12:00:00.001Z')]});
+    const day=await financeReport(tx,'today',asOf), month=await financeReport(tx,'month',asOf);
+    assert.equal(day.starts_at.toISOString(),'2025-10-25T22:00:00.000Z');assert.equal(day.balance_cents,'-4900');
+    assert.equal(month.starts_at.toISOString(),'2025-09-30T22:00:00.000Z');assert.equal(month.balance_cents,String(large+15000n));
+    throw rollback;
+  }), err => err.message === rollback.message);
+
   // The credit note is a real document for its owner, not for others.
   const noteId = refund.body.credit_notes[0].id;
   const mine = await buyer.get('/credit-notes'); status(mine, 200);
@@ -521,6 +544,7 @@ test('refunding before fulfilment grants nothing afterwards, and the buyer is to
 test('a chargeback is not a refund: separate lifecycle, no credit note, payment evidence kept', async () => {
   const order = await paidOrder();
   await freshReauth(admin, adminUser.id, adminTotp, adminRecovery);
+  const beforeReport = (await admin.get('/admin/dashboard/finance?period=all')).body;
   const dispute = await admin.change('post', `/admin/orders/${order.id}/disputes`,
     { provider_dispute_id: `dp_${uuidv7().replace(/-/g, '').slice(0, 20)}`, amount_cents: '19900',
       status: 'open', reason_code: 'product_not_received' });
@@ -537,6 +561,9 @@ test('a chargeback is not a refund: separate lifecycle, no credit note, payment 
       reason_code: 'product_not_received' });
   status(lost, 200);
   assert.equal(lost.body.status, 'lost');
+  const afterReport = (await admin.get('/admin/dashboard/finance?period=all')).body;
+  assert.equal(afterReport.balance_cents,beforeReport.balance_cents);
+  assert.equal(BigInt(afterReport.dispute_face_value_cents)-BigInt(beforeReport.dispute_face_value_cents),19900n);
   assert.ok(lost.body.resolved_at);
   const stored = await db.order.findUniqueOrThrow({ where: { id: order.id } });
   // Money gone, but not by our hand: a distinct state with its own timestamp.
