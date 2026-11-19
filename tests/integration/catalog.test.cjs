@@ -267,6 +267,52 @@ test('assignments scope read and write; fresh MFA and current membership are enf
 });
 
 
+test('chapter editors save incomplete questions; only freshly confirmed publishers can approve a complete revision', async () => {
+  const course = await createCourse('fragenredaktion');
+  const module = await admin.change('post', `/admin/course-versions/${course.version_id}/modules`, { title: 'Testmodul', position: 1 }); status(module, 201);
+  const chapter = await admin.change('post', `/admin/course-modules/${module.body.id}/chapters`, { title: 'Testkapitel', position: 1 }); status(chapter, 201);
+  const base = `/admin/course-chapters/${chapter.body.id}/exams`;
+  status(await instructor.get(base), 404); status(await participant.get(base), 403);
+  status(await assign(course.id, instructorUser.id, 'instructor'), 200);
+  status(await instructor.change('post', base, { title: 'Testprüfung' }, { noCsrf: true }), 403);
+  const exam = await instructor.change('post', base, { title: 'Testprüfung' }); status(exam, 201);
+  const list = `${base}/${exam.body.id}/questions`;
+  const initial = { question_text: 'Synthetische Frage?', explanation: '', options: [] };
+  const saved = await instructor.change('post', list, initial); status(saved, 201);
+  const path = `${list}/${saved.body.id}`, approve = revision => admin.change('post', `${path}/approve`, { revision });
+  status(await participant.get(list), 403);
+  status(await instructor.change('post', `${path}/approve`, { revision: 1 }), 403);
+  await db.authSession.updateMany({ where: { user_id: adminUser.id, kind: 'backoffice' }, data: { reauthenticated_at: null } });
+  const notFresh = await approve(1); status(notFresh, 403); assert.equal(notFresh.body.code, 'REAUTH_REQUIRED');
+  status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[4] }), 204);
+  const options = [1,2,3,4].map(n => ({ option_text: `Testantwort ${n}`, is_correct: n === 2 }));
+  const complete = { ...initial, options, explanation: 'Synthetische Lösungserklärung.' };
+  let rev = 1;
+  for (const incomplete of [{ ...complete, options: options.slice(0, 3) }, { ...complete, explanation: '' },
+    { ...complete, options: options.map(o => ({ ...o, is_correct: false })) }]) {
+    status(await instructor.change('put', path, { ...incomplete, revision: rev++ }), 200);
+    const blocked = await approve(rev); status(blocked, 422); assert.equal(blocked.body.code, 'QUESTION_INCOMPLETE');
+  }
+  status(await instructor.change('put', path, { ...complete, revision: rev, options: options.map(o => ({ ...o, is_correct: true })) }), 422);
+  status(await instructor.change('put', path, { ...complete, revision: rev, status: 'active' }), 400);
+  status(await instructor.change('put', path, { ...complete, revision: rev - 1 }), 409);
+  status(await instructor.change('put', path, { ...complete, revision: rev++ }), 200);
+  status(await approve(rev - 1), 409);
+  status(await admin.change('post', `${path}/approve`, { revision: rev }, { noCsrf: true }), 403);
+  const release = await approve(rev); status(release, 200); assert.equal(release.body.status, 'active');
+  status(await approve(rev + 1), 409);
+  status(await instructor.change('put', path, { ...initial, revision: rev + 1 }), 409);
+  const read = await instructor.get(list); status(read, 200); assert.deepEqual(read.body[0].options, options);
+  assert.equal(read.body[0].explanation, complete.explanation); assert.equal(read.body[0].revision, rev + 1);
+  const other = await instructor.change('post', base, { title: 'Anderer Pool' }); status(other, 201);
+  status(await instructor.change('put', path.replace(exam.body.id, other.body.id), { ...initial, revision: rev + 1 }), 404);
+  const readiness = await admin.get(`/admin/courses/${course.id}/publication`); status(readiness, 200);
+  assert.ok(readiness.body.readiness.some(r => r.code === 'EXAMS_NOT_IMPLEMENTED'));
+  const events = await db.auditEvent.findMany({ where: { target_ref: course.id, action: { startsWith: 'exam.' } } });
+  assert.equal(events.filter(e => e.action === 'exam.question_approved').length, 1);
+  assert.ok(!JSON.stringify(events).includes(complete.explanation));
+});
+
 test('course uploads are bounded, scoped, and end in a separate private quarantine bucket', async () => {
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOxSaxkAAAAASUVORK5CYII=', 'base64');
   const post = async (browser, id, bytes, name = 'Beispiel.png', csrf = true) => {

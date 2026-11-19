@@ -1160,6 +1160,7 @@ model QuestionPool {
   @@map("question_pools")
 }
 model Question {
+  revision      Int @default(1)
   id            String @id @db.Uuid
   pool_id       String @db.Uuid
   exam_id       String @db.Uuid
