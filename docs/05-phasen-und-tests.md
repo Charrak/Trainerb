@@ -174,3 +174,11 @@ Die Verkaufsfreigabe bleibt aus, solange einer der folgenden Punkte offen ist:
 - funktionierende Überwachung, Ansprechpartner, getestete Backups samt Wiederherstellung, Incident- und Supportprozesse;
 - Datenschutz- und Barrierefreiheitsprüfung einschließlich Dienstleisterverträgen und Datenflüssen abgeschlossen;
 - dokumentierter End-to-End-Test vom ersten Besuch bis zum Zertifikat und eine geprüfte Rollbackstrategie.
+
+### Erster Datenbankstand für Phase 6
+
+Migration `202611180019_phase6_chapter_exams` bildet zunächst **nur Kapitelprüfungen** der ersten Ausbildung ab (Single Choice, drei Fragen, vier Optionen, drei richtige Antworten zum Bestehen). Es gibt keine mitgelieferten Fragen. Pro Prüfung ist ein eigener Pool vorgesehen; Entwurfsfragen dürfen noch unvollständig sein. Die Datenbank begrenzt Optionen auf vier Positionen und höchstens eine richtige Antwort; exakt vier und genau eine richtige sowie die fachliche Erklärung sind vor einer späteren Freigabe zu prüfen.
+
+Versuche gehören zum vorhandenen `course_access` derselben Kursversion. Startschlüssel und Versuchsnummer sind eindeutig; ein partieller Index erlaubt pro Zugang und Prüfung nur einen offenen Versuch. Die Auswahl und Reihenfolge von Fragen/Optionen werden mit zusammengesetzten Fremdschlüsseln gespeichert, nicht aus einer aktuellen Zufallsreihenfolge rekonstruiert. Das ist noch kein Start- oder Abgabeprozess: Vollständigkeit, unveränderliche veröffentlichte Frageninhalte, Antworten, Ergebnis und Lösungsanzeige folgen separat. Keine Teilnehmer-API liefert Prüfungsdaten. Auch ein Kurs mit angelegter Prüfung ohne Sollanzahl bleibt für die Veröffentlichung gesperrt; Zertifizierung und Lernfortschritt ändern sich nicht.
+
+**Betrieb:** Additive Migration ohne Daten-Backfill, zusätzlich ein eindeutiger Index auf `course_access(id, course_version_id)` für den Versions-FK. Bei großen Zugangstabellen ein Migrationsfenster für den Indexaufbau einplanen. Bei einem Rollback vor Aufnahme der Prüfungsredaktion Tabellen leer belassen, nicht historische Versuche löschen. Bei bereits vorhandenen Prüfungen nicht auf einen API-Stand ohne Veröffentlichungssperre zurückrollen; nötigenfalls Sicherung von vor der Migration wiederherstellen.

@@ -1114,3 +1114,49 @@ test('one private upload reaches only the authorized learner via scan, approval,
       const object = await get(url); assert.equal(object.status, 200); assert.deepEqual(Buffer.from(await object.arrayBuffer()), png);
     } finally { Object.assign(cfg, previous); }
   });
+
+test('phase 6 storage binds pools, attempts and selected options to the same chapter exam and access version', async () => {
+  const course = await createCourse('pruefungsmodell', { visibility: 'public' });
+  const mod = await db.courseModule.create({ data: { id: uuidv7(), course_version_id: course.version_id, title: 'Modul', position: 1 } });
+  const chapter = await db.courseChapter.create({ data: { id: uuidv7(), course_version_id: course.version_id, module_id: mod.id, title: 'Kapitel', position: 1 } });
+  const examData = { course_version_id: course.version_id, chapter_id: chapter.id, title: 'Synthetische Prüfung', position: 1 };
+  await assert.rejects(db.exam.create({ data: { ...examData, id: uuidv7(), course_version_id: courseB.version_id } }), { code: 'P2003' });
+  const exam = await db.exam.create({ data: { ...examData, id: uuidv7() } });
+  const other = await db.exam.create({ data: { ...examData, id: uuidv7(), position: 2 } });
+  assert.deepEqual([exam.question_count, exam.option_count, exam.pass_rule.min_correct], [3, 4, 3]);
+  status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[3] }), 204);
+  const readiness = await admin.get(`/admin/courses/${course.id}/publication`); status(readiness, 200);
+  assert.ok(readiness.body.readiness.some(r => r.code === 'EXAMS_NOT_IMPLEMENTED'));
+  status(await admin.change('delete', `/admin/course-chapters/${chapter.id}`, { revision: 1 }), 409);
+  async function questionFor(e) {
+    const pool = await db.questionPool.create({ data: { id: uuidv7(), exam_id: e.id, title: 'Testpool' } });
+    return db.question.create({ data: { id: uuidv7(), pool_id: pool.id, exam_id: e.id, position: 1, question_text: 'Synthetische Frage?' } });
+  }
+  const q = await questionFor(exam), otherQ = await questionFor(other);
+  await assert.rejects(db.question.create({ data: { id: uuidv7(), pool_id: otherQ.pool_id, exam_id: exam.id, position: 2, question_text: 'Test?' } }), { code: 'P2003' });
+  const option = async (question, position) => db.answerOption.create({ data: { id: uuidv7(), question_id: question.id, position, option_text: 'Testoption', is_correct: true } });
+  const correct = await option(q, 1), foreign = await option(otherQ, 1);
+  await assert.rejects(option(q, 2), { code: 'P2002' });
+
+  // Only for the persistence fixture: normal publication is deliberately still blocked.
+  await db.courseVersion.update({ where: { id: course.version_id }, data: { state: 'published', published_by: adminUser.id, published_at: new Date() } });
+  await db.course.update({ where: { id: course.id }, data: { status: 'published' } });
+  const access = await db.courseAccess.create({ data: { id: uuidv7(), course_id: course.id, course_version_id: course.version_id,
+    user_id: adminUser.id, source: 'manual', granted_by: adminUser.id } });
+  const start = (n, key, overrides = {}) => db.examAttempt.create({ data: { id: uuidv7(), access_id: access.id,
+    course_version_id: course.version_id, exam_id: exam.id, attempt_no: n, start_idempotency_key: key, ...overrides } });
+  await assert.rejects(start(1, 'wrong-version', { course_version_id: courseB.version_id }), { code: 'P2003' });
+  const started = await Promise.allSettled([start(1, 'one'), start(2, 'two')]);
+  const winners = started.filter(s => s.status === 'fulfilled'); assert.equal(winners.length, 1);
+  assert.equal(started.find(s => s.status === 'rejected').reason.code, 'P2002');
+  const attempt = winners[0].value;
+  const select = (question, position) => db.examAttemptQuestion.create({ data: { attempt_id: attempt.id, exam_id: exam.id, question_id: question.id, position } });
+  await assert.rejects(select(otherQ, 1), { code: 'P2003' }); await select(q, 1);
+  const choice = opt => db.examAttemptOption.create({ data: { attempt_id: attempt.id, question_id: q.id, option_id: opt.id, position: 1 } });
+  await assert.rejects(choice(foreign), { code: 'P2003' }); await choice(correct);
+  await assert.rejects(db.examAttemptOption.updateMany({ where: { attempt_id: attempt.id }, data: { position: 2 } }), /EXAM_SELECTION_IMMUTABLE/);
+  await db.examAttempt.update({ where: { id: attempt.id }, data: { status: 'expired' } });
+  await assert.rejects(db.examAttempt.update({ where: { id: attempt.id }, data: { status: 'in_progress' } }), /EXAM_ATTEMPT_IMMUTABLE/);
+  await assert.rejects(start(3, attempt.start_idempotency_key), { code: 'P2002' });
+  assert.equal((await start(3, 'retry')).status, 'in_progress');
+});
