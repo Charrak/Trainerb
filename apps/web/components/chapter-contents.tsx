@@ -36,10 +36,11 @@ function readBlock(content: Content): Block | null {
 function savedContent(value: unknown, original?: Content): Content | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<Content>;
-  if (typeof candidate.id !== 'string' || (original && candidate.id !== original.id) || candidate.kind !== 'text' ||
+  if (typeof candidate.id !== 'string' || (original && candidate.id !== original.id) || !['text','image','file'].includes(candidate.kind ?? '') ||
       !(candidate.title === null || typeof candidate.title === 'string') ||
       !Number.isSafeInteger(candidate.position) || !Number.isSafeInteger(candidate.revision)) return null;
   const item = { ...candidate, editable: true } as Content;
+  if (item.kind !== 'text') return item.body === null ? { ...item, editable: false } : null;
   return readBlock(item) ? item : null;
 }
 const byPosition = (left: Content, right: Content) => left.position - right.position || left.id.localeCompare(right.id);
@@ -110,7 +111,7 @@ export function ChapterContents({ chapterId, count, disabled, canEdit, mutate, o
   }}>
     <summary>Lehrinhalte <span>{count} {count === 1 ? 'Baustein' : 'Bausteine'}</span></summary>
     <div className="content-panel-body">
-      <p className="muted">Nur im Entwurf sichtbar. Texte, Überschriften, Aufzählungen und Links werden als sichere Textbausteine gespeichert; Medien folgen später.</p>
+      <p className="muted">Nur im Entwurf sichtbar. Texte, Überschriften, Aufzählungen und Links werden als sichere Textbausteine gespeichert; Übernommene Kursmedien werden als private Verweise zugeordnet.</p>
       <Notice message={error}/><Notice kind="info" message={note}/>
       {loading && !loaded && <p className="muted">Inhalte werden geladen …</p>}
       {loaded && !contents.length && <p className="muted">Noch keine Inhaltsbausteine angelegt.</p>}
@@ -121,11 +122,39 @@ export function ChapterContents({ chapterId, count, disabled, canEdit, mutate, o
         if (window.confirm('Inhalte neu laden? Nicht gespeicherte Änderungen können dabei verloren gehen.')) void load(undefined, true);
       }}>Inhalte neu laden</button>}
       {!loaded && error && <button type="button" className="button button-secondary" disabled={disabled || loading} onClick={() => void load()}>Erneut laden</button>}
+      {canEdit && loaded && count < 200 && <MediaPicker chapterId={chapterId} disabled={disabled || loading} mutate={mutate} onSaved={onSaved} onAccessLost={onAccessLost}/>}
       {canEdit && loaded && <details className="editor-details add-content"><summary>+ Inhaltsbaustein hinzufügen</summary>
         {count >= 200 ? <p className="muted editor-hint">Pro Kapitel sind höchstens 200 Inhaltsbausteine möglich.</p> :
           <ContentForm chapterId={chapterId} disabled={disabled || loading} mutate={mutate} onSaved={onSaved}/>}</details>}
     </div>
   </details>;
+}
+
+type MediaOption = { id: string; original_name: string; kind: 'image' | 'file' };
+function MediaPicker({ chapterId, disabled, mutate, onSaved, onAccessLost }: { chapterId: string; disabled: boolean; mutate: Mutate;
+  onSaved: (value: unknown) => void; onAccessLost: (error: unknown) => void }) {
+  const [page, setPage] = useState<Page<MediaOption>>(), [selected, setSelected] = useState('');
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  async function load(cursor?: string) {
+    setBusy(true); setError(''); setSelected('');
+    try { setPage(await api<Page<MediaOption>>(`/admin/course-chapters/${chapterId}/media-options${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)); }
+    catch (e) { setPage(undefined); setError(errorMessage(e)); onAccessLost(e); }
+    finally { setBusy(false); }
+  }
+  async function attach(event: FormEvent) {
+    event.preventDefault();
+    const result = await mutate(`/admin/course-chapters/${chapterId}/contents`, 'POST', { media_asset_id: selected }, 'Kursmedium im Entwurf zugeordnet.', chapterId);
+    if (result.ok) { onSaved(result.value); setSelected(''); }
+  }
+  return <details className="editor-details" onToggle={e => { if (e.currentTarget.open && !page && !busy) void load(); }}>
+    <summary>+ Privates Kursmedium zuordnen</summary><Notice message={error}/><form className="stack-form" onSubmit={attach}>
+      <fieldset disabled={disabled || busy}><Field label="Übernommenes Kursmedium" id={`media-${chapterId}`}>
+        <select id={`media-${chapterId}`} required value={selected} onChange={e => setSelected(e.target.value)}>
+          <option value="">Bitte auswählen</option>{page?.data.map(m => <option key={m.id} value={m.id}>{m.original_name} · {m.kind === 'image' ? 'Bild' : 'PDF'}</option>)}
+        </select></Field>{page && !page.data.length && <p>Keine passenden Kursmedien vorhanden.</p>}
+        <button className="button button-secondary" disabled={!selected}>Im Entwurf zuordnen</button>
+        {page?.next_cursor && <button type="button" onClick={() => void load(page.next_cursor!)}>Weitere Medien</button>}
+        <button type="button" onClick={() => void load()}>Auswahl neu laden</button></fieldset></form></details>;
 }
 
 function ContentItem({ item, chapterId, disabled, canEdit, mutate, onSaved, onRemoved }: {
@@ -140,7 +169,9 @@ function ContentItem({ item, chapterId, disabled, canEdit, mutate, onSaved, onRe
     <div className="content-block-heading"><span>{String(item.position).padStart(2, '0')}</span>
       <strong>{item.title || (block ? labels[block.kind] : 'Unbekannter Baustein')}</strong>
       {item.title && block && <small>{labels[block.kind]}</small>}</div>
-    {!block ? <p className="muted">Dieses Format wird hier nicht unterstützt und kann nicht verändert oder gelöscht werden.</p> : <>
+    {item.body === null && ['image','file'].includes(item.kind) ? <><p>Privates Kursmedium · {item.kind === 'image' ? 'Bild' : 'Datei'}</p>
+      {canEdit && <button type="button" className="danger-link" disabled={disabled} onClick={() => void remove()}>Zuordnung entfernen</button>}</>
+      : !block ? <p className="muted">Dieses Format wird hier nicht unterstützt und kann nicht verändert oder gelöscht werden.</p> : <>
       {block.kind === 'paragraph' && <p className="content-preview-text">{block.text}</p>}
       {block.kind === 'heading' && <p className="content-preview-heading">{block.text}</p>}
       {block.kind === 'list' && <ul className="content-preview-list">{block.items.map((text, index) => <li key={index}>{text}</li>)}</ul>}

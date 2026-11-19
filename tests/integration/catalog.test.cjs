@@ -402,6 +402,42 @@ test('editorial approval is separate from scanning, course-bound and recorded ex
 
 });
 
+test('draft editor lists and assigns only approved, promoted private media of the chapter course', async () => {
+  const course = await createCourse('kapitelmedien');
+  const mod = await admin.change('post', `/admin/course-versions/${course.version_id}/modules`, { title: 'Modul', position: 1 }); status(mod, 201);
+  const chapter = await admin.change('post', `/admin/course-modules/${mod.body.id}/chapters`, { title: 'Entwurf', position: 1 }); status(chapter, 201);
+  const base = `/admin/course-chapters/${chapter.body.id}`;
+  async function fixture(courseId, mime, promoted = true) {
+    const asset = await db.mediaAsset.create({ data: { id: uuidv7(), source: 's3', storage_key: randomUUID(), mime_detected: mime,
+      original_name: mime === 'image/png' ? 'Bild.png' : 'Dokument.pdf', size_bytes: 22, status: 'ready', visibility: 'private' } });
+    if (promoted) await db.courseMediaUpload.create({ data: { id: uuidv7(), course_id: courseId, uploaded_by: adminUser.id, object_key: randomUUID(),
+      size_bytes: 22, sha256: Buffer.alloc(32), mime_detected: mime, original_name: asset.original_name, approved_at: new Date(), approved_by: adminUser.id,
+      scanned_at: new Date(), status: 'clean', promoted_asset_id: asset.id } });
+    return asset;
+  }
+  const image = await fixture(course.id, 'image/png'), pdf = await fixture(course.id, 'application/pdf');
+  const foreign = await fixture(courseB.id, 'image/png'), legacy = await fixture(course.id, 'image/png', false);
+  const add = (id, options) => admin.change('post', `${base}/contents`, { media_asset_id: id }, options);
+  status(await instructor.get(`${base}/media-options`), 404);
+  const options = await admin.get(`${base}/media-options`); status(options, 200);
+  assert.deepEqual(options.body.data, [ { id: image.id, original_name: image.original_name, kind: 'image' },
+    { id: pdf.id, original_name: pdf.original_name, kind: 'file' } ]);
+  assert.deepEqual((await admin.get(`${base}/media-options?cursor=${image.id}`)).body.data.map(r => r.id), [pdf.id]);
+  status(await instructor.change('post', `${base}/contents`, { media_asset_id: image.id }), 404);
+  status(await add(image.id, { noCsrf: true }), 403);
+  status(await add(foreign.id), 409); status(await add(legacy.id), 409);
+  const attached = await add(image.id); status(attached, 201); assert.equal(attached.body.kind, 'image'); assert.equal(attached.body.body, null);
+  const file = await add(pdf.id); status(file, 201); assert.equal(file.body.kind, 'file'); assert.equal(file.body.title, pdf.original_name);
+  assert.equal(file.body.position, attached.body.position + 1);
+  await db.mediaAsset.update({ where: { id: image.id }, data: { status: 'quarantined' } });
+  status(await add(image.id), 409); // was eligible when picker opened
+  assert.deepEqual((await admin.get(`${base}/media-options`)).body.data.map(r => r.id), [pdf.id]);
+  const remove = rev => admin.change('delete', `/admin/chapter-contents/${attached.body.id}`, { revision: rev });
+  status(await remove(2), 409); status(await remove(1), 204); // remove broken reference, not the asset
+  assert.equal((await db.mediaAsset.findUniqueOrThrow({ where: { id: image.id } })).status, 'quarantined');
+  assert.equal((await db.courseVersion.findUniqueOrThrow({ where: { id: course.version_id } })).state, 'draft');
+});
+
 test('a concurrent unassignment and edit serialize on the course and leave no subsequent access', async () => {
   status(await assign(courseA.id, managerUser.id, 'manager'), 200);
   const [removed, edited] = await Promise.all([
