@@ -401,8 +401,6 @@ export function AdminCommerce() {
   const [busy, setBusy] = useState('');
   const [form, setForm] = useState<Record<string, string>>({});
   const [salesEnabled, setSalesEnabled] = useState(false);
-  const [draftKind, setDraftKind] = useState<'terms' | 'withdrawal' | 'privacy' | 'imprint'>('terms');
-  const [wording, setWording] = useState('');
   const allowed = !!profile && canConfigure(profile);
   async function load() {
     const data = await api<CommerceState>('/admin/commerce');
@@ -438,21 +436,6 @@ export function AdminCommerce() {
       await load(); setSuccess('Einstellungen gespeichert.');
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
   }
-  async function createVersion(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy('legal'); setError(''); setSuccess('');
-    try { await api('/admin/commerce/legal', 'POST', { kind: draftKind, wording }); setWording('');
-      await load(); setSuccess('Neue Fassung als Entwurf angelegt. Aktivierung macht sie verbindlich.');
-    } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
-  }
-  async function activate(versionId: string) {
-    setBusy(versionId); setError(''); setSuccess('');
-    try { await api(`/admin/commerce/legal/${versionId}/activate`, 'POST', {}); await load();
-      setSuccess('Fassung aktiviert. Ältere Fassungen bleiben als Historie erhalten.'); }
-    catch (e) {
-      if (e instanceof ApiError && e.code === 'REAUTH_REQUIRED') setError('Bitte bestätige im Konto deine Identität und versuche es erneut.');
-      else setError(errorMessage(e));
-    } finally { setBusy(''); }
-  }
   return <div className="account-page content-width">
     <div className="dashboard-title"><div><span className="eyebrow"><span className="eyebrow-line"/> GESCHÜTZTE VERWALTUNG</span>
       <h1>Zahlung &amp; Recht<span className="accent-dot">.</span></h1><p>Verkauf freischalten, Rechnungsdaten und rechtliche Fassungen pflegen.</p></div>
@@ -480,25 +463,7 @@ export function AdminCommerce() {
         </form>
       </section>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">02 / RECHTSTEXTE</span>
-        <h2>Fassungen</h2><p>Nur aktivierte Fassungen sind öffentlich. Im Checkout werden AGB, Widerruf und Datenschutz dokumentiert, nicht das Impressum.</p></div></div>
-        {state.documents.map(document => <div key={document.kind} className="legal-version-group">
-          <h3>{document.kind === 'imprint' ? 'Impressum' : document.kind === 'terms' ? 'AGB' : document.kind === 'withdrawal' ? 'Widerrufsbelehrung' : 'Datenschutzhinweis'}</h3>
-          {document.versions.map(version => <div key={version.id} className="legal-version-row">
-            <span>Fassung {version.version} · {version.status === 'active' ? 'aktiv' : version.status === 'draft' ? 'Entwurf' : 'abgelöst'}</span>
-            <details><summary>Wortlaut anzeigen</summary><p style={{ whiteSpace: 'pre-wrap' }}>{version.wording}</p></details>
-            {version.status === 'draft' && <button type="button" className="inline-button text-link" disabled={!!busy}
-              onClick={() => void activate(version.id)}>Aktivieren</button>}
-          </div>)}
-        </div>)}
-        <div className="inner-divider"/>
-        <form onSubmit={createVersion} className="stack-form">
-          <Field label="Dokument" id="legal-kind"><select id="legal-kind" value={draftKind} onChange={e => setDraftKind(e.target.value as typeof draftKind)}>
-            <option value="imprint">Impressum</option><option value="terms">AGB</option><option value="withdrawal">Widerrufsbelehrung</option><option value="privacy">Datenschutzhinweis</option></select></Field>
-          <Field label="Neue Fassung" id="legal-wording" hint="Bitte nur geprüfte Angaben aktivieren. Absätze bleiben erhalten.">
-            <textarea id="legal-wording" rows={8} value={wording} onChange={e => setWording(e.target.value)} maxLength={20000} required/></Field>
-          <button className="button button-secondary" disabled={!!busy}>{busy === 'legal' ? 'Bitte warten …' : 'Fassung als Entwurf anlegen'}</button>
-        </form>
-      </section>
+        <h2>Rechtstexte</h2></div></div><Link href="/admin/rechtstexte">Zum Rechtstexteditor</Link></section>
       <TaxRates busy={busy} setBusy={setBusy} setError={setError} setSuccess={setSuccess}/>
     </div>}
   </div>;

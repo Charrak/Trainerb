@@ -202,6 +202,9 @@ export class CommerceAdminController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'settings.manage', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.commerce.closeTaxRate(ctx, id, body);
   }
+  @Get('admin/legal-documents/:kind') async legalState(@Req() req:ApiRequest,@Param('kind') kind:string) {
+    await this.sessions.require(req,{backoffice:true,permission:'legal.manage'});return this.commerce.editorialLegal(kind);
+  }
   @Post('admin/commerce/legal') @HttpCode(201)
   async legal(@Req() req: ApiRequest, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'legal.manage', fresh: true });

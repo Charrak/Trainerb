@@ -1,7 +1,7 @@
 import { Shell } from './site';
 import type { ShopConfig } from '../lib/shop';
 
-export async function LegalPage({ kind, title }: { kind: 'imprint' | 'privacy' | 'terms'; title: string }) {
+export async function LegalPage({ kind, title }: { kind: 'imprint' | 'privacy' | 'terms' | 'payment_info' | 'withdrawal'; title: string }) {
   let version: ShopConfig['legal'][string] | undefined;
   let unavailable = false;
   try {

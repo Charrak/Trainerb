@@ -1,3 +1,4 @@
+import { assertBackofficeWrite } from './backoffice-write';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -186,21 +187,29 @@ export class Commerce {
     });
   }
 
+  async editorialLegal(kind:string) {
+    if(!['terms','privacy','withdrawal','imprint','payment_info'].includes(kind)) throw apiError(404,'NOT_FOUND','Dokument nicht gefunden.');
+    const versions=await this.db.legalDocumentVersion.findMany({where:{document:{kind}},orderBy:{version:'desc'},take:20,
+      select:{id:true,version:true,wording:true,status:true,activated_at:true}});
+    const active=await this.db.legalDocumentVersion.findFirst({where:{document:{kind},status:'active'},select:{version:true}});
+    return {versions,active_version:active?.version ?? null};
+  }
+
   /** A new legal version starts as a draft; only activation makes it binding. */
   async createLegalVersion(ctx: SessionContext, input: unknown) {
-    const body = bodyObject(input, ['kind', 'wording']);
+    const body = bodyObject(input, ['kind', 'wording', 'base_id']);
     const kind = body.kind;
-    if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy' && kind !== 'imprint') {
+    if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy' && kind !== 'imprint' && kind !== 'payment_info') {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { kind: 'Unbekanntes Dokument.' });
     }
     const wording = plainText(body.wording, 'wording', 20_000, false, true);
     if (!wording) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { wording: 'Pflichtfeld.' });
     return this.db.$transaction(async tx => {
-      await this.staffActor(tx, ctx, 'legal.manage');
-      const document = (await tx.legalDocument.findFirst({ where: { kind } })) ??
-        await tx.legalDocument.create({ data: { id: uuidv7(), kind } });
-      const last = await tx.legalDocumentVersion.findFirst({ where: { document_id: document.id },
-        orderBy: { version: 'desc' } });
+      await assertBackofficeWrite(tx,this.sessions,ctx,'legal.manage');
+      await tx.legalDocument.createMany({data:[{id:uuidv7(),kind}],skipDuplicates:true});
+      const [document]=await tx.$queryRaw<{id:string}[]>`SELECT id FROM legal_documents WHERE kind=${kind} FOR UPDATE`;
+      const last = await tx.legalDocumentVersion.findFirst({ where: { document_id: document.id }, orderBy:{version:'desc'} });
+      if ('base_id' in body && body.base_id !== (last?.id ?? null)) throw apiError(409,'LEGAL_VERSION_CHANGED','Es gibt eine neuere Fassung. Bitte neu laden.');
       const version = await tx.legalDocumentVersion.create({ data: { id: uuidv7(), document_id: document.id,
         version: (last?.version ?? 0) + 1, wording, status: 'draft' } });
       await this.audit(tx, ctx, 'legal.version_created', 'legal_document_version', version.id, { kind, version: version.version });
@@ -215,12 +224,15 @@ export class Commerce {
   async activateLegalVersion(ctx: SessionContext, versionIdInput: string) {
     const versionId = requireUuid(versionIdInput);
     return this.db.$transaction(async tx => {
-      await this.staffActor(tx, ctx, 'legal.manage');
-      await tx.$queryRaw`SELECT id FROM legal_document_versions WHERE id = ${versionId}::uuid FOR UPDATE`;
+      await assertBackofficeWrite(tx,this.sessions,ctx,'legal.manage');
+      await tx.$queryRaw`SELECT d.id FROM legal_documents d JOIN legal_document_versions v ON v.document_id=d.id WHERE v.id=${versionId}::uuid FOR UPDATE OF d`;
       const version = await tx.legalDocumentVersion.findUnique({ where: { id: versionId } });
       if (!version) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
       if (version.status === 'active') return { id: version.id, status: version.status };
       if (version.status === 'retired') throw apiError(409, 'LEGAL_VERSION_RETIRED', 'Diese Fassung ist bereits abgelöst.');
+      if (await tx.legalDocumentVersion.count({where:{document_id:version.document_id,version:{gt:version.version}}})) {
+        throw apiError(409,'LEGAL_VERSION_CHANGED','Nur der neueste Entwurf kann freigegeben werden.');
+      }
       const now = new Date();
       await tx.legalDocumentVersion.updateMany({ where: { document_id: version.document_id, status: 'active' },
         data: { status: 'retired' } });
