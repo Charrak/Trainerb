@@ -110,7 +110,7 @@ before(async () => {
       MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.TRAINERB_TEST_S3_SECRET });
   }
   app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
-  await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE TABLE pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
   redis = new Redis(process.env.REDIS_URL);
   const keys = await redis.keys('trainerb:rl:*'); if (keys.length) await redis.del(...keys);
@@ -163,6 +163,52 @@ test('drafts remain private; public routes and backoffice require correct permis
   assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
+});
+
+test('editorial pages remain private until release; drafts, release and withdrawal use revisions',async()=>{
+  const visitor=new Browser(), path='/admin/pages', publicPath='/pages/redaktionstest';
+  const content={title:'Testseite',body:'Absatz eins.',description:'Testbeschreibung'};
+  const create={slug:'redaktionstest',...content};
+  status(await visitor.get(path),401);
+  for(const viewer of [participant,manager,instructor,support]) {
+    status(await viewer.get(path),403);status(await viewer.change('post',path,create),403);
+    status(await viewer.get('/admin/legal-documents/terms'),403);
+  }
+  status(await admin.change('post',path,create,{noCsrf:true}),403);
+  status(await admin.change('post',path,{...create,slug:'../agb'}),422);
+  const created=await admin.change('post',path,create);status(created,201);
+  status(await admin.change('post',path,create),409);const id=created.body.id,edit=path+'/'+id;
+  status(await visitor.get(publicPath),404);assert.equal((await visitor.get('/pages')).body.data.length,0);
+  const info=async()=>(await admin.get(edit)).body;
+  const draft=await info();const publish=d=>admin.change('post',edit+'/publish',{revision:d.revision,version_id:d.latest.id});
+  status(await publish(draft),200);assert.deepEqual((await visitor.get(publicPath)).body,{version:1,...content});
+  const published=await info(),save=()=>admin.change('post',edit+'/drafts',{...content,title:'Neue Fassung',revision:published.revision});
+  assert.deepEqual((await Promise.all([save(),save()])).map(x=>x.status).sort(),[201,409]);
+  assert.equal((await visitor.get(publicPath)).body.title,content.title);status(await publish(draft),409);
+  const updated=await info();status(await publish(updated),200);
+  assert.deepEqual((await visitor.get('/pages')).body.data,[{slug:create.slug,title:'Neue Fassung'}]);
+  await assert.rejects(db.pageVersion.update({where:{id:updated.latest.id},data:{body:'overwrite'}}),/PAGE_VERSION_IMMUTABLE/);
+  const live=await info();status(await admin.change('post',edit+'/withdraw',{revision:live.revision,version_id:live.published.id}),200);
+  status(await visitor.get(publicPath),404);assert.deepEqual((await visitor.get('/pages')).body.data,[]);
+  assert.equal(await db.auditEvent.count({where:{target_ref:id,action:'page.published'}}),2);
+});
+
+test('legal editor versions without exposing payment settings or creating checkout consents',async()=>{
+  const path='/admin/commerce/legal', kind='payment_info', view='/admin/legal-documents/'+kind;
+  const viewer=new Browser(), form={kind,base_id:null,wording:'Synthetische Zahlungsinformation'};
+  status(await viewer.get(view),401);status(await participant.change('post',path,form),403);
+  status(await admin.change('post',path,form,{noCsrf:true}),403);
+  const writes=await Promise.all([admin.change('post',path,form),admin.change('post',path,form)]);
+  assert.deepEqual(writes.map(r=>r.status).sort(),[201,409]);const first=writes.find(r=>r.status===201).body;
+  const detail=await admin.get(view);status(detail,200);assert.deepEqual(Object.keys(detail.body).sort(),['active_version','versions']);
+  assert.equal((await viewer.get('/shop/config')).body.legal[kind],undefined);
+  const activate=id=>admin.change('post',path+'/'+id+'/activate',{});
+  status(await activate(first.id),200);
+  const second=await admin.change('post',path,{...form,base_id:first.id,wording:'Zweite Testfassung'});status(second,201);
+  const third=await admin.change('post',path,{...form,base_id:second.body.id,wording:'Dritte Testfassung'});status(third,201);
+  status(await activate(second.body.id),409);assert.equal((await viewer.get('/shop/config')).body.legal[kind].id,first.id);
+  status(await activate(third.body.id),200);assert.equal((await viewer.get('/shop/config')).body.legal[kind].id,third.body.id);
+  const archived=(await admin.get(view)).body.versions.find(v=>v.id===first.id);assert.equal(archived.status,'retired');assert.equal(archived.wording,form.wording);
 });
 
 test('dashboard scopes are derived from roles and current course assignments, not query parameters', async () => {

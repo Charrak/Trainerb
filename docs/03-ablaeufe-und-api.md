@@ -289,3 +289,11 @@ Alle Routen unter `/api/v1/admin` verlangen eine MFA-bestätigte Backoffice-Sitz
 | `POST /certificate-mail-template/publish` | `mail.manage`; `{draft_id}`. Schaltet genau den aktuellen gespeicherten Entwurf atomar frei, vorherige Fassung bleibt für bereits referenzierende Nachrichten erhalten. |
 
 **Finanzbericht:** `GET /api/v1/admin/dashboard/finance?period=today|month|all` erfordert `reports.read_all` und eine MFA-bestätigte Admin-/Superadmin-Sitzung. Ohne Parameter gilt `today`; unbekannte Felder, Zeiträume und frei gewählte Umgebungen sind unzulässig. `starts_at` (inklusive; `null` bei `all`) bezeichnet den Berliner Tages-/Monatsbeginn, `as_of` den eingeschlossenen Stand. `environment` wird serverseitig bestimmt. Die Antwort enthält nur EUR-Summen in Cent als Dezimalzeichenketten (`payments_cents`, `refunds_cents`, `balance_cents`, `dispute_face_value_cents`), keinen Einzelbezug. `fees_cents: null` bedeutet **nicht erfasst**, auch wenn alle anderen Summen null Euro betragen.
+
+### Redaktion: eigene Website-Seiten und verbindliche Rechtstexte
+
+`GET /pages` (optional `after=<slug>`, 50 je Seite) und `GET /pages/:slug` unter `/api/v1` liefern nur die veröffentlichte Textfassung. Ohne veröffentlichte Fassung ist die Detailantwort `404`. Titel und Kurzbeschreibung stammen aus derselben veröffentlichten Version wie der Seiteninhalt. Keine Nutzer-, Audit- oder Entwurfsdaten in der öffentlichen Antwort.
+
+`GET /admin/pages`, `GET /admin/pages/:id`, `POST /admin/pages` (`slug,title,body,description`), `POST /admin/pages/:id/drafts` (`revision,title,body,description`) sowie `POST /admin/pages/:id/publish` und `/withdraw` (`revision,version_id`) erfordern `cms.edit` und eine Backoffice-Sitzung. Schreibaktionen verlangen zusätzlich CSRF und frische MFA-Identitätsbestätigung. Ein veralteter Stand oder ein belegter Pfad ergibt `409`. Jede Änderung erzeugt transaktional ein Audit-Ereignis ohne Wortlaut.
+
+`GET /admin/legal-documents/:kind` verlangt `legal.manage` und gibt die letzten 20 Fassungen sowie die aktive Versionsnummer zurück. Der dedizierte Editor nutzt die vorhandenen Schreibendpunkte unter `/admin/commerce/legal`; `base_id` bindet neue Entwürfe an den zuletzt gelesenen Stand (bei der ersten Fassung `null`). Die Aktivierung ist dokumentweise serialisiert. Sie erzeugt weder eine neue Checkout-Zustimmung noch eine Verkaufsfreigabe.

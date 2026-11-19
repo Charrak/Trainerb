@@ -1,3 +1,4 @@
+import { backofficeWrite } from './backoffice-write';
 import { Body, Controller, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -36,31 +37,6 @@ export class BackofficeOperations {
     private readonly sessions: Sessions,
   ) {}
 
-  private async change<T>(
-    req: ApiRequest,
-    permission: string,
-    fn: (tx: Prisma.TransactionClient, actor: string) => Promise<T>,
-  ) {
-    const ctx = await this.sessions.require(req, { backoffice: true, fresh: true, permission });
-    await this.sessions.verifyCsrf(req, ctx);
-    return this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM users WHERE id=${ctx.user.id}::uuid FOR UPDATE`;
-      const session = await this.sessions.assertCurrent(tx, ctx);
-      if (
-        !session.reauthenticated_at ||
-        Date.now() - session.reauthenticated_at.getTime() > 300000 ||
-        !(await tx.user.count({
-          where: {
-            id: ctx.user.id,
-            status: 'active',
-            roles: { some: { role: { permissions: { some: { permission: { key: permission } } } } } },
-          },
-        }))
-      )
-        throw apiError(403, 'FORBIDDEN', 'Bitte Berechtigung und Identitätsbestätigung prüfen.');
-      return fn(tx, ctx.user.id);
-    });
-  }
   private audit(tx: Prisma.TransactionClient, actor: string, action: string, type: string, ref: string) {
     return tx.auditEvent.create({
       data: { id: uuidv7(), origin: 'user', actor_user_id: actor, action, target_type: type, target_ref: ref },
@@ -115,7 +91,7 @@ export class BackofficeOperations {
     @Param('id') id: string,
     @Body() input: unknown,
   ) {
-    return this.change(req, 'operations.retry', async (tx, actor) => {
+    return backofficeWrite(this.db, this.sessions, req, 'operations.retry', async (tx, actor) => {
       const { expected_attempts } = bodyObject(input, ['expected_attempts']);
       if (!Number.isSafeInteger(expected_attempts) || Number(expected_attempts) < 1) throw invalid();
       await tx.$queryRaw`SELECT id FROM automation_jobs WHERE id=${requireUuid(id)}::uuid FOR UPDATE`;
@@ -207,7 +183,7 @@ export class BackofficeOperations {
     return t.id;
   }
   @Post('certificate-mail-template/drafts') draft(@Req() req: ApiRequest, @Body() input: unknown) {
-    return this.change(req, 'mail.manage', async (tx, actor) => {
+    return backofficeWrite(this.db, this.sessions, req, 'mail.manage', async (tx, actor) => {
       const { base_id, subject, text } = bodyObject(input, ['base_id', 'subject', 'text']);
       const subject_template = templateText(subject, true),
         body_text_template = templateText(text, false);
@@ -239,7 +215,7 @@ export class BackofficeOperations {
     });
   }
   @Post('certificate-mail-template/publish') @HttpCode(200) publish(@Req() req: ApiRequest, @Body() input: unknown) {
-    return this.change(req, 'mail.manage', async (tx, actor) => {
+    return backofficeWrite(this.db, this.sessions, req, 'mail.manage', async (tx, actor) => {
       const { draft_id } = bodyObject(input, ['draft_id']);
       const template_id = await this.lockTemplate(tx);
       const last = await tx.emailTemplateVersion.findFirst({
