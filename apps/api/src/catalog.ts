@@ -433,6 +433,7 @@ export class Catalog {
       if (await tx.chapterContent.count({ where: { chapter_id: chapterId } })) {
         throw apiError(409, 'CHAPTER_NOT_EMPTY', 'Bitte entferne zuerst die Inhaltsbausteine dieses Kapitels.');
       }
+      if (await tx.exam.count({ where: { chapter_id: chapterId } })) throw apiError(409, 'CHAPTER_NOT_EMPTY', 'Das Kapitel enthält Prüfungsentwürfe.');
       await tx.courseChapter.delete({ where: { id: chapterId } });
       await this.audit(tx, ctx, 'course.chapter_deleted', courseId, { module_id: current.module_id, chapter_id: chapterId });
     });

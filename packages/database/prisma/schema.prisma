@@ -445,6 +445,7 @@ model CourseModule {
 }
 
 model CourseChapter {
+  exams             Exam[]
   id                String         @id @db.Uuid
   course_version_id String         @db.Uuid
   module_id         String         @db.Uuid
@@ -910,6 +911,8 @@ model CouponReservation {
 }
 
 model CourseAccess {
+  exam_attempts     ExamAttempt[]
+  @@unique([id, course_version_id])
   id                String    @id @db.Uuid
   user_id           String    @db.Uuid
   course_id         String    @db.Uuid
@@ -1125,4 +1128,105 @@ model WithdrawalVerification {
   request     WithdrawalRequest @relation(fields: [request_id], references: [id], onDelete: Restrict)
   @@index([request_id])
   @@map("withdrawal_verifications")
+}
+
+// Phase 6, chapter-only single-choice foundation. Conditional uniqueness and
+// the first evaluator profile (3 questions, 4 options, 3 correct) live in SQL.
+model Exam {
+  id                String @id @db.Uuid
+  course_version_id String @db.Uuid
+  chapter_id        String @db.Uuid
+  title             String @db.Text
+  position          Int
+  exam_type         String @default("single_choice_quiz") @db.Text
+  question_count    Int @default(3) @db.SmallInt
+  option_count      Int @default(4) @db.SmallInt
+  pass_rule         Json @default("{\"schema_version\":1,\"kind\":\"min_correct\",\"min_correct\":3}")
+  chapter           CourseChapter @relation(fields: [chapter_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  pool              QuestionPool?
+  attempts          ExamAttempt[]
+  @@unique([chapter_id, position])
+  @@unique([id, course_version_id])
+  @@index([course_version_id])
+  @@map("exams")
+}
+model QuestionPool {
+  id        String @id @db.Uuid
+  exam_id   String @unique @db.Uuid
+  title     String @db.Text
+  exam      Exam @relation(fields: [exam_id], references: [id], onDelete: Restrict)
+  questions Question[]
+  @@unique([id, exam_id])
+  @@map("question_pools")
+}
+model Question {
+  id            String @id @db.Uuid
+  pool_id       String @db.Uuid
+  exam_id       String @db.Uuid
+  position      Int
+  question_text String @db.Text
+  explanation   String @default("") @db.Text
+  status        String @default("draft") @db.Text
+  pool          QuestionPool @relation(fields: [pool_id, exam_id], references: [id, exam_id], onDelete: Restrict)
+  options       AnswerOption[]
+  selections    ExamAttemptQuestion[]
+  @@unique([pool_id, position])
+  @@unique([id, exam_id])
+  @@map("questions")
+}
+model AnswerOption {
+  id          String @id @db.Uuid
+  question_id String @db.Uuid
+  option_text String @db.Text
+  position    Int @db.SmallInt
+  is_correct  Boolean @default(false)
+  question    Question @relation(fields: [question_id], references: [id], onDelete: Restrict)
+  selections  ExamAttemptOption[]
+  @@unique([question_id, position])
+  @@unique([id, question_id])
+  @@map("answer_options")
+}
+model ExamAttempt {
+  id                    String @id @db.Uuid
+  access_id             String @db.Uuid
+  course_version_id     String @db.Uuid
+  exam_id               String @db.Uuid
+  attempt_no            Int
+  start_idempotency_key String @db.Text
+  status                String @default("in_progress") @db.Text
+  started_at            DateTime @default(now()) @db.Timestamptz(6)
+  submitted_at          DateTime? @db.Timestamptz(6)
+  access                CourseAccess @relation(fields: [access_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  exam                  Exam @relation(fields: [exam_id, course_version_id], references: [id, course_version_id], onDelete: Restrict)
+  questions             ExamAttemptQuestion[]
+  @@unique([access_id, exam_id, attempt_no])
+  @@unique([access_id, start_idempotency_key])
+  @@unique([id, exam_id])
+  @@index([exam_id])
+  @@map("exam_attempts")
+}
+model ExamAttemptQuestion {
+  attempt_id  String @db.Uuid
+  exam_id     String @db.Uuid
+  question_id String @db.Uuid
+  position    Int @db.SmallInt
+  attempt     ExamAttempt @relation(fields: [attempt_id, exam_id], references: [id, exam_id], onDelete: Restrict)
+  question    Question @relation(fields: [question_id, exam_id], references: [id, exam_id], onDelete: Restrict)
+  options     ExamAttemptOption[]
+  @@id([attempt_id, question_id])
+  @@unique([attempt_id, position])
+  @@index([question_id])
+  @@map("exam_attempt_questions")
+}
+model ExamAttemptOption {
+  attempt_id  String @db.Uuid
+  question_id String @db.Uuid
+  option_id   String @db.Uuid
+  position    Int @db.SmallInt
+  selection   ExamAttemptQuestion @relation(fields: [attempt_id, question_id], references: [attempt_id, question_id], onDelete: Restrict)
+  option      AnswerOption @relation(fields: [option_id, question_id], references: [id, question_id], onDelete: Restrict)
+  @@id([attempt_id, question_id, option_id])
+  @@unique([attempt_id, question_id, position])
+  @@index([option_id])
+  @@map("exam_attempt_options")
 }

@@ -107,9 +107,8 @@ export class Publication {
     if (version.expected_chapter_count !== null && version.expected_chapter_count !== chapters) {
       blockers.push({ code: 'CHAPTER_COUNT_MISMATCH', message: `Geplant sind ${version.expected_chapter_count} Kapitel, angelegt sind ${chapters}.` });
     }
-    if (version.expected_exams_per_chapter !== null) {
-      // Exams are not implemented; a version that requires them must not be
-      // published as if it were examinable.
+    if (version.expected_exams_per_chapter !== null || await tx.exam.count({ where: { course_version_id: versionId } })) {
+      // Storage alone does not make an exam usable by learners.
       blockers.push({ code: 'EXAMS_NOT_IMPLEMENTED', message: 'Für diese Version sind Prüfungen geplant, das Prüfungssystem ist aber noch nicht implementiert.' });
     }
     if (!version.subtitle) blockers.push({ code: 'MISSING_SUBTITLE', message: 'Bitte ergänze einen Untertitel.' });
