@@ -77,6 +77,10 @@ export class CatalogController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.read' });
     return this.catalog.listContents(ctx, id, limit, cursor);
   }
+  @Get('admin/course-chapters/:id/media-options') async mediaOptions(@Req() req: ApiRequest, @Param('id') id: string, @Query('cursor') cursor?: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    return this.catalog.chapterMediaOptions(ctx, id, cursor);
+  }
   @Post('admin/course-chapters/:id/contents') async addContent(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
     await this.sessions.verifyCsrf(req, ctx); return this.catalog.addContent(ctx, id, body);

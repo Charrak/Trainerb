@@ -69,6 +69,15 @@ function scopeWhere(userId: string, roleKeys: readonly string[]): Prisma.CourseW
   return globalRole(roleKeys) ? {} : { staff: { some: { user_id: userId, scope_role: { in: scopeRoles(roleKeys) } } } };
 }
 
+type ChapterMediaOption = { id: string; original_name: string; kind: 'image' | 'file' };
+// The upload receipt, not a client-supplied course ID, proves provenance.
+const chapterMedia = (courseId: string) => Prisma.sql`SELECT a.id, a.original_name,
+  CASE WHEN a.mime_detected = 'application/pdf' THEN 'file' ELSE 'image' END AS kind
+  FROM course_media_uploads u JOIN media_assets a ON a.id = u.promoted_asset_id
+  WHERE u.course_id = ${courseId}::uuid AND u.status = 'clean' AND u.approved_at IS NOT NULL
+  AND a.source = 's3' AND a.visibility = 'private' AND a.status = 'ready'
+  AND a.mime_detected IN ('image/jpeg','image/png','application/pdf')`;
+
 @Injectable()
 export class Catalog {
   constructor(private readonly db: Database, private readonly sessions: Sessions) {}
@@ -450,10 +459,24 @@ export class Catalog {
       return { data, total, next_cursor: rows.length > limit && data.length ? data[data.length - 1].id : null };
     });
   }
+  async chapterMediaOptions(ctx: SessionContext, chapterId: string, after?: string) {
+    requireUuid(chapterId);
+    const cursor = after === undefined ? null : requireUuid(after);
+    return this.transaction(async tx => {
+      const { courseId } = await this.lockChapter(tx, ctx, chapterId, 'courses.edit');
+      const rows = await tx.$queryRaw<ChapterMediaOption[]>`${chapterMedia(courseId)}
+        ${cursor ? Prisma.sql`AND a.id > ${cursor}::uuid` : Prisma.empty} ORDER BY a.id LIMIT 51`;
+      const data = rows.slice(0, 50);
+      return { data, next_cursor: rows.length > 50 ? data[49].id : null };
+    });
+  }
   async addContent(ctx: SessionContext, chapterId: string, input: unknown) {
     requireUuid(chapterId);
-    const body = bodyObject(input, ['title', 'block', 'position']);
-    const id = uuidv7(), document = contentDocument(body.block, id);
+    const body = bodyObject(input, ['title', 'block', 'position', 'media_asset_id']);
+    const media = 'media_asset_id' in body;
+    if (media) bodyObject(input, ['title', 'position', 'media_asset_id']);
+    const assetId = media ? (typeof body.media_asset_id === 'string' ? requireUuid(body.media_asset_id) : fail('media_asset_id')) : null;
+    const id = uuidv7(), document = media ? undefined : contentDocument(body.block, id);
     const title = text(body.title, 'title', 160, true);
     const position = 'position' in body ? integer(body.position, 'position', { max: 100_000 }) : null;
     return this.transaction(async tx => {
@@ -463,8 +486,11 @@ export class Catalog {
       const last = position === null ? await tx.chapterContent.findFirst({ where: { chapter_id: chapterId }, orderBy: { position: 'desc' }, select: { position: true } }) : null;
       const chosen = position ?? ((last?.position ?? 0) + 1);
       if (chosen > 100_000) throw apiError(409, 'POSITION_EXHAUSTED', 'Bitte ordne die Positionen neu, bevor du einen weiteren Baustein anhängst.');
+      const asset = assetId ? (await tx.$queryRaw<ChapterMediaOption[]>`${chapterMedia(courseId)}
+        AND a.id = ${assetId}::uuid FOR SHARE OF a, u`)[0] : undefined;
+      if (assetId && !asset) throw apiError(409, 'MEDIA_UNAVAILABLE', 'Das Medium ist für diesen Kurs nicht verfügbar. Bitte lade die Auswahl neu.');
       const created = await tx.chapterContent.create({ data: { id, course_version_id: chapter.course_version_id,
-        chapter_id: chapterId, kind: 'text', title, body: document, position: chosen } });
+        chapter_id: chapterId, kind: asset?.kind ?? 'text', title: title ?? asset?.original_name, body: document, media_asset_id: assetId, position: chosen } });
       await this.audit(tx, ctx, 'course.content_created', courseId, { chapter_id: chapterId, content_id: id });
       return created;
     });
@@ -495,7 +521,8 @@ export class Catalog {
     return this.transaction(async tx => {
       const { courseId, content } = await this.lockContent(tx, ctx, contentId);
       if (content.revision !== expectedRevision) throw stale();
-      if (content.kind !== 'text' || !supportedContentDocument(content.body, contentId)) {
+      if (!(content.body === null && content.media_asset_id && ['image', 'file'].includes(content.kind)) &&
+          !(content.kind === 'text' && supportedContentDocument(content.body, contentId))) {
         throw apiError(409, 'UNSUPPORTED_CONTENT', 'Dieses Inhaltsformat kann hier nicht entfernt werden.');
       }
       await tx.chapterContent.delete({ where: { id: contentId } });
