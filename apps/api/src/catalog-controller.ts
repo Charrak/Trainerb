@@ -72,6 +72,34 @@ export class CatalogController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
     await this.sessions.verifyCsrf(req, ctx); return this.catalog.deleteChapter(ctx, id, body);
   }
+  @Get('admin/course-chapters/:id/exams') async exams(@Req() req: ApiRequest, @Param('id') id: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    return this.catalog.examList(ctx, id);
+  }
+  @Post('admin/course-chapters/:id/exams') async exam(@Req() req: ApiRequest, @Param('id') id: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    await this.sessions.verifyCsrf(req, ctx);
+    return this.catalog.createExam(ctx, id, body);
+  }
+  @Get('admin/course-chapters/:id/exams/:examId/questions') async questions(@Req() req: ApiRequest, @Param('id') id: string, @Param('examId') examId: string) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    return this.catalog.examQuestions(ctx, id, examId);
+  }
+  @Post('admin/course-chapters/:id/exams/:examId/questions') async newQuestion(@Req() req: ApiRequest, @Param('id') id: string, @Param('examId') examId: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    await this.sessions.verifyCsrf(req, ctx);
+    return this.catalog.saveQuestion(ctx, id, examId, null, body);
+  }
+  @Put('admin/course-chapters/:id/exams/:examId/questions/:qid') async editQuestion(@Req() req: ApiRequest, @Param('id') id: string, @Param('examId') examId: string, @Param('qid') qid: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.edit' });
+    await this.sessions.verifyCsrf(req, ctx);
+    return this.catalog.saveQuestion(ctx, id, examId, qid, body);
+  }
+  @Post('admin/course-chapters/:id/exams/:examId/questions/:qid/approve') @HttpCode(200) async approveQuestion(@Req() req: ApiRequest, @Param('id') id: string, @Param('examId') examId: string, @Param('qid') qid: string, @Body() body: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.publish', fresh: true });
+    await this.sessions.verifyCsrf(req, ctx);
+    return this.catalog.approveQuestion(ctx, id, examId, qid, body);
+  }
   @Get('admin/course-chapters/:id/contents') async listContents(@Req() req: ApiRequest, @Param('id') id: string,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'courses.read' });

@@ -1160,6 +1160,7 @@ model QuestionPool {
   @@map("question_pools")
 }
 model Question {
+  revision      Int @default(1)
   id            String @id @db.Uuid
   pool_id       String @db.Uuid
   exam_id       String @db.Uuid
@@ -1187,6 +1188,7 @@ model AnswerOption {
   @@map("answer_options")
 }
 model ExamAttempt {
+  result ExamAttemptResult?
   id                    String @id @db.Uuid
   access_id             String @db.Uuid
   course_version_id     String @db.Uuid
@@ -1206,6 +1208,8 @@ model ExamAttempt {
   @@map("exam_attempts")
 }
 model ExamAttemptQuestion {
+  prompt String? @db.Text
+  rationale String? @db.Text
   attempt_id  String @db.Uuid
   exam_id     String @db.Uuid
   question_id String @db.Uuid
@@ -1219,6 +1223,9 @@ model ExamAttemptQuestion {
   @@map("exam_attempt_questions")
 }
 model ExamAttemptOption {
+  label String? @db.Text
+  correct Boolean?
+  answers ExamAttemptAnswer[]
   attempt_id  String @db.Uuid
   question_id String @db.Uuid
   option_id   String @db.Uuid
@@ -1229,4 +1236,23 @@ model ExamAttemptOption {
   @@unique([attempt_id, question_id, position])
   @@index([option_id])
   @@map("exam_attempt_options")
+}
+
+model ExamAttemptAnswer {
+  attempt_id String @db.Uuid
+  question_id String @db.Uuid
+  selected_option_id String @db.Uuid
+  option ExamAttemptOption @relation(fields: [attempt_id, question_id, selected_option_id], references: [attempt_id, question_id, option_id], onDelete: Restrict)
+  @@id([attempt_id, question_id])
+  @@map("exam_attempt_answers")
+}
+model ExamAttemptResult {
+  attempt_id String @id @db.Uuid
+  submit_key String @db.Uuid
+  correct_count Int @db.SmallInt
+  passed Boolean
+  rule_version Int @default(1) @db.SmallInt
+  evaluated_at DateTime @default(now()) @db.Timestamptz(6)
+  attempt ExamAttempt @relation(fields: [attempt_id], references: [id], onDelete: Restrict)
+  @@map("exam_attempt_results")
 }

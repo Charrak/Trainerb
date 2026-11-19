@@ -11,8 +11,9 @@ async function read<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function api<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET', body?: unknown): Promise<T> {
+export async function api<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET', body?: unknown, idempotencyKey?: string): Promise<T> {
   const headers: Record<string, string> = {};
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
   try {
     const file = body instanceof File ? body : undefined;
     if (method !== 'GET') {

@@ -63,7 +63,7 @@ export function CoursePublication({ courseId, version, canPublish, onChanged }: 
   }
   const published = state?.versions.find(item => item.state === 'published');
   return <section className="dashboard-card" id="freigabe"><div className="section-heading"><div><span className="section-kicker">FREIGABE</span>
-    <h2>Veröffentlichung</h2><p>Veröffentlichen stellt den Kurstext in den Katalog. Verkauf und Lernzugang entstehen erst über ein aktives Produkt; Prüfungen gibt es noch nicht.</p></div>
+    <h2>Veröffentlichung</h2><p>Veröffentlichen stellt den Kurstext in den Katalog. Verkauf und Lernzugang entstehen erst über ein aktives Produkt; eine Prüfung benötigt mindestens drei freigegebene Fragen.</p></div>
     {state && <span className="draft-badge">{stateLabels[state.status] || state.status}</span>}</div>
     <Notice message={error}/><Notice kind="success" message={message}/>
     {!state ? <p className="muted">Freigabestatus wird geladen …</p> : <>

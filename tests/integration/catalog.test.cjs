@@ -52,6 +52,7 @@ class Browser {
     const r = request(server)[method](`/api/v1${path}`).set('Origin', options.origin || origin);
     if (this.cookies.size) r.set('Cookie', this.cookie());
     if (csrf) r.set('X-CSRF-Token', csrf);
+    if (options.key) r.set('Idempotency-Key', options.key);
     if (body !== undefined) r.send(body);
     return this.collect(await r);
   }
@@ -266,6 +267,52 @@ test('assignments scope read and write; fresh MFA and current membership are enf
   assert.equal(await db.auditEvent.count({ where: { target_ref: courseA.id, action: 'course.staff_removed' } }), 1);
 });
 
+
+test('chapter editors save incomplete questions; only freshly confirmed publishers can approve a complete revision', async () => {
+  const course = await createCourse('fragenredaktion');
+  const module = await admin.change('post', `/admin/course-versions/${course.version_id}/modules`, { title: 'Testmodul', position: 1 }); status(module, 201);
+  const chapter = await admin.change('post', `/admin/course-modules/${module.body.id}/chapters`, { title: 'Testkapitel', position: 1 }); status(chapter, 201);
+  const base = `/admin/course-chapters/${chapter.body.id}/exams`;
+  status(await instructor.get(base), 404); status(await participant.get(base), 403);
+  status(await assign(course.id, instructorUser.id, 'instructor'), 200);
+  status(await instructor.change('post', base, { title: 'Testprüfung' }, { noCsrf: true }), 403);
+  const exam = await instructor.change('post', base, { title: 'Testprüfung' }); status(exam, 201);
+  const list = `${base}/${exam.body.id}/questions`;
+  const initial = { question_text: 'Synthetische Frage?', explanation: '', options: [] };
+  const saved = await instructor.change('post', list, initial); status(saved, 201);
+  const path = `${list}/${saved.body.id}`, approve = revision => admin.change('post', `${path}/approve`, { revision });
+  status(await participant.get(list), 403);
+  status(await instructor.change('post', `${path}/approve`, { revision: 1 }), 403);
+  await db.authSession.updateMany({ where: { user_id: adminUser.id, kind: 'backoffice' }, data: { reauthenticated_at: null } });
+  const notFresh = await approve(1); status(notFresh, 403); assert.equal(notFresh.body.code, 'REAUTH_REQUIRED');
+  status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[4] }), 204);
+  const options = [1,2,3,4].map(n => ({ option_text: `Testantwort ${n}`, is_correct: n === 2 }));
+  const complete = { ...initial, options, explanation: 'Synthetische Lösungserklärung.' };
+  let rev = 1;
+  for (const incomplete of [{ ...complete, options: options.slice(0, 3) }, { ...complete, explanation: '' },
+    { ...complete, options: options.map(o => ({ ...o, is_correct: false })) }]) {
+    status(await instructor.change('put', path, { ...incomplete, revision: rev++ }), 200);
+    const blocked = await approve(rev); status(blocked, 422); assert.equal(blocked.body.code, 'QUESTION_INCOMPLETE');
+  }
+  status(await instructor.change('put', path, { ...complete, revision: rev, options: options.map(o => ({ ...o, is_correct: true })) }), 422);
+  status(await instructor.change('put', path, { ...complete, revision: rev, status: 'active' }), 400);
+  status(await instructor.change('put', path, { ...complete, revision: rev - 1 }), 409);
+  status(await instructor.change('put', path, { ...complete, revision: rev++ }), 200);
+  status(await approve(rev - 1), 409);
+  status(await admin.change('post', `${path}/approve`, { revision: rev }, { noCsrf: true }), 403);
+  const release = await approve(rev); status(release, 200); assert.equal(release.body.status, 'active');
+  status(await approve(rev + 1), 409);
+  status(await instructor.change('put', path, { ...initial, revision: rev + 1 }), 409);
+  const read = await instructor.get(list); status(read, 200); assert.deepEqual(read.body[0].options, options);
+  assert.equal(read.body[0].explanation, complete.explanation); assert.equal(read.body[0].revision, rev + 1);
+  const other = await instructor.change('post', base, { title: 'Anderer Pool' }); status(other, 201);
+  status(await instructor.change('put', path.replace(exam.body.id, other.body.id), { ...initial, revision: rev + 1 }), 404);
+  const readiness = await admin.get(`/admin/courses/${course.id}/publication`); status(readiness, 200);
+  assert.ok(readiness.body.readiness.some(r => r.code === 'EXAM_POOL_INCOMPLETE'));
+  const events = await db.auditEvent.findMany({ where: { target_ref: course.id, action: { startsWith: 'exam.' } } });
+  assert.equal(events.filter(e => e.action === 'exam.question_approved').length, 1);
+  assert.ok(!JSON.stringify(events).includes(complete.explanation));
+});
 
 test('course uploads are bounded, scoped, and end in a separate private quarantine bucket', async () => {
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOxSaxkAAAAASUVORK5CYII=', 'base64');
@@ -1126,7 +1173,7 @@ test('phase 6 storage binds pools, attempts and selected options to the same cha
   assert.deepEqual([exam.question_count, exam.option_count, exam.pass_rule.min_correct], [3, 4, 3]);
   status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[3] }), 204);
   const readiness = await admin.get(`/admin/courses/${course.id}/publication`); status(readiness, 200);
-  assert.ok(readiness.body.readiness.some(r => r.code === 'EXAMS_NOT_IMPLEMENTED'));
+  assert.ok(readiness.body.readiness.some(r => r.code === 'EXAM_POOL_INCOMPLETE'));
   status(await admin.change('delete', `/admin/course-chapters/${chapter.id}`, { revision: 1 }), 409);
   async function questionFor(e) {
     const pool = await db.questionPool.create({ data: { id: uuidv7(), exam_id: e.id, title: 'Testpool' } });
@@ -1161,4 +1208,66 @@ test('phase 6 storage binds pools, attempts and selected options to the same cha
   await assert.rejects(db.examAttempt.update({ where: { id: attempt.id }, data: { status: 'in_progress' } }), /EXAM_ATTEMPT_IMMUTABLE/);
   await assert.rejects(start(3, attempt.start_idempotency_key), { code: 'P2002' });
   assert.equal((await start(3, 'retry')).status, 'in_progress');
+});
+
+test('published chapter quiz: guarded idempotent start/resume, private grading, alternative questions and progress', async () => {
+  const slug = 'lernquiz', course = await createCourse(slug, { visibility: 'unlisted', chapter_completion_mode: 'all_chapter_exams' });
+  const write = (method, path, data) => admin.change(method, path, data);
+  const m = await write('post', `/admin/course-versions/${course.version_id}/modules`, { title: 'Quizmodul', position: 1 }); status(m,201);
+  const c = await write('post', `/admin/course-modules/${m.body.id}/chapters`, { title: 'Quizkapitel', position: 1 }); status(c,201);
+  const chapter = c.body.id, editor = `/admin/course-chapters/${chapter}`;
+  status(await write('post', `${editor}/contents`, { block: { kind: 'paragraph', text: 'Testinhalt.' } }),201);
+  const v = await write('patch', `/admin/course-versions/${course.version_id}`, { revision: 1, duration_minutes: 10, subtitle: 'Quiz' }); status(v,200);
+  const exam = await write('post', `${editor}/exams`, { title: 'Testquiz' }); status(exam,201);
+  status(await write('post', '/auth/reauth', { password, recovery_code: adminRecovery[5] }),204);
+  const solution = new Map();
+  for (let i = 0; i < 6; i++) {
+    const correct = i % 4, path = `${editor}/exams/${exam.body.id}/questions`;
+    const q = await write('post', path, { question_text: `Testfrage ${i}`, explanation: `Nur nach Bestehen ${i}`,
+      options: [0,1,2,3].map(n => ({ option_text: `Auswahl ${n}`, is_correct: n === correct })) }); status(q,201);
+    status(await write('post', `${path}/${q.body.id}/approve`, { revision: 1 }),200); solution.set(q.body.id, `Auswahl ${correct}`);
+  }
+  status(await write('post', `/admin/courses/${course.id}/publish`, { version_id: course.version_id, revision: v.body.revision }),200);
+  const actor = await contextFor(participant), grant = await write('post', '/admin/accesses', { course_id: course.id, user_id: actor.user.id, access_days: 1, reason: 'goodwill' }); status(grant,201);
+  const lesson = `/me/courses/${slug}/chapters/${chapter}`, page = await participant.get(lesson); status(page,200);
+  assert.equal(page.body.can_self_complete, false); assert.deepEqual(page.body.exams, [{ id: exam.body.id, title: 'Testquiz' }]);
+  status(await participant.change('post', `${lesson}/complete`, {}),409);
+  const access = grant.body.id, path = `/enrollments/${access}/exams/${exam.body.id}/attempts`;
+  const start = key => participant.change('post',path,{}, {key});
+  const submit = (attempt, answers, key) => participant.change('post', `${path}/${attempt}/submit`, {answers}, {key});
+  status(await admin.get(`${path}/current`),404); status(await new Browser().get(`${path}/current`),401);
+  status(await participant.change('post',path,{}, {noCsrf:true, key:randomUUID()}),403);
+  const firstKey = randomUUID(); const starts = await Promise.all([start(firstKey), start(firstKey)]);
+  starts.forEach(r => status(r,200)); assert.deepEqual(starts[0].body, starts[1].body); const first = starts[0].body;
+  assert.equal(first.status, 'in_progress'); assert.equal(first.questions.length,3);
+  for (const q of first.questions) { assert.deepEqual(Object.keys(q).sort(), ['id','options','text']); assert.equal(q.options.length,4);
+    for (const o of q.options) assert.deepEqual(Object.keys(o).sort(),['id','text']); }
+  assert.deepEqual((await participant.get(`${path}/current`)).body.attempt, first);
+  status(await start(randomUUID()),409);
+  const choices = (attempt, correctCount) => attempt.questions.map((q,i) => ({ question_id:q.id,
+    option_id:q.options.find(o => (o.text === solution.get(q.id)) === (i < correctCount)).id }));
+  const picks = choices(first,2), submitKey = randomUUID();
+  status(await submit(first.id, picks.slice(0,2), submitKey),422);
+  status(await submit(first.id, [picks[0], picks[1], picks[1]], submitKey),422);
+  status(await submit(first.id, [picks[0], picks[1], {...picks[2], option_id:picks[0].option_id}], submitKey),422);
+  await db.courseAccess.update({ where:{id:access}, data:{suspended_at:new Date(), suspend_reason:'review'} });
+  status(await participant.get(`${path}/current`),403); status(await submit(first.id,picks,submitKey),403);
+  await db.courseAccess.update({ where:{id:access}, data:{suspended_at:null, suspend_reason:null} });
+  const submissions = await Promise.all([submit(first.id,picks,submitKey),submit(first.id,picks,submitKey)]);
+  submissions.forEach(r => {status(r,200); assert.deepEqual(r.body,{id:first.id,status:'failed'});});
+  status(await submit(first.id,choices(first,3),submitKey),409); status(await submit(first.id,picks,randomUUID()),409);
+  assert.equal((await participant.get(lesson)).body.completed_at,null);
+  const retry = await start(randomUUID()); status(retry,200); const second = retry.body;
+  assert.ok(second.questions.every(q => !first.questions.some(used => used.id === q.id)));
+  const pass = await submit(second.id,choices(second,3),randomUUID()); status(pass,200); assert.equal(pass.body.status,'passed');
+  assert.deepEqual(pass.body.solutions.map(s => s.text), second.questions.map(q => q.text));
+  assert.ok(pass.body.solutions.every(s => s.explanation.startsWith('Nur nach Bestehen')));
+  assert.ok((await participant.get(lesson)).body.completed_at); assert.equal(await db.examAttempt.count({where:{access_id:access}}),2);
+  assert.deepEqual((await start(firstKey)).body,{id:first.id,status:'failed'}); // replay does not reveal earlier solutions
+  status(await start(randomUUID()),409);
+  const next = await write('post', `/admin/courses/${course.id}/versions`, {}); status(next,201);
+  const copy = await db.exam.findFirstOrThrow({where:{course_version_id:next.body.version_id},include:{pool:{include:{questions:true}}}});
+  assert.notEqual(copy.id,exam.body.id); assert.equal(copy.pool.questions.length,6);
+  assert.ok(copy.pool.questions.every(q => q.status==='draft' && !solution.has(q.id)));
+  status(await participant.get(`/enrollments/${access}/exams/${copy.id}/attempts/current`),404);
 });

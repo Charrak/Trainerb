@@ -115,8 +115,8 @@ export class Catalog {
     if (!course) throw missing();
     return course;
   }
-  private async lockChapter(tx: Prisma.TransactionClient, ctx: SessionContext, chapterId: string, permission: string) {
-    const roles = await this.currentActor(tx, ctx, permission);
+  private async lockChapter(tx: Prisma.TransactionClient, ctx: SessionContext, chapterId: string, permission: string, release = false) {
+    const roles = await this.currentActor(tx, ctx, permission, release, release);
     const item = await tx.courseChapter.findUnique({ where: { id: chapterId }, include: { course_version: { select: { course_id: true } } } });
     if (!item) throw missing();
     const courseId = item.course_version.course_id;
@@ -438,6 +438,88 @@ export class Catalog {
       await this.audit(tx, ctx, 'course.chapter_deleted', courseId, { module_id: current.module_id, chapter_id: chapterId });
     });
   }
+  async examList(ctx: SessionContext, chapterId: string) {
+    requireUuid(chapterId);
+    return this.transaction(async tx => {
+      await this.lockChapter(tx, ctx, chapterId, 'courses.edit');
+      return tx.exam.findMany({ where: { chapter_id: chapterId }, orderBy: { position: 'asc' }, select: { id: true, title: true } });
+    });
+  }
+  async createExam(ctx: SessionContext, chapterId: string, input: unknown) {
+    requireUuid(chapterId);
+    const title = text(bodyObject(input, ['title']).title, 'title', 160)!;
+    return this.transaction(async tx => {
+      const { courseId, chapter } = await this.lockChapter(tx, ctx, chapterId, 'courses.edit');
+      const stats = await tx.exam.aggregate({ where: { chapter_id: chapterId }, _count: true, _max: { position: true } });
+      if (stats._count >= 100) return fail('exams');
+      const exam = await tx.exam.create({ data: { id: uuidv7(), title, chapter_id: chapterId, course_version_id: chapter.course_version_id,
+        position: (stats._max.position ?? 0) + 1, pool: { create: { id: uuidv7(), title } } }, select: { id: true, title: true } });
+      await this.audit(tx, ctx, 'exam.created', courseId, { chapter_id: chapterId, exam_id: exam.id });
+      return exam;
+    });
+  }
+  async examQuestions(ctx: SessionContext, chapterId: string, examId: string) {
+    requireUuid(chapterId); requireUuid(examId);
+    return this.transaction(async tx => {
+      await this.lockChapter(tx, ctx, chapterId, 'courses.edit');
+      if (!await tx.exam.count({ where: { id: examId, chapter_id: chapterId } })) throw missing();
+      return tx.question.findMany({ where: { exam_id: examId }, orderBy: { position: 'asc' },
+        select: { id: true, revision: true, status: true, question_text: true, explanation: true,
+          options: { orderBy: { position: 'asc' }, select: { option_text: true, is_correct: true } } } });
+    });
+  }
+  async saveQuestion(ctx: SessionContext, chapterId: string, examId: string, questionId: string | null, input: unknown) {
+    requireUuid(chapterId); requireUuid(examId); if (questionId !== null) requireUuid(questionId);
+    const body = bodyObject(input, ['question_text', 'explanation', 'options', ...(questionId ? ['revision'] : [])]);
+    const expected = questionId ? revision(body.revision) : null;
+    const values = { question_text: text(body.question_text, 'question_text', 2000, false, true)!,
+      explanation: text(body.explanation, 'explanation', 4000, true, true) ?? '' };
+    if (!Array.isArray(body.options) || body.options.length > 4) return fail('options');
+    const options = body.options.map((value, i) => {
+      const opt = bodyObject(value, ['option_text', 'is_correct']);
+      if (typeof opt.is_correct !== 'boolean') return fail('is_correct');
+      return { id: uuidv7(), option_text: text(opt.option_text, 'option_text', 500)!, is_correct: opt.is_correct, position: i + 1 };
+    });
+    if (options.filter(o => o.is_correct).length > 1) return fail('is_correct');
+    return this.transaction(async tx => {
+      const { courseId } = await this.lockChapter(tx, ctx, chapterId, 'courses.edit');
+      const pool = await tx.questionPool.findFirst({ where: { exam_id: examId, exam: { chapter_id: chapterId } }, select: { id: true } });
+      if (!pool) throw missing();
+      const id = questionId ?? uuidv7();
+      if (questionId) {
+        const q = await tx.question.findFirst({ where: { id, pool_id: pool.id }, select: { revision: true, status: true } });
+        if (!q) throw missing();
+        if (q.revision !== expected || q.status !== 'draft') throw stale();
+        await tx.question.update({ where: { id }, data: { ...values, revision: { increment: 1 } } });
+        await tx.answerOption.deleteMany({ where: { question_id: id } });
+      } else {
+        const stats = await tx.question.aggregate({ where: { pool_id: pool.id }, _count: true, _max: { position: true } });
+        if (stats._count >= 100) return fail('questions');
+        await tx.question.create({ data: { ...values, id, pool_id: pool.id, exam_id: examId, position: (stats._max.position ?? 0) + 1 } });
+      }
+      if (options.length) await tx.answerOption.createMany({ data: options.map(o => ({ ...o, question_id: id })) });
+      await this.audit(tx, ctx, 'exam.question_saved', courseId, { exam_id: examId, question_id: id });
+      return { id, revision: (expected ?? 0) + 1 };
+    });
+  }
+  async approveQuestion(ctx: SessionContext, chapterId: string, examId: string, id: string, input: unknown) {
+    requireUuid(chapterId); requireUuid(examId); requireUuid(id);
+    const expected = revision(bodyObject(input, ['revision']).revision);
+    return this.transaction(async tx => {
+      const { courseId } = await this.lockChapter(tx, ctx, chapterId, 'courses.publish', true);
+      const q = await tx.question.findFirst({ where: { id, exam_id: examId, pool: { exam: { chapter_id: chapterId } } },
+        include: { options: true } });
+      if (!q) throw missing();
+      if (q.revision !== expected || q.status !== 'draft') throw stale();
+      if (!q.explanation.trim() || q.options.length !== 4 || q.options.filter(o => o.is_correct).length !== 1) {
+        throw apiError(422, 'QUESTION_INCOMPLETE', 'Zur Freigabe werden eine Erklärung und vier Antworten mit genau einer richtigen Antwort benötigt.');
+      }
+      await tx.question.update({ where: { id }, data: { status: 'active', revision: { increment: 1 } } });
+      await this.audit(tx, ctx, 'exam.question_approved', courseId, { exam_id: examId, question_id: id, revision: expected + 1 });
+      return { id, status: 'active', revision: expected + 1 };
+    });
+  }
+
   async listContents(ctx: SessionContext, chapterId: string, limitInput: unknown, cursorInput: unknown) {
     requireUuid(chapterId);
     const limit = limitInput === undefined ? 20 : Number(limitInput);

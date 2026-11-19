@@ -6,6 +6,7 @@ import { descriptionText, editableDescription, modeLabels, nextPosition, optiona
   type Chapter, type CourseDetail, type CourseMutate, type Module, type Page, type Version } from '../lib/courses';
 import { Arrow, Field, Notice } from './site';
 import { Reauth } from './reauth';
+import { ChapterExams } from './chapter-exams';
 import { ChapterContents } from './chapter-contents';
 import { CoursePublication } from './publication-panel';
 
@@ -76,8 +77,8 @@ export function AdminCourseDetail({ id }: { id: string }) {
       <div className="future-note"><span>{course.status === 'published' ? 'VERÖFFENTLICHT' : 'NICHT VERÖFFENTLICHT'}{version ? ` · VERSION ${version.version}` : ''}</span>
         <strong>{course.status === 'published' ? 'Im Katalog sichtbar, noch nicht verkäuflich.' : 'Ein sicherer Platz zum Vorbereiten.'}</strong>
         <p>{course.status === 'published'
-          ? 'Die veröffentlichte Fassung ist unveränderlich. Änderungen laufen über eine neue Entwurfsversion. Verkauf und Lernzugang hängen an Produkten; Prüfungen und Zertifikate sind noch nicht verfügbar.'
-          : version ? 'Veröffentlichung ist nach erfüllten Voraussetzungen und frischer Bestätigung möglich; Prüfungen und Zertifikate sind noch nicht verfügbar.'
+          ? 'Die veröffentlichte Fassung ist unveränderlich. Änderungen laufen über eine neue Entwurfsversion. Verkauf und Lernzugang hängen an Produkten; Zertifikate sind noch nicht verfügbar.'
+          : version ? 'Veröffentlichung ist nach erfüllten Voraussetzungen und frischer Bestätigung möglich; Zertifikate sind noch nicht verfügbar.'
             : 'Es gibt derzeit keine bearbeitbare Entwurfsversion. Lege im Freigabebereich eine neue Entwurfsversion an.'}</p></div>
       {version ? <>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">GRUNDLAGEN</span><h2>Kursangaben</h2>
@@ -90,7 +91,7 @@ export function AdminCourseDetail({ id }: { id: string }) {
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">STRUKTUR</span><h2>Module & Kapitel</h2>
         <p>{version.modules.length} Module · {version.modules.reduce((sum, item) => sum + item.chapters.length, 0)} Kapitel angelegt. Positionen müssen innerhalb derselben Ebene eindeutig sein.</p></div></div>
         {version.modules.length === 0 && <p className="muted">Noch keine Module angelegt.</p>}
-        <div className="module-list">{version.modules.map(item => <ModuleEditor key={`${item.id}:${reloadKey}`} item={item} disabled={busy || outdated} canEdit={canEdit} mutate={mutate} onContentReadError={handleContentReadError} onContentRefreshed={handleContentRefreshed}/>)}</div>
+        <div className="module-list">{version.modules.map(item => <ModuleEditor key={`${item.id}:${reloadKey}`} item={item} disabled={busy || outdated} canApprove={canPublish} canEdit={canEdit} mutate={mutate} onContentReadError={handleContentReadError} onContentRefreshed={handleContentRefreshed}/>)}</div>
         {canEdit && <AddModule key={reloadKey} version={version} disabled={busy || outdated} mutate={mutate}/>}
       </section>
       </> : null}
@@ -175,7 +176,7 @@ function AddModule({ version, disabled, mutate }: { version: Version; disabled: 
     <button className="button button-primary" disabled={disabled}>Modul anlegen <Arrow/></button></form></details>;
 }
 
-function ModuleEditor({ item, disabled, canEdit, mutate, onContentReadError, onContentRefreshed }: { item: Module; disabled: boolean; canEdit: boolean; mutate: Mutate; onContentReadError: (error: unknown) => void; onContentRefreshed: (chapterId: string) => void }) {
+function ModuleEditor({ item, disabled, canEdit, canApprove, mutate, onContentReadError, onContentRefreshed }: { item: Module; disabled: boolean; canEdit: boolean; canApprove: boolean; mutate: Mutate; onContentReadError: (error: unknown) => void; onContentRefreshed: (chapterId: string) => void }) {
   const prefix = `module-${item.id}`;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -196,12 +197,12 @@ function ModuleEditor({ item, disabled, canEdit, mutate, onContentReadError, onC
       <div className="editor-actions"><button className="button button-secondary" disabled={disabled}>Modul speichern</button>
         <button type="button" className="danger-link" disabled={disabled || item.chapters.length > 0} onClick={() => void remove()}>Modul löschen</button></div>
       {item.chapters.length > 0 && <p className="muted editor-hint">Zum Löschen zuerst alle Kapitel entfernen.</p>}</form></details>}
-    <div className="chapter-list">{item.chapters.map(chapter => <ChapterEditor key={chapter.id} chapter={chapter} disabled={disabled} canEdit={canEdit} mutate={mutate} onContentReadError={onContentReadError} onContentRefreshed={onContentRefreshed}/>)}</div>
+    <div className="chapter-list">{item.chapters.map(chapter => <ChapterEditor key={chapter.id} chapter={chapter} disabled={disabled} canEdit={canEdit} canApprove={canApprove} mutate={mutate} onContentReadError={onContentReadError} onContentRefreshed={onContentRefreshed}/>)}</div>
     {canEdit && <AddChapter item={item} disabled={disabled} mutate={mutate}/>}
   </article>;
 }
 
-function ChapterEditor({ chapter, disabled, canEdit, mutate, onContentReadError, onContentRefreshed }: { chapter: Chapter; disabled: boolean; canEdit: boolean; mutate: Mutate; onContentReadError: (error: unknown) => void; onContentRefreshed: (chapterId: string) => void }) {
+function ChapterEditor({ chapter, disabled, canEdit, canApprove, mutate, onContentReadError, onContentRefreshed }: { chapter: Chapter; disabled: boolean; canEdit: boolean; canApprove: boolean; mutate: Mutate; onContentReadError: (error: unknown) => void; onContentRefreshed: (chapterId: string) => void }) {
   const prefix = `chapter-${chapter.id}`;
   const [contentCount, setContentCount] = useState(chapter._count.contents);
   useEffect(() => { setContentCount(chapter._count.contents); }, [chapter._count.contents]);
@@ -225,6 +226,7 @@ function ChapterEditor({ chapter, disabled, canEdit, mutate, onContentReadError,
       <div className="editor-actions"><button className="button button-secondary" disabled={disabled}>Kapitel speichern</button>
         <button type="button" className="danger-link" disabled={disabled || contentCount > 0} onClick={() => void remove()}>Kapitel löschen</button></div>
       {contentCount > 0 && <p className="muted editor-hint">Zum Löschen zuerst alle Inhaltsbausteine entfernen.</p>}</form></details>}
+    {canEdit && <ChapterExams chapterId={chapter.id} disabled={disabled} canApprove={canApprove} onAccessLost={onContentReadError}/>}
     <ChapterContents chapterId={chapter.id} count={contentCount} disabled={disabled} canEdit={canEdit} mutate={mutate} onAccessLost={onContentReadError} onRefreshed={() => onContentRefreshed(chapter.id)} onCount={setContentCount}/>
   </div>;
 }

@@ -3,11 +3,12 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { dateOnly, type MyCourse } from '../lib/shop';
+import { LearnerExam } from './learner-exam';
 import { Arrow, Notice } from './site';
 
 type Block = { id: string; kind: string; text?: string; level?: number; items?: string[]; href?: string };
 type Content = { id: string; kind: string; title: string | null; media_available?: boolean; body: { schema_version: number; blocks: Block[] } | null };
-type Chapter = { id: string; title: string; summary: string | null; module_title: string; estimated_minutes: number | null;
+type Chapter = { access_id: string; exams: { id: string; title: string }[]; can_self_complete: boolean; id: string; title: string; summary: string | null; module_title: string; estimated_minutes: number | null;
   completed_at: string | null; contents: Content[] };
 type Course = { course_id: string; slug: string; title: string; subtitle: string | null; duration_minutes: number | null;
   starts_at: string; ends_at: string | null; modules: { id: string; title: string; description: string | null;
@@ -119,9 +120,13 @@ export function CoursePlayer({ slug }: { slug: string }) {
             {content.kind !== 'text' && <LessonMedia content={content} src={`/api/v1/me/courses/${encodeURIComponent(slug)}/chapters/${chapter.id}/media/${content.id}`}/>}
             {content.body?.blocks?.map(block => <BlockView key={block.id} block={block}/>)}
           </div>)}</div>
+          {chapter.exams.map(exam => <LearnerExam key={`${chapter.id}/${exam.id}`} exam={exam} access={chapter.access_id} onPass={async () => {
+            const current = await api<Chapter>(`/me/courses/${encodeURIComponent(slug)}/chapters/${chapter.id}`);
+            setChapter(c => c?.id === current.id ? current : c); await load();
+          }}/>) }
           <div className="release-actions">
             {chapter.completed_at ? <p className="publication-ok">Kapitel abgeschlossen am {dateOnly(chapter.completed_at)}.</p>
-              : <button className="button button-primary" disabled={busy === chapter.id} onClick={() => void complete()}>
+              : !chapter.can_self_complete ? <p>Das Kapitel wird nach Bestehen aller Kapitelprüfungen abgeschlossen.</p> : <button className="button button-primary" disabled={busy === chapter.id} onClick={() => void complete()}>
                 {busy === chapter.id ? 'Bitte warten …' : 'Kapitel abschließen'} <Arrow/></button>}
           </div>
         </>}
