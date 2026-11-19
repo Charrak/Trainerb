@@ -220,3 +220,18 @@ npm run test:certificates:browser
 ```
 
 Der Lauf startet Nest, die gebaute Next-Oberfläche, den regulären Worker und eine lokale SMTP-Senke. Drei getrennte Browserprozesse verwenden die nur lokal aufgelöste Test-Origin `https://academy.test`. Der Test liest die Prüfcodes **aus den heruntergeladenen PDFs**, nicht aus der Datenbank. Test-PDFs, Testzertifikat und privater TLS-Schlüssel werden anschließend entfernt; Datenbank und Redis nach dem Lauf verwerfen. Der Test läuft bewusst nicht als Teil von `npm run test:integration`.
+
+### Urkunden aus einem Datenbankdump wiederherstellen
+
+`npm run test:certificates:restore` ist eine **destruktive Probe mit synthetischen Daten**, kein Backupwerkzeug für den laufenden Betrieb. Eine eigene lokale PostgreSQL-16-Datenbank mit Endung `_drill_test` und eine ungenutzte lokale Redis-Datenbank (1–15) bereitstellen. Der Testbenutzer benötigt für diese Probe `CREATEDB` und die Rechte zur Migration (einschließlich `btree_gist`). `pg_dump` und `pg_restore` derselben Hauptversion wie der Server müssen im `PATH` liegen. Beispiel nach `npm ci` mit Node 24:
+
+```bash
+E2E_ALLOW_TEST_DATA=yes \
+TEST_DATABASE_URL=postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/cert_drill_test \
+TEST_REDIS_URL=redis://127.0.0.1:6379/14 \
+npm run test:certificates:restore
+```
+
+Die Fixture leert Anwendungstabellen der **Testquelle** und erzeugt einen Abschluss mit widerrufener und neu ausgestellter Urkunde. Der Test sichert die Datenbank per `pg_dump -Fc` in ein privates temporäres Verzeichnis und spielt das Archiv in eine neu angelegte Datenbank mit zufälligem Namen ein. Kein `--clean`, kein Restore über eine bestehende Datenbank. Ein eigener Leseprozess prüft PDF-Bytes, Dokumentensnapshot, Prüfcode-Hash, Zugangsbezug und Widerrufskette gegen den Zustand vor der Sicherung. Der kurzlebige Testschlüssel wird separat übergeben. Mit falschem Schlüssel unter derselben Schlüssel-ID muss die Entschlüsselung scheitern. In der Kopie läuft kein Worker; die Probe versendet keine Mail. Beim normalen Ende und bei abgefangenen Prüffehlern werden Archiv und Ziel entfernt; Testquelle und Redis anschließend verwerfen. Bei hartem Abbruch übrig gebliebene Testressourcen kontrolliert bereinigen.
+
+Ein erfolgreicher Lauf prüft **nicht** das Offsite-Backup, die WAL-Kette, die Wiederbeschaffung historischer Schlüssel oder RPO/RTO. Dafür gilt der [Wiederherstellungsablauf für Staging](docs/04-sicherheit-und-betrieb.md#urkundennachweis-im-staging-restore).
