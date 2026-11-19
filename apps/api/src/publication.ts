@@ -107,10 +107,16 @@ export class Publication {
     if (version.expected_chapter_count !== null && version.expected_chapter_count !== chapters) {
       blockers.push({ code: 'CHAPTER_COUNT_MISMATCH', message: `Geplant sind ${version.expected_chapter_count} Kapitel, angelegt sind ${chapters}.` });
     }
-    if (version.expected_exams_per_chapter !== null || await tx.exam.count({ where: { course_version_id: versionId } })) {
-      // Storage alone does not make an exam usable by learners.
-      blockers.push({ code: 'EXAMS_NOT_IMPLEMENTED', message: 'Für diese Version sind Prüfungen geplant, das Prüfungssystem ist aber noch nicht implementiert.' });
+    const incomplete = await tx.$queryRaw<{id: string}[]>`SELECT e.id FROM exams e WHERE e.course_version_id=${versionId}::uuid AND
+      (SELECT count(*) FROM questions q WHERE q.exam_id=e.id AND q.status='active' AND btrim(q.explanation)<>''
+        AND (SELECT count(*)=4 AND count(*) FILTER (WHERE o.is_correct)=1 FROM answer_options o WHERE o.question_id=q.id)) < 3 LIMIT 1`;
+    if (incomplete.length) blockers.push({ code: 'EXAM_POOL_INCOMPLETE', message: 'Jede Kapitelprüfung benötigt mindestens drei vollständige freigegebene Fragen.' });
+    if (version.chapter_completion_mode === 'all_chapter_exams' && await tx.courseChapter.count({ where: { course_version_id: versionId, exams: { none: {} } } })) {
+      blockers.push({ code: 'CHAPTER_WITHOUT_EXAM', message: 'Für den Prüfungsabschluss benötigt jedes Kapitel mindestens eine Prüfung.' });
     }
+    // Do not release the planned qualification programme before its certificate workflow is ready.
+    if (version.expected_exams_per_chapter !== null) blockers.push({ code: 'QUALIFICATION_NOT_READY',
+      message: 'Die Ausbildung mit festem Prüfungssoll bleibt bis zur Abnahme der Abschluss- und Zertifikatsregeln gesperrt.' });
     if (!version.subtitle) blockers.push({ code: 'MISSING_SUBTITLE', message: 'Bitte ergänze einen Untertitel.' });
     if (version.duration_minutes === null && version.modules.every(module => module.chapters.every(chapter => chapter.estimated_minutes === null))) {
       blockers.push({ code: 'MISSING_DURATION', message: 'Bitte gib eine Gesamtdauer oder Kapiteldauern an.' });
@@ -197,7 +203,7 @@ export class Publication {
       await this.lockCourse(tx, ctx, courseId, 'courses.publish');
       const published = await tx.courseVersion.findFirst({ where: { course_id: courseId, state: 'published' },
         include: { modules: { orderBy: { position: 'asc' }, include: { chapters: { orderBy: { position: 'asc' },
-          include: { contents: { orderBy: { position: 'asc' } } } } } } } });
+          include: { contents: { orderBy: { position: 'asc' } }, exams: { include: { pool: { include: { questions: { include: { options: true } } } } } } } } } } } });
       if (!published) throw apiError(409, 'NO_PUBLISHED_VERSION', 'Es gibt keine veröffentlichte Version, aus der ein Entwurf entstehen könnte.');
       if (await tx.courseVersion.findFirst({ where: { course_id: courseId, state: 'draft' } })) {
         throw apiError(409, 'DRAFT_EXISTS', 'Es existiert bereits ein Entwurf. Bearbeite diesen weiter.');
@@ -220,6 +226,18 @@ export class Publication {
           const chapterId = uuidv7();
           await tx.courseChapter.create({ data: { id: chapterId, course_version_id: versionId, module_id: moduleId,
             title: chapter.title, summary: chapter.summary, estimated_minutes: chapter.estimated_minutes, position: chapter.position } });
+          // Never share an editable pool between versions. Re-review copied questions.
+          for (const exam of chapter.exams) {
+            const examId = uuidv7(), poolId = uuidv7();
+            await tx.exam.create({ data: { id: examId, chapter_id: chapterId, course_version_id: versionId,
+              title: exam.title, position: exam.position, pool: { create: { id: poolId, title: exam.pool?.title ?? exam.title } } } });
+            const questions = (exam.pool?.questions ?? []).filter(q => q.status !== 'archived').map(q => ({ q, id: uuidv7() }));
+            if (questions.length) await tx.question.createMany({ data: questions.map(({q,id}) => ({ id, exam_id: examId, pool_id: poolId,
+              position: q.position, question_text: q.question_text, explanation: q.explanation })) });
+            const opts = questions.flatMap(({q,id}) => q.options.map(o => ({ id: uuidv7(), question_id: id,
+              position: o.position, option_text: o.option_text, is_correct: o.is_correct })));
+            if (opts.length) await tx.answerOption.createMany({ data: opts });
+          }
           for (const content of chapter.contents) {
             const contentId = uuidv7();
             if (content.media_asset_id) {
