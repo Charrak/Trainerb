@@ -1141,6 +1141,8 @@ test('phase 6 storage binds pools, attempts and selected options to the same cha
   // Only for the persistence fixture: normal publication is deliberately still blocked.
   await db.courseVersion.update({ where: { id: course.version_id }, data: { state: 'published', published_by: adminUser.id, published_at: new Date() } });
   await db.course.update({ where: { id: course.id }, data: { status: 'published' } });
+  await db.coursePublication.create({ data: { id: uuidv7(), course_id: course.id, course_version_id: course.version_id,
+    version: 1, action: 'published', actor_user_id: adminUser.id } });
   const access = await db.courseAccess.create({ data: { id: uuidv7(), course_id: course.id, course_version_id: course.version_id,
     user_id: adminUser.id, source: 'manual', granted_by: adminUser.id } });
   const start = (n, key, overrides = {}) => db.examAttempt.create({ data: { id: uuidv7(), access_id: access.id,
