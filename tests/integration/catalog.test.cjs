@@ -1050,3 +1050,67 @@ test('media metadata defaults to private, binds one immutable source and cannot 
   const video = await create({ source: 'video_provider', storage_key: null, video_external_id: uuidv7() });
   assert.equal(video.storage_key, null); assert.equal(video.visibility, 'private');
 });
+
+test('one private upload reaches only the authorized learner via scan, approval, promotion and publication',
+  { skip: !process.env.TRAINERB_TEST_S3_ORIGIN && 'requires the isolated HTTPS gateway', timeout: 120000 }, async () => {
+    const { withTestClamd } = require('../scanner/test-clamd.cjs');
+    const { AwsClient } = require('aws4fetch');
+    const cfg = require('../../apps/api/dist/config').getConfig();
+    const previous = { mediaStore: cfg.mediaStore, quarantineStore: cfg.quarantineStore };
+    const delivery = { ...cfg.mediaStore, bucket: 'workflow-delivery' }, quarantine = { ...delivery, bucket: 'workflow-quarantine' };
+    const slug = 'medienablauf', course = await createCourse(slug, { visibility: 'public' });
+    const mod = await admin.change('post', `/admin/course-versions/${course.version_id}/modules`, { title: 'Modul', position: 1 }); status(mod, 201);
+    const chapter = await admin.change('post', `/admin/course-modules/${mod.body.id}/chapters`, { title: 'Kapitel', position: 1 }); status(chapter, 201);
+    const base = `/admin/course-chapters/${chapter.body.id}`, uploads = `/admin/courses/${course.id}/media/uploads`;
+    const version = await admin.change('patch', `/admin/course-versions/${course.version_id}`, { revision: 1, subtitle: 'Medientest', duration_minutes: 10 });
+    status(version, 200);
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOxSaxkAAAAASUVORK5CYII=', 'base64');
+    // Only the loopback gateway has this disposable root identity. Exercise each built CLI
+    // in a child process without API secrets or inherited operator storage configuration.
+    function worker(name, extra) {
+      const stdout = execFileSync(process.execPath, [require.resolve(`../../apps/api/dist/cli/media-${name}`)], {
+        cwd: require('node:os').tmpdir(), timeout: 40000, encoding: 'utf8', env: {
+          DATABASE_URL: process.env.DATABASE_URL, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
+          MEDIA_S3_ENDPOINT: delivery.origin, MEDIA_S3_REGION: delivery.region, MEDIA_QUARANTINE_BUCKET: quarantine.bucket, ...extra,
+        },
+      });
+      return stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    }
+    try {
+      Object.assign(cfg, { mediaStore: delivery, quarantineStore: quarantine });
+      const seed = new AwsClient({ ...delivery, service: 's3', retries: 0 });
+      for (const store of [quarantine, delivery]) assert.equal((await seed.fetch(`${store.origin}/${store.bucket}`, { method: 'PUT' })).status, 200);
+      const csrf = await admin.get('/auth/csrf'); status(csrf, 200);
+      const uploaded = await request(server).post(`/api/v1${uploads}`).set('Origin', origin).set('Cookie', admin.cookie())
+        .set('X-CSRF-Token', csrf.body.csrf_token).set('Content-Type', 'application/octet-stream').set('X-Upload-Name', 'Lehrbild.png').send(png);
+      status(uploaded, 201); assert.equal(uploaded.body.status, 'pending_scan');
+      const receipt = uploaded.body.id;
+      await withTestClamd(async ({ socket }) => {
+        const results = worker('scan', { MEDIA_SCAN_ACCESS_KEY_ID: delivery.accessKeyId, MEDIA_SCAN_SECRET_ACCESS_KEY: delivery.secretAccessKey,
+          MEDIA_SCAN_CLAMD_SOCKET: socket });
+        assert.equal(results.find(r => r.id === receipt)?.status, 'clean');
+      });
+      const promote = () => worker('promote', { MEDIA_S3_BUCKET: delivery.bucket, MEDIA_PROMOTE_ACCESS_KEY_ID: delivery.accessKeyId,
+        MEDIA_PROMOTE_SECRET_ACCESS_KEY: delivery.secretAccessKey });
+      assert.ok(!promote().some(r => r.upload_id === receipt)); // a clean verdict is not approval
+      status(await admin.change('post', '/auth/reauth', { password, recovery_code: adminRecovery[2] }), 204);
+      status(await admin.change('post', `${uploads}/${receipt}/approve`, {}), 200);
+      const promoted = promote().find(r => r.upload_id === receipt); assert.ok(promoted?.asset_id); assert.equal(promoted.error, null);
+      const choices = await admin.get(`${base}/media-options`); status(choices, 200);
+      assert.deepEqual(choices.body.data.map(r => r.id), [promoted.asset_id]);
+      const content = await admin.change('post', `${base}/contents`, { media_asset_id: promoted.asset_id }); status(content, 201);
+      status(await admin.change('post', `/admin/courses/${course.id}/publish`, { version_id: course.version_id, revision: version.body.revision }), 200);
+      const denied = await register('medien-ohne-zugang'); status(await login(denied.browser, denied.email), 200);
+      const grant = await admin.change('post', '/admin/accesses', { course_id: course.id, user_id: (await contextFor(participant)).user.id,
+        access_days: 1, reason: 'goodwill' }); status(grant, 201);
+      const path = `/me/courses/${slug}/chapters/${chapter.body.id}`, media = `${path}/media/${content.body.id}`;
+      status(await denied.browser.get(path), 404);
+      const forbidden = await denied.browser.get(media); status(forbidden, 404); assert.equal(forbidden.headers.location, undefined);
+      const view = await participant.get(path); status(view, 200); assert.equal(view.body.contents.find(c => c.id === content.body.id)?.media_available, true);
+      const link = await participant.get(media); status(link, 302);
+      const url = new URL(link.headers.location); assert.equal(url.origin, delivery.origin); assert.ok(url.pathname.startsWith(`/${delivery.bucket}/`));
+      const get = address => fetch(address, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+      assert.equal((await get(url.origin + url.pathname)).status, 403);
+      const object = await get(url); assert.equal(object.status, 200); assert.deepEqual(Buffer.from(await object.arrayBuffer()), png);
+    } finally { Object.assign(cfg, previous); }
+  });
