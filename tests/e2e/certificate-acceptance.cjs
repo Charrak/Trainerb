@@ -199,6 +199,9 @@ async function exercise({ admin, participant, ownerEmail }) {
     await staff.locator('article').filter({hasText:first.number}).getByText('Urkunde widerrufen', {exact:true}).waitFor();
     await staff.goto(`${origin}/admin/kennzahlen`);
     await staff.getByRole('heading', {name:'Alle Kurse'}).waitFor();
+    await staff.getByLabel('Berichtszeitraum').selectOption('all');
+    await staff.getByText(/Seit Aufzeichnungsbeginn/).waitFor();
+    await staff.getByText('Nicht erfasst', {exact:true}).waitFor();
     await staff.goto(`${origin}/admin/mailauftraege`);
     await staff.getByLabel('Status').selectOption('succeeded');
     await staff.locator('li').filter({hasText:'Abgeschlossen'}).first().waitFor();

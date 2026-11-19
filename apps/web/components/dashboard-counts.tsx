@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
 import { api, errorMessage } from '../lib/api';
+import { FinanceReport } from './finance-report';
 import { Notice } from './site';
 
 type Counts =
@@ -63,6 +64,7 @@ export function DashboardCounts() {
           Aktualisieren
         </button>
       </section>
+      {data?.scope === 'global' && <FinanceReport/>}
     </div>
   );
 }
