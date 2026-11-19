@@ -194,6 +194,23 @@ async function exercise({ admin, participant, ownerEmail }) {
     assert.ok(first.token !== second.token, 'Reused verification code');
     await verify(second.token, 'Gültig');
     await verify(first.token, 'Widerrufen');
+    await staff.goto(`${origin}/admin/protokoll`);
+    await staff.getByLabel('Bereich').selectOption('certificates');
+    await staff.locator('article').filter({hasText:first.number}).getByText('Urkunde widerrufen', {exact:true}).waitFor();
+    await staff.goto(`${origin}/admin/kennzahlen`);
+    await staff.getByRole('heading', {name:'Alle Kurse'}).waitFor();
+    await staff.goto(`${origin}/admin/mailauftraege`);
+    await staff.getByLabel('Status').selectOption('succeeded');
+    await staff.locator('li').filter({hasText:'Abgeschlossen'}).first().waitFor();
+    await staff.goto(`${origin}/admin/urkundenmail`);
+    await staff.getByLabel('Betreff').fill('Urkunde im Testkonto');
+    await staff.getByRole('button', {name:'Als Entwurf speichern'}).click();
+    await staff.getByRole('status').filter({hasText:'Entwurf gespeichert'}).waitFor();
+    await staff.getByRole('button', {name:'Gespeicherten Entwurf für den Versand freigeben'}).click();
+    await staff.getByRole('status').filter({hasText:'für künftige Urkundenmails freigegeben'}).waitFor();
+    await owner.goto(`${origin}/admin/urkundenmail`);
+    await owner.getByRole('alert').filter({hasText:'Kein Zugriff'}).waitFor();
+    assert.equal(await owner.getByLabel('Betreff').count(), 0);
   } finally {
     await Promise.all(browsers.map((b) => b.close()));
     if (worker && worker.exitCode === null && worker.signalCode === null) {

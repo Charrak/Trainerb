@@ -205,3 +205,16 @@ Vor Livebetrieb mit isolierter Staging-Mailbox und synthetischem Konto den gesam
 | Wiederherstellung | Test-Backup samt zugehörigem Schlüssel in isoliertes Ziel zurückspielen, privates PDF und Status erneut prüfen |
 
 Keine Prüfcodes, PDFs, Schlüssel, Sitzungscookies oder Mailinhalte ins Protokoll übernehmen. Einen fehlenden Nachweis als **offen** markieren; ein erfolgreicher automatischer Lauf hebt die Veröffentlichungssperre nicht auf.
+
+### Auditprotokoll lesen (Phase 7)
+
+Unter **Konto → Auditprotokoll** (`/admin/protokoll`) sehen Admins mit `audit.read` nach der Zwei-Faktor-Anmeldung die protokollierten Aktionen. Für eine Urkunde den Bereich **Urkunden und Vorlagen** wählen und die Ziel-ID mit der Zertifikatsnummer vergleichen. `certificate.issued` steht für die Ausstellung, `certificate.revoked` für den Widerruf und `certificate.reissue_requested` für den Auftrag zur Neuausstellung, nicht dessen Abschluss. Mit **Weitere Einträge** bzw. **Zurück** durch die Seiten navigieren (maximal 25 Ereignisse pro Seite).
+
+Die Ansicht dient der Nachverfolgung, nicht der öffentlichen Gültigkeitsprüfung. Sie zeigt Zeitpunkt, Aktionskennung, Herkunft und Zieltyp sowie eine Ziel-ID nur im UUID-Format. Keine Vorher-/Nachher-Daten, Freitextgründe, Adressen oder Dokumente; kein Export und keine Bearbeitung. Teilnehmer, Support, Dozenten und Kursmanager haben mit ihren Standardrechten keinen Zugriff.
+
+### Kurskennzahlen, Mailaufträge und Urkundenmail (Phase 7)
+
+- **Konto → Kurskennzahlen:** Admins sehen den gesamten Kursbestand und die Zahl der nachgewiesenen Abschlüsse. Dozenten und Kursmanager sehen nur Zahlen ihrer aktuell zugewiesenen Kurse. Support erhält nur die Anzahl öffentlich gelisteter, veröffentlichter Kurse. Eine Neuausstellung erhöht die Abschlusszahl nicht. Keine Umsatzstatistik, Exportfunktion oder Personenliste.
+- **Konto → Mailaufträge:** Zunächst werden fehlgeschlagene Versandaufträge angezeigt. Status auswählen, durch die Ergebnisse blättern oder **Aktualisieren** wählen. „Abgeschlossen“ bedeutet hier SMTP-Annahme, nicht belegter Postfacheingang. Keine Adressen, Nachrichtentexte, Geheimnisse oder technischen Rohfehler. Zahlungsvorgänge lassen sich hier nicht auslösen.
+- **Wiederaufnahme:** Ursache beheben und Identität bestätigen. Nur wenn für jeden Versuch ein Fehler **vor** dem Transport nachgewiesen ist, darf ein weiterer Versuch eingeplant werden. Der Worker prüft die Versandberechtigung erneut. Bei abgelaufener Lease, unbekanntem Transportergebnis, altem unspezifischem Fehler oder bereits angenommenen Mails nicht erneut senden. Status und Versuchshistorie prüfen; keine Datenbankwerte manuell zurücksetzen.
+- **Konto → Urkundenmail bearbeiten:** Klartext für die transaktionale Vorlage `certificate_ready` (`de-DE`) bearbeiten. `{{first_name}}` ist der einzige Platzhalter. Vorschau verwendet einen Testnamen. Nach frischer Identitätsbestätigung zuerst einen Entwurf speichern und dann getrennt für zukünftige Mails freigeben. Bei Versionskonflikt gespeicherten Stand laden und erneut vergleichen. Für eine Korrektur der veröffentlichten Version einen neuen Entwurf anlegen. Bereits eingeplante Mails behalten die alte Textversion. Keine Mail geht durch Speichern oder Freigeben allein heraus. Die Freigabe dieser Mail ist keine Freigabe von Urkunde, Ausbildung oder Verkauf.

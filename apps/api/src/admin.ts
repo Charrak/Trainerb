@@ -8,6 +8,23 @@ import type { SessionContext } from './sessions';
 @Injectable()
 export class Admin {
   constructor(private readonly db: Database) {}
+  async listAuditEvents(query: unknown) {
+    const { scope, before } = bodyObject(query, ['scope', 'before']);
+    if (scope !== undefined && scope !== 'certificates') throw apiError(422, 'INVALID_SCOPE', 'Unbekannter Bereich.');
+    if (before !== undefined && typeof before !== 'string') throw apiError(422, 'INVALID_CURSOR', 'Ungültige Seitenmarke.');
+    // Audit writers assign UUIDv7. Page by this immutable key, not by offset.
+    const rows = await this.db.auditEvent.findMany({
+      where: { ...(before !== undefined && { id: { lt: requireUuid(before) } }),
+        ...(scope === 'certificates' && { target_type: { in: ['certificate', 'certificate_template'] } }) },
+      orderBy: { id: 'desc' }, take: 26,
+      select: { id: true, created_at: true, action: true, origin: true, target_type: true, target_ref: true },
+    });
+    // target_ref is free text, not a UUID column. Never expose arbitrary references,
+    // actor profiles, IP fingerprints, reasons or before/after payloads in the reader.
+    return { data: rows.slice(0, 25).map(({ target_ref, ...event }) => ({ ...event,
+      target_id: /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(target_ref) ? target_ref : null })),
+      next_cursor: rows.length > 25 ? rows[24].id : null };
+  }
   async listUsers(limitInput: unknown, cursorInput: unknown) {
     const limit = limitInput === undefined ? 25 : Number(limitInput);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw apiError(422, 'INVALID_LIMIT', 'Ungültige Seitengröße.');

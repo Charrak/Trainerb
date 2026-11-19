@@ -248,7 +248,7 @@ Die folgende Tabelle beschreibt den Zielzustand. Der aktuell implementierte Auss
 | E-Mail | CRUD/Publikation unter `/admin/email-templates`, `GET /admin/email-outbox` | `mail.manage` bzw. Betriebsleserecht; keine Geheimnisse im Ergebnis |
 | Newsletter | CRUD unter `/admin/newsletter/subscribers`, `/segments`, `/campaigns`; `POST /admin/newsletter/campaigns/{id}/schedule` | `newsletter.read`/`newsletter.edit`/`newsletter.send`; tatsächliche Einwilligung zum Versandzeitpunkt |
 | Datenschutz/Widerruf | `POST /privacy/requests`, `GET /admin/data-requests`, `GET /admin/withdrawal-requests`, `GET /admin/withdrawal-requests/{id}`, `POST /admin/withdrawal-requests/{id}` | öffentliche Anfragen neutral und gedrosselt; Fallbearbeitung mit `data_requests.manage` bzw. `withdrawals.manage`, keine automatische Erstattung |
-| Audit/Betrieb | `GET /admin/audit`, `GET /admin/automation-jobs`, `POST /admin/automation-jobs/{id}/retry` | gezielte Audit- und Betriebsrechte; Retry nur zulässiger idempotenter Vorgänge |
+| Audit/Betrieb | `GET /admin/audit-events`, `GET /admin/automation-jobs`, `POST /admin/automation-jobs/{id}/retry` | gezielte Audit- und Betriebsrechte; Retry nur zulässiger idempotenter Vorgänge |
 
 Für CRUD stehen `GET` für Listen/Einzelsätze, `POST` für neue Entwürfe/Aktionen, `PATCH` für erlaubte Änderungen und bei fachlich zulässiger Archivierung eine explizite Statusaktion. Veröffentlichtes oder rechtlich aufzubewahrendes Material wird nicht durch generisches `DELETE` vernichtet. Änderungen müssen konkrete Daten verändern und ihre Berechtigung sowie ihren Audit-Eintrag nachweisen; eine nur optische Funktion gilt nicht als umgesetzt.
 
@@ -270,3 +270,20 @@ Für CRUD stehen `GET` für Listen/Einzelsätze, `POST` für neue Entwürfe/Akti
 Für Ablaufwarnungen wird der **tatsächlich zusammenhängende** Zugang aus allen gültigen Quellen derselben Einschreibung berechnet: Überschneidende Intervalle werden zusammengeführt, eine unbefristete Quelle beendet die Warnpflicht für diesen Zeitraum. Ein zukünftiges Intervall nach einer Lücke verhindert keine Warnung vor der Lücke. Standardmäßig wird sieben Tage und einen Tag vor dem jeweiligen effektiven Ende benachrichtigt, sofern erreichbar; kurz vor Versand berechnet der Worker den Zugang erneut und unterdrückt überholte Warnungen. Der Schlüssel aus Einschreibung, effektivem Endzeitpunkt und Vorwarnintervall verhindert doppelte Hinweise.
 
 Datenbankänderung und benötigter Auftrag werden, wo fachlich erforderlich, in derselben Transaktion erfasst. Der Worker nutzt zeitlich begrenzte Leases, wiederholbare Zustandsübergänge und exponentielles Backoff mit Zufallsanteil; Startwert höchstens acht Versuche, danach `failed` mit Alarm und berechtigter manueller Wiederaufnahme. Kritische Zahlungs- und Erfüllungsvorgänge verbleiben zusätzlich bis zum erfolgreichen fachlichen Abgleich sichtbar; ein verbrauchtes Retry-Limit löscht sie nicht. Für geplante Ereignisse ist PostgreSQL die dauerhafte Wahrheit, nicht ausschließlich die flüchtige Queue. Einzelne externe Dienste können trotz Idempotenzmaßnahmen eine doppelte E-Mail zustellen; dies wird überwacht und nicht als technische Exactly-once-Garantie dargestellt.
+
+### Audit-Lesezugriff (Backoffice)
+
+`GET /api/v1/admin/audit-events` erfordert eine MFA-bestätigte Backoffice-Sitzung mit `audit.read`. Optional beschränkt `scope=certificates` auf Zieltypen `certificate` und `certificate_template`. Die Antwort enthält `data` (maximal 25 Ereignisse nach absteigender UUIDv7) und `next_cursor`; zum Weiterblättern diesen Wert als `before` mit unverändertem Filter senden. Ausgegeben werden nur `id`, `created_at`, `action`, `origin`, `target_type` und `target_id` (UUID oder `null`). Kein Zugriff auf Rohdaten, kein Schreib- oder Exportendpunkt. Die Antworten sind nicht cachebar.
+
+### Backoffice: Kurskennzahlen und transaktionale Urkundenmail
+
+Alle Routen unter `/api/v1/admin` verlangen eine MFA-bestätigte Backoffice-Sitzung. Schreibzugriffe verlangen zusätzlich CSRF, exakte Origin, passende Berechtigung und frische Identitätsbestätigung (fünf Minuten).
+
+| Route | Vertrag |
+|---|---|
+| `GET /dashboard` | `reports.read_all` für globale Admins: Anzahl Kurse und Abschlussnachweise. `reports.read_assigned`: nur zur Rolle passende Kurszuweisungen. `reports.read_basic`: nur öffentlich sichtbare Kursanzahl. Kein frei wählbarer Scope. |
+| `GET /automation-jobs` | `operations.read`; nur `email.send`/`email_outbox`, optional `status` und `before` (UUID); 25 Zeilen und `next_cursor`. Kein Payload, keine Empfänger-/Providerdaten. |
+| `POST /automation-jobs/:id/retry` | `operations.retry`; `{expected_attempts}` bindet die Aktion an den geprüften Stand. Nur ausgeschöpfter Auftrag mit vollständig dokumentierten Vorbereitungsfehlern und passender fehlgeschlagener Outbox. Genau ein weiterer Versuch; unveränderte Historie, Audit und Outbox-Update in derselben Transaktion. `409` bei ungeeignetem oder veraltetem Stand. |
+| `GET /certificate-mail-template` | `mail.manage`; aktive Fassung und optional neuester Entwurf für `certificate_ready` (`de-DE`), keine Outbox-Beispiele. |
+| `POST /certificate-mail-template/drafts` | `mail.manage`; `{base_id,subject,text}`. Legt eine neue Version an. Veraltete Basis `409`; unbekannte Platzhalter, HTML und mehrzeiliger Betreff unzulässig. |
+| `POST /certificate-mail-template/publish` | `mail.manage`; `{draft_id}`. Schaltet genau den aktuellen gespeicherten Entwurf atomar frei, vorherige Fassung bleibt für bereits referenzierende Nachrichten erhalten. |

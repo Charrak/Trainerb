@@ -105,6 +105,10 @@ export class IdentityController {
     const ctx = await this.sessions.require(req, { backoffice: true, permission: 'users.block', fresh: true });
     await this.sessions.verifyCsrf(req, ctx); return this.customers.changeStatus(ctx, id, body);
   }
+  @Get('admin/audit-events') async auditEvents(@Req() req: ApiRequest, @Query() query: unknown) {
+    await this.sessions.require(req, { backoffice: true, permission: 'audit.read' });
+    return this.admin.listAuditEvents(query);
+  }
   @Get('admin/users') async users(@Req() req: ApiRequest, @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {
     await this.sessions.require(req, { backoffice:true, permission:'users.read' }); return this.admin.listUsers(limit, cursor);
   }
