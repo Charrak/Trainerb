@@ -114,6 +114,15 @@ Regelmäßiger Abgleich: offene Zahlungen gegen Providerstatus, Provider-Erfolge
 
 **Testfrequenz:** mindestens monatlich vollständiger Restore in isoliertes Staging mit DB, Objekten und mindestens einem privaten Dokument; vierteljährlich ein dokumentierter Durchlauf des vollständigen Notfallplans einschließlich Provider-Abgleich und Schlüsselzugriff. Fehlende Backups oder unerfüllte RPO-/RTO-Ziele sind kritische Alarme und verhindern einen Produktionsstart.
 
+### Urkundennachweis im Staging-Restore
+
+Die ausgestellten Urkunden liegen derzeit verschlüsselt in PostgreSQL (`certificates.document_ciphertext`), nicht im Medienbucket. Die [lokale logische Restore-Probe](../README.md#urkunden-aus-einem-datenbankdump-wiederherstellen) ergänzt, aber ersetzt den physischen Restore mit WAL nicht. **Den destruktiven Testbefehl nicht auf ein echtes Backup oder einen Staging-Datenbestand richten.**
+
+1. **Vor der Sicherung** mit einem synthetischen Konto eine Urkunde ausstellen, widerrufen und neu ausstellen. Das gültige PDF als Eigentümer laden; seinen SHA-256-Vergleichswert und die erwarteten Status im geschützten Abnahmebereich separat festhalten. Prüfwerte und PDFs nicht ins Ticket oder ins Repository kopieren.
+2. Ein **tatsächliches** Backup von nach der Neuausstellung auf getrennte Infrastruktur bis zum gewählten Zeitpunkt T zurückspielen. Nur das Restore-Ziel an die Prüf-API anbinden, Worker, Mailversand und Provider-Schreibzugriffe ausgeschaltet lassen. Für die im Dokument gespeicherte Schlüssel-ID das historische Schlüsselmaterial aus dem getrennten Secret-Backup beschaffen. Ein neu erzeugter Schlüssel mit gleichem Namen ist kein Ersatz.
+3. Ausschließlich am Ziel prüfen: PDF als synthetischer Inhaber abrufbar, Hash identisch, fremder Abruf abgewiesen. Der ursprüngliche Prüfcode muss `revoked`, der neue `valid` ergeben. Die Statusabfrage **allein** reicht nicht: Sie nutzt nur den Prüfcode-Hash und belegt keine Wiederherstellung des verschlüsselten PDFs. Entscheidungen nach T ggf. vor jeder Wiederinbetriebnahme abgleichen.
+4. Backupreferenz, Zielzeitpunkt, Build, Dauer, Ergebnis und offene Abweichungen dokumentieren; keine Namen, PDFs, Prüfcodes oder Schlüssel ins Protokoll übernehmen. Restore-Ziel und etwaige Testkopien kontrolliert entfernen. Fehlt ein Schlüssel, ein Dokument oder eine Widerrufsentscheidung, bleibt die Abnahme offen.
+
 ## 4.7 Barrierefreiheit und mobile Nutzung
 
 Öffentliche Website, Checkout, Lernbereich, Prüfungen und Admin-Grundfunktionen werden mit Tastatur, Screenreader, Zoom, kleinen Viewports und Touch bedient. Formulare haben Labels, verständliche Fehler und logisch erreichbare Fokusreihenfolge; Prüfungsoptionen sind als zusammengehörige Radiogruppen gekennzeichnet. Kontrast, Fokus, Umbruch, 200-%-Zoom und Nutzbarkeit bei 320 CSS-Pixeln werden geprüft. Videos benötigen freigegebene Untertitel/Transkripte; Animationen respektieren reduzierte Bewegung. Technische Tests ergänzen, ersetzen aber keine manuelle Barrierefreiheitsprüfung und keine rechtliche Anwendbarkeitsprüfung.
