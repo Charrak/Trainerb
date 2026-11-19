@@ -1,3 +1,4 @@
+import { qualificationProfile } from './completion';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -278,13 +279,17 @@ export class Catalog {
   async updateVersion(ctx: SessionContext, versionId: string, input: unknown) {
     requireUuid(versionId);
     const body = bodyObject(input, ['revision', 'title', 'subtitle', 'description', 'chapter_completion_mode', 'expected_module_count',
-      'expected_chapter_count', 'expected_exams_per_chapter', 'duration_minutes', 'default_access_days']);
+      'expected_chapter_count', 'expected_exams_per_chapter', 'completion_profile', 'duration_minutes', 'default_access_days']);
     const expectedRevision = revision(body.revision);
     if (Object.keys(body).length < 2) return fail('body');
     const data: Prisma.CourseVersionUpdateInput = { revision: { increment: 1 } };
     if ('title' in body) data.title = text(body.title, 'title', 160)!;
     if ('subtitle' in body) data.subtitle = text(body.subtitle, 'subtitle', 240, true);
     if ('description' in body) data.description = description(body.description);
+    if ('completion_profile' in body) {
+      if (body.completion_profile !== null && body.completion_profile !== qualificationProfile) return fail('completion_profile');
+      data.completion_profile = body.completion_profile;
+    }
     if ('chapter_completion_mode' in body) data.chapter_completion_mode = completionMode(body.chapter_completion_mode);
     for (const key of ['duration_minutes', 'default_access_days'] as const) {
       if (key in body) data[key] = integer(body[key], key, { nullable: true, min: 1, max: 1_000_000 });
@@ -302,6 +307,11 @@ export class Catalog {
       if (!version) throw missing();
       if (version.state !== 'draft') throw apiError(409, 'VERSION_NOT_DRAFT', 'Veröffentlichte Versionen sind unveränderlich. Lege eine neue Entwurfsversion an.');
       if (version.revision !== expectedRevision) throw stale();
+      const planned = { ...version, ...data };
+      if (planned.completion_profile === qualificationProfile && (planned.expected_module_count !== 14 || planned.expected_chapter_count !== 42 ||
+          planned.expected_exams_per_chapter !== 2 || planned.chapter_completion_mode === 'self_confirm')) {
+        throw apiError(422, 'QUALIFICATION_PLAN_MISMATCH', 'Der Abschluss erfordert 14 Module, 42 Kapitel, zwei Prüfungen je Kapitel und einen Kapitelabschluss durch Prüfungen.');
+      }
       const updated = await tx.courseVersion.update({ where: { id: versionId }, data });
       await this.audit(tx, ctx, 'course.draft_updated', existing.course_id, { version_id: versionId });
       return updated;

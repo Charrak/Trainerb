@@ -372,31 +372,19 @@ test('a blocked buyer is not granted access by a payment', async () => {
   await freshReauth(admin, adminUser.id);
   const refused = await admin.change('post', `/admin/orders/${placed.body.id}/confirm-payment`,
     { reference: 'Kontoauszug 44' });
-  status(refused, 409);
-  assert.equal(refused.body.code, 'ACCOUNT_BLOCKED');
-  // Nothing was paid, granted or linked.
+  status(refused, 200);
   const order = await db.order.findUniqueOrThrow({ where: { id: placed.body.id } });
-  assert.equal(order.payment_state, 'awaiting');
-  assert.equal(order.fulfillment_state, 'waiting');
+  assert.equal(order.payment_state, 'paid');
+  assert.equal(order.fulfillment_state, 'blocked');
+  assert.equal(order.user_id, null);
+  const audit = await db.auditEvent.findFirstOrThrow({ where: { target_ref: order.id, action: 'fulfilment.needs_review' } });
+  assert.equal(audit.after_safe.reason, 'ACCOUNT_BLOCKED');
   assert.equal(await db.courseAccess.count({ where: { user_id: blockedUser.id } }), 0);
 });
 
 test('a paid guest order with a blocked address can be resolved explicitly', async () => {
-  const order = await db.order.findFirstOrThrow({ where: { identity_kind: 'guest', payment_state: 'awaiting',
+  const order = await db.order.findFirstOrThrow({ where: { identity_kind: 'guest', payment_state: 'paid',
     user: null, buyer_email_canonical: 'gesperrt@example.invalid' } });
-  // Staff see it in the dedicated filter.
-  const list = await admin.get('/admin/orders?state=unlinked'); status(list, 200);
-  assert.ok(!list.body.data.some(row => row.id === order.id), 'still awaiting payment, not yet unlinked');
-  // Nothing to resolve while the order is unpaid.
-  await freshReauth(admin, adminUser.id);
-  assert.equal((await admin.change('post', `/admin/orders/${order.id}/resolve-link`, { decision: 'grant' })).status, 409);
-
-  // Mark it paid without fulfilment (the payment arrived, the account is blocked).
-  // Evidence first: a guarded trigger rejects "paid" without a matching attempt.
-  await db.paymentAttempt.updateMany({ where: { order_id: order.id }, data: { status: 'succeeded',
-    amount_cents: order.total_gross_cents, confirmed_at: new Date(), provider_payment_id: 'bank-9911' } });
-  await db.order.update({ where: { id: order.id }, data: { payment_state: 'paid',
-    paid_at: new Date(), paid_via: 'provider' } });
   const filter = await admin.get('/admin/orders?state=unlinked'); status(filter, 200);
   assert.ok(filter.body.data.some(row => row.id === order.id && row.buyer.has_account === false));
 
@@ -407,7 +395,7 @@ test('a paid guest order with a blocked address can be resolved explicitly', asy
   status(cancelled, 200);
   assert.equal(cancelled.body.payment_state, 'cancelled');
   const kept = await db.order.findUniqueOrThrow({ where: { id: order.id } });
-  assert.equal(kept.paid_via, 'provider', 'the payment evidence survives the refund');
+  assert.equal(kept.paid_via, 'admin', 'the payment evidence survives the refund');
   assert.ok(kept.paid_at);
   assert.equal(await db.courseAccess.count({ where: { user: { email_canonical: 'gesperrt@example.invalid' } } }), 0);
   const audit = await db.auditEvent.findFirst({ where: { action: 'order.guest_cancelled_manually' } });
@@ -547,6 +535,9 @@ test('a guest cannot buy the same course twice once the address is proven', asyn
   // nothing, even though other test buyers own the same course.
   assert.equal(await db.courseAccess.count({ where: { course_id: course.id,
     user: { email_canonical: email } } }), 1);
+  await db.courseAccess.updateMany({ where: { course_id: course.id, user: { email_canonical: email } },
+    data: { starts_at: new Date(Date.now() - 86400000), ends_at: new Date(Date.now() - 1000) } });
+  status(await browser.change('post', '/guest/cart/items', { product_id: product.id }), 200);
 });
 
 test('a guest mail survives a transport failure and never leaks its link into the database', async () => {

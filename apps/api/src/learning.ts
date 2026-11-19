@@ -1,3 +1,4 @@
+import { unexpiredGrant } from './access-period';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -21,19 +22,22 @@ export class Learning {
 
   private async activeAccess(userId: string, courseSlug: string) {
     if (typeof courseSlug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(courseSlug) || courseSlug.length > 100) throw missing();
-    const access = await this.db.courseAccess.findFirst({ where: { user_id: userId, revoked_at: null,
-      course: { slug: courseSlug } }, include: { course: true, version: true } });
-    if (!access) throw missing();
+    const now = new Date();
+    const scope = { user_id: userId, course: { slug: courseSlug } };
+    // Non-overlapping periods: the earliest unexpired grant is current, or next in line.
+    const access = await this.db.courseAccess.findFirst({ where: { ...scope, ...unexpiredGrant(now) },
+      orderBy: { starts_at: 'asc' }, include: { course: true, version: true } });
+    if (!access) {
+      if (!await this.db.courseAccess.count({ where: { ...scope, revoked_at: null } })) throw missing();
+      throw apiError(403, 'ACCESS_EXPIRED', 'Der Zugang zu dieser Ausbildung ist derzeit nicht gültig.');
+    }
     // A suspended grant (open refund or dispute) stops access without deleting
     // the grant: the same row resumes if the question is settled in the buyer's
     // favour. A plain 404 would look like "never bought it".
     if (access.suspended_at) {
       throw apiError(403, 'ACCESS_SUSPENDED', 'Der Zugang zu dieser Ausbildung ist vorübergehend gesperrt.');
     }
-    const now = new Date();
-    if (access.starts_at > now || (access.ends_at && access.ends_at <= now)) {
-      throw apiError(403, 'ACCESS_EXPIRED', 'Der Zugang zu dieser Ausbildung ist abgelaufen.');
-    }
+    if (access.starts_at > now) throw apiError(403, 'ACCESS_EXPIRED', 'Der Zugang ist noch nicht gültig.');
     return access;
   }
 
@@ -64,7 +68,8 @@ export class Learning {
     const progress = await this.db.chapterProgress.findMany({ where: { access_id: access.id },
       select: { chapter_id: true, completed_at: true } });
     const done = new Map(progress.map(row => [row.chapter_id, row.completed_at]));
-    return { course_id: access.course_id, slug, title: version.title, subtitle: version.subtitle,
+    const completion = await this.db.completionRecord.findUnique({ where: { access_id: access.id }, select: { completed_at: true } });
+    return { completed_at: completion?.completed_at ?? null, course_id: access.course_id, slug, title: version.title, subtitle: version.subtitle,
       description: version.description, duration_minutes: version.duration_minutes,
       starts_at: access.starts_at, ends_at: access.ends_at,
       modules: version.modules.map(module => ({ id: module.id, title: module.title, description: module.description,
@@ -152,9 +157,10 @@ export class Accesses {
       const course = await tx.course.findUnique({ where: { id: courseId }, include: {
         versions: { where: { state: 'published' }, take: 1 } } });
       if (!course || course.status !== 'published' || !course.versions[0]) throw missing();
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
       const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, status: true } });
       if (!user || user.status !== 'active') throw missing();
-      const existing = await tx.courseAccess.findFirst({ where: { user_id: userId, course_id: courseId, revoked_at: null } });
+      const existing = await tx.courseAccess.findFirst({ where: { user_id: userId, course_id: courseId, ...unexpiredGrant(new Date()) } });
       if (existing) throw apiError(409, 'ACCESS_EXISTS', 'Für diesen Kurs besteht bereits ein Zugang.');
       const now = new Date();
       const access = await tx.courseAccess.create({ data: { id: uuidv7(), user_id: userId, course_id: courseId,

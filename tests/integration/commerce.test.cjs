@@ -462,3 +462,22 @@ test('public imprint only exposes activated wording, including before sales open
   assert.equal(config.body.sales_enabled, false);
   assert.equal(config.body.legal.imprint.wording, wording);
 });
+
+test('expired purchase can be bought again without overwriting its grant or learning history', async () => {
+  await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: true } });
+  const old = await db.courseAccess.findFirstOrThrow({ where: { user_id: buyerUser.id, source: 'order' } });
+  const cart = () => buyer.change('post', '/cart/items', { product_id: product.id });
+  assert.equal((await cart()).body.code, 'ALREADY_OWNED');
+  await db.courseAccess.update({ where: { id: old.id }, data: { starts_at: new Date(Date.now()-86400000), ends_at: new Date(Date.now()-1000) } });
+  assert.equal((await buyer.get('/me/courses/commerce-kurs')).body.code, 'ACCESS_EXPIRED');
+  status(await cart(), 200);
+  const placed = await buyer.change('post', '/orders', await checkoutBody()); status(placed, 201);
+  status(await admin.change('post', `/admin/orders/${placed.body.id}/confirm-payment`, { reference: 'Wiederkauf' }), 200);
+  const renewed = await db.courseAccess.findFirstOrThrow({ where: { order_id: placed.body.id } });
+  assert.notEqual(old.id, renewed.id);
+  assert.equal((await db.courseAccess.findUniqueOrThrow({ where: { id: old.id } })).revoked_at, null);
+  await assert.rejects(db.courseAccess.update({ where: { id: old.id }, data: { ends_at: null } }));
+  const chapter = await buyer.get(`/me/courses/commerce-kurs/chapters/${course.chapter_id}`); status(chapter, 200);
+  assert.equal(chapter.body.access_id, renewed.id);
+  assert.equal(await db.chapterProgress.count({ where: { access_id: old.id } }), 1);
+});

@@ -1,3 +1,4 @@
+import { unexpiredGrant } from './access-period';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -54,7 +55,7 @@ export class Shop {
     if (message.includes('ORDER_PAYMENT_EVIDENCE_MISSING')) throw apiError(409, 'PAYMENT_EVIDENCE_REQUIRED', 'Eine Zahlung kann erst nach bestätigtem Zahlungseingang gebucht werden.');
     if (message.includes('ORDER_CANCEL_WITH_ACTIVE_ACCESS')) throw apiError(409, 'ORDER_HAS_ACTIVE_ACCESS', 'Der Zugang muss vor der Stornierung entzogen werden.');
     if (message.includes('ORDER_FULFILMENT_WITHOUT_ACCESS')) throw apiError(409, 'FULFILMENT_INCOMPLETE', 'Die Bestellung kann ohne Zugang nicht als erfüllt markiert werden.');
-    if (message.includes('course_access_one_active')) throw apiError(409, 'ACCESS_EXISTS', 'Für diesen Kurs besteht bereits ein Zugang.');
+    if (message.includes('course_access_no_overlap')) throw apiError(409, 'ACCESS_EXISTS', 'Für diesen Kurs besteht bereits ein Zugang.');
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
       throw apiError(409, 'CONFLICT', 'Dieser Eintrag existiert bereits.');
     }
@@ -112,7 +113,7 @@ export class Shop {
       }
       const cart = await this.openCart(tx, ctx.user.id, true);
       // Owning the course already means a second purchase would grant nothing.
-      const owned = await tx.courseAccess.findFirst({ where: { user_id: ctx.user.id, revoked_at: null,
+      const owned = await tx.courseAccess.findFirst({ where: { user_id: ctx.user.id, ...unexpiredGrant(now),
         course: { products: { some: { product_id: productId } } } }, select: { id: true } });
       if (owned) throw apiError(409, 'ALREADY_OWNED', 'Du hast bereits Zugang zu diesem Inhalt.');
       await tx.cartItem.upsert({ where: { cart_id_product_id: { cart_id: cart!.id, product_id: productId } },
@@ -458,7 +459,7 @@ export class Shop {
     // `unlinked` is not a payment state: it filters paid guest orders that still
     // have no account, which is exactly the set a human has to resolve.
     if (state !== null &&
-        !['awaiting', 'paid', 'cancelled', 'review', 'unlinked', 'refunded', 'charged_back'].includes(state)) {
+        !['awaiting', 'paid', 'cancelled', 'review', 'unlinked', 'blocked', 'refunded', 'charged_back'].includes(state)) {
       throw apiError(422, 'INVALID_STATE', 'Unbekannter Status.');
     }
     const limit = limitInput === undefined ? 25 : Number(limitInput);
@@ -466,6 +467,7 @@ export class Shop {
     const cursor = cursorInput === undefined ? undefined : requireUuid(String(cursorInput));
     const where: Prisma.OrderWhereInput = state === 'unlinked'
       ? { identity_kind: 'guest', user_id: null, payment_state: 'paid' }
+      : state === 'blocked' ? { payment_state: 'paid', fulfillment_state: 'blocked' }
       : state ? { payment_state: state } : {};
     const rows = await this.db.order.findMany({ where, take: limit + 1, orderBy: [{ placed_at: 'desc' }, { id: 'desc' }],
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

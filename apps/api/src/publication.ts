@@ -115,7 +115,7 @@ export class Publication {
       blockers.push({ code: 'CHAPTER_WITHOUT_EXAM', message: 'Für den Prüfungsabschluss benötigt jedes Kapitel mindestens eine Prüfung.' });
     }
     // Do not release the planned qualification programme before its certificate workflow is ready.
-    if (version.expected_exams_per_chapter !== null) blockers.push({ code: 'QUALIFICATION_NOT_READY',
+    if (version.completion_profile || version.expected_exams_per_chapter !== null) blockers.push({ code: 'QUALIFICATION_NOT_READY',
       message: 'Die Ausbildung mit festem Prüfungssoll bleibt bis zur Abnahme der Abschluss- und Zertifikatsregeln gesperrt.' });
     if (!version.subtitle) blockers.push({ code: 'MISSING_SUBTITLE', message: 'Bitte ergänze einen Untertitel.' });
     if (version.duration_minutes === null && version.modules.every(module => module.chapters.every(chapter => chapter.estimated_minutes === null))) {
@@ -213,7 +213,7 @@ export class Publication {
       await tx.courseVersion.create({ data: { id: versionId, course_id: courseId, version: nextVersion, state: 'draft',
         cover_media_id: published.cover_media_id, title: published.title, subtitle: published.subtitle, description: published.description as Prisma.InputJsonValue,
         duration_minutes: published.duration_minutes, default_access_days: published.default_access_days,
-        chapter_completion_mode: published.chapter_completion_mode, expected_module_count: published.expected_module_count,
+        completion_profile: published.completion_profile, chapter_completion_mode: published.chapter_completion_mode, expected_module_count: published.expected_module_count,
         expected_chapter_count: published.expected_chapter_count, expected_exams_per_chapter: published.expected_exams_per_chapter,
         created_by: ctx.user.id } });
       // Copy the lesson structure so the new draft is editable without touching

@@ -67,9 +67,9 @@ export function AdminOrders() {
         <p>{totals ? `${totals.awaiting} offen · ${totals.paid} bezahlt · ${totals.refunded} erstattet`
           + (totals.charged_back ? ` · ${totals.charged_back} zurückgebucht` : '') : ''} · nur für Administration und Superadministration sichtbar.</p></div></div>
         <div className="choice-row" role="group" aria-label="Statusfilter">
-          {['awaiting', 'paid', 'unlinked', 'review', 'refunded', 'charged_back', 'cancelled', ''].map(value => <label key={value || 'all'}>
+          {['awaiting', 'paid', 'unlinked', 'blocked', 'review', 'refunded', 'charged_back', 'cancelled', ''].map(value => <label key={value || 'all'}>
             <input type="radio" checked={state === value} onChange={() => { setState(value); void load(value); }}/>
-            {value === '' ? 'Alle' : value === 'unlinked' ? 'Ohne Konto' : paymentStateLabels[value]}</label>)}
+            {value === '' ? 'Alle' : value === 'unlinked' ? 'Ohne Konto' : value === 'blocked' ? 'Freischaltung blockiert' : paymentStateLabels[value]}</label>)}
         </div>
         {!orders.length && !error ? <p className="muted">Keine Bestellungen in dieser Auswahl.</p> : <div className="draft-list">
           {orders.map(order => <Link className="draft-row" key={order.id} href={`/admin/bestellungen/${order.id}`}>
@@ -155,7 +155,7 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">AKTIONEN</span>
         <h2>Zahlungseingang buchen</h2><p>Nur buchen, wenn das Geld tatsächlich eingegangen ist.</p></div></div>
         {!manage ? <p className="muted">Für diese Aktion fehlt die Berechtigung.</p> : order.payment_state === 'awaiting' ? <>
-          <form className="stack-form" onSubmit={event => { event.preventDefault(); void run('confirm', `/admin/orders/${order.id}/confirm-payment`, { reference, note }, 'Zahlungseingang gebucht und Zugang freigeschaltet.'); }}>
+          <form className="stack-form" onSubmit={event => { event.preventDefault(); void run('confirm', `/admin/orders/${order.id}/confirm-payment`, { reference, note }, 'Zahlungseingang gebucht.'); }}>
             <Field label="Referenz des Zahlungseingangs" id="payment-reference" hint="Bankreferenz, Kontoauszug oder Stripe-ID."><input id="payment-reference" value={reference} onChange={e => setReference(e.target.value)} maxLength={60} required/></Field>
             <Field label="Notiz (optional)" id="payment-note"><input id="payment-note" value={note} onChange={e => setNote(e.target.value)} maxLength={500}/></Field>
             <button className="button button-primary" disabled={!!busy}>{busy === 'confirm' ? 'Bitte warten …' : 'Zahlungseingang buchen'} <Arrow/></button>
@@ -172,7 +172,7 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
         {manage && order.payment_state === 'paid' && order.identity_kind === 'guest' && !order.account_linked && <>
           <div className="inner-divider"/>
           <h3>Gastbestellung ohne Konto</h3>
-          <p className="muted">Die Adresse dieser bezahlten Bestellung gehört zu einem gesperrten Konto. Der Zugang wurde
+          <p className="muted">Diese bezahlte Bestellung konnte keinem Konto zugeordnet werden. Der Zugang wurde
             bewusst nicht automatisch vergeben. Entscheide ausdrücklich.</p>
           <form className="stack-form" onSubmit={event => { event.preventDefault();
             void run('resolve', `/admin/orders/${order.id}/resolve-link`, { decision, note: linkNote },

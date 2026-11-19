@@ -398,6 +398,7 @@ model CourseVersion {
   duration_minutes           Int?
   default_access_days        Int?
   chapter_completion_mode    String          @default("self_confirm") @db.Text
+  completion_profile         String?         @db.Text
   expected_module_count      Int?
   expected_chapter_count     Int?
   expected_exams_per_chapter Int?
@@ -1255,4 +1256,46 @@ model ExamAttemptResult {
   evaluated_at DateTime @default(now()) @db.Timestamptz(6)
   attempt ExamAttempt @relation(fields: [attempt_id], references: [id], onDelete: Restrict)
   @@map("exam_attempt_results")
+}
+
+// Composite SQL foreign keys bind this write-once record to the grant and the versioned profile.
+model CompletionRecord {
+  id                 String   @id @db.Uuid
+  access_id          String   @unique @db.Uuid
+  course_version_id  String   @db.Uuid
+  completion_profile String   @db.Text
+  completed_at       DateTime @db.Timestamptz(6)
+  evidence_snapshot  Json
+  @@map("completion_records")
+}
+
+model CertificateTemplate {
+  id                String    @id @db.Uuid
+  course_version_id String    @db.Uuid
+  heading           String
+  issuer            String
+  created_by        String    @db.Uuid
+  approved_by       String?   @db.Uuid
+  approved_at       DateTime? @db.Timestamptz(6)
+  @@unique([id, course_version_id])
+  @@map("certificate_templates")
+}
+model Certificate {
+  id                  String   @id @db.Uuid
+  completion_id       String   @db.Uuid
+  course_version_id   String   @db.Uuid
+  template_id         String   @db.Uuid
+  replaces_id         String?  @unique @db.Uuid
+  status              String   @default("queued")
+  attempts            Int      @default(0)
+  retry_at            DateTime @default(now()) @db.Timestamptz(6)
+  last_error          String?
+  issued_at           DateTime? @db.Timestamptz(6)
+  verification_hash   Bytes?   @unique
+  document_ciphertext Bytes?
+  key_id              String?
+  revoked_at          DateTime? @db.Timestamptz(6)
+  revoked_by          String?   @db.Uuid
+  revoke_reason       String?
+  @@map("certificates")
 }

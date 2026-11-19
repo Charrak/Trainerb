@@ -24,7 +24,13 @@ export async function createApplication(): Promise<INestApplication> {
   // the strict JSON parser. Only this single path captures a raw buffer.
   app.use((req: any, res: any, next: () => void) => {
     if (req.method === 'POST' && req.path === '/api/v1/payments/stripe/webhook') {
-      express.raw({ type: '*/*', limit: '256kb' })(req, res, () => { req.rawBody = req.body; req.body = undefined; next(); });
+      express.raw({ type: '*/*', limit: '256kb' })(req, res, err => {
+        if (err) {
+          const tooLarge = err.type === 'entity.too.large';
+          res.status(tooLarge ? 413 : 400).json({ code: tooLarge ? 'PAYLOAD_TOO_LARGE' : 'INVALID_WEBHOOK', request_id: req.requestId }); return;
+        }
+        req.rawBody = req.body; req.body = undefined; next();
+      });
       return;
     }
     next();

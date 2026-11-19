@@ -11,7 +11,7 @@ export type Chapter = { id: string; title: string; summary: string | null; posit
 export type Module = { id: string; title: string; description: string | null; position: number; revision: number; chapters: Chapter[] };
 export type Version = { id: string; version: number; state: string; title: string; subtitle: string | null; description: unknown;
   chapter_completion_mode: string; expected_module_count: number | null; expected_chapter_count: number | null;
-  expected_exams_per_chapter: number | null; revision: number; modules: Module[] };
+  completion_profile: string | null; expected_exams_per_chapter: number | null; revision: number; modules: Module[] };
 export type CourseDetail = { id: string; slug: string; status: string; visibility: string; versions: Version[];
   quarantine_uploads: { id: string; original_name: string; status: string; scanned_at: string | null; scan_error: string | null; approved_at: string | null; promoted_asset_id: string | null; promotion_error: string | null }[];
   staff?: { user_id: string; scope_role: string }[] };

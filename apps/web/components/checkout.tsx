@@ -211,7 +211,7 @@ export function OrderPage({ orderId }: { orderId: string }) {
     {!order ? <p className="muted">Bestellung wird geladen …</p> : <div className="admin-grid">
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">STATUS</span>
         <h2>{order.payment_state === 'paid' ? 'Bezahlt' : order.payment_state === 'awaiting' ? 'Zahlung offen' : order.payment_state === 'cancelled' ? 'Storniert' : 'In Prüfung'}</h2>
-        <p>{order.fulfillment_state === 'fulfilled' ? 'Dein Zugang ist freigeschaltet.' : 'Der Zugang wird nach bestätigtem Zahlungseingang freigeschaltet.'}</p></div></div>
+        <p>{order.fulfillment_state === 'fulfilled' ? 'Dein Zugang ist freigeschaltet.' : order.payment_state === 'paid' ? 'Deine Zahlung ist eingegangen. Die Freischaltung wird geprüft.' : 'Der Zugang wird nach bestätigtem Zahlungseingang freigeschaltet.'}</p></div></div>
         {order.bank && order.payment_state === 'awaiting' && <div className="bank-box"><span className="section-kicker">ÜBERWEISUNG</span>
           <p><strong>{euro(order.total_gross_cents)}</strong>{order.due_at && <> bis {dateOnly(order.due_at)}</>}</p>
           <dl><div><dt>Empfänger</dt><dd>{order.bank.holder}</dd></div><div><dt>IBAN</dt><dd>{order.bank.iban}</dd></div>
@@ -226,7 +226,7 @@ export function OrderPage({ orderId }: { orderId: string }) {
             <br/><small>{item.courses.map(course => course.title).join(', ')}</small></td><td>{euro(item.total_gross_cents)}</td></tr>)}
           {order.discount_cents !== '0' && <tr><td>Rabatt {order.coupon_code ? `(${order.coupon_code})` : ''}</td><td>−{euro(order.discount_cents)}</td></tr>}
           <tr><td><strong>Gesamt</strong></td><td><strong>{euro(order.total_gross_cents)}</strong></td></tr></tbody></table></div>
-        {order.payment_state === 'paid' && <Link className="button button-primary" href="/konto/kurse">Jetzt lernen <Arrow/></Link>}
+        {order.payment_state === 'paid' && order.fulfillment_state === 'fulfilled' && <Link className="button button-primary" href="/konto/kurse">Jetzt lernen <Arrow/></Link>}
       </section>
       <section className="dashboard-card"><div className="section-heading"><div><span className="section-kicker">BELEG</span>
         <h2>Rechnung</h2></div></div>

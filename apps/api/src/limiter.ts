@@ -7,9 +7,17 @@ const INCREMENT = `
 local n = redis.call('INCR', KEYS[1])
 if n == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return n`;
-const RELEASE = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
-return 0`;
+// Count in-flight validations as reservations so parallel requests cannot all
+// pass a stale counter. Success releases only its own reservation; failures age out.
+const RESERVE_LOGIN = `
+for i,key in ipairs(KEYS) do
+  redis.call('ZREMRANGEBYSCORE', key, '-inf', ARGV[1] - ARGV[2])
+  if redis.call('ZCARD', key) >= tonumber(ARGV[i+3]) then return 0 end
+end
+for _,key in ipairs(KEYS) do
+  redis.call('ZADD', key, ARGV[1], ARGV[3]); redis.call('PEXPIRE', key, ARGV[2])
+end
+return 1`;
 
 @Injectable()
 export class RateLimiter implements OnModuleDestroy {
@@ -40,24 +48,15 @@ export class RateLimiter implements OnModuleDestroy {
     if (count > limit) throw apiError(429, 'RATE_LIMITED', 'Zu viele Anfragen. Bitte versuche es später erneut.');
   }
   async checkLogin<T>(email: string, ip: string, validate: () => Promise<T | null>): Promise<T | null> {
-    await this.hit('login-ip', ip, 50);
     await this.ready();
-    const pair = this.key('login-failures', `${email}\0${ip}`);
-    const lock = `${pair}:lock`;
+    const keys = [this.key('login-pair', `${email}\0${ip}`), this.key('login-account', email), this.key('login-source', ip)];
     const owner = randomToken();
     try {
-      const acquired = await this.redis.set(lock, owner, 'PX', 20_000, 'NX');
-      if (!acquired) throw apiError(429, 'RATE_LIMITED', 'Bitte versuche es später erneut.');
-      try {
-        const failures = Number(await this.redis.get(pair) || 0);
-        if (failures >= 5) throw apiError(429, 'RATE_LIMITED', 'Zu viele Anfragen. Bitte versuche es später erneut.');
-        const result = await validate();
-        if (result) await this.redis.del(pair);
-        else await this.redis.eval(INCREMENT, 1, pair, 15 * 60_000);
-        return result;
-      } finally {
-        await this.redis.eval(RELEASE, 1, lock, owner);
-      }
+      const acquired = await this.redis.eval(RESERVE_LOGIN, keys.length, ...keys, Date.now(), 15 * 60_000, owner, 5, 15, 50);
+      if (!acquired) throw apiError(429, 'RATE_LIMITED', 'Zu viele Anfragen. Bitte versuche es später erneut.');
+      const result = await validate();
+      if (result) await this.redis.eval("for _,key in ipairs(KEYS) do redis.call('ZREM', key, ARGV[1]) end return 1", keys.length, ...keys, owner);
+      return result;
     } catch (error) {
       if (error && typeof error === 'object' && 'getStatus' in error) throw error;
       throw apiError(503, 'AUTH_TEMPORARILY_UNAVAILABLE', 'Bitte versuche es später erneut.');

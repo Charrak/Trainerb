@@ -148,17 +148,19 @@ function VersionForm({ version, disabled, mutate }: { version: Version; disabled
     await mutate(`/admin/course-versions/${version.id}`, 'PATCH', { revision: version.revision, title: textValue(form, 'title'),
       subtitle: textValue(form, 'subtitle'), ...(canEditDescription ? { description: textValue(form, 'description') } : {}), chapter_completion_mode: textValue(form, 'mode'),
       expected_module_count: optionalNumber(form, 'modules'), expected_chapter_count: optionalNumber(form, 'chapters'),
-      expected_exams_per_chapter: optionalNumber(form, 'exams') }, 'Kursangaben gespeichert.');
+      completion_profile: form.has('qualification') ? 'qualification_84_v1' : null, expected_exams_per_chapter: optionalNumber(form, 'exams') }, 'Kursangaben gespeichert.');
   }
   return <form className="stack-form" onSubmit={submit}>
     <div className="field-row"><Field label="Titel" id="course-title"><input id="course-title" name="title" defaultValue={version.title} maxLength={160} required/></Field>
       <Field label="Untertitel (optional)" id="course-subtitle"><input id="course-subtitle" name="subtitle" defaultValue={version.subtitle || ''} maxLength={240}/></Field></div>
     {canEditDescription ? <Field label="Beschreibung (optional)" id="course-description"><textarea id="course-description" name="description" defaultValue={descriptionText(version.description)} maxLength={8000} rows={4}/></Field> :
       <p className="muted">Die Beschreibung enthält ein noch nicht unterstütztes Format und wird hier nicht verändert.</p>}
-    <Field label="Geplante Abschlussregel für Kapitel" id="course-mode" hint="Eine Planung, keine aktive Prüfungsfunktion."><select id="course-mode" name="mode" defaultValue={version.chapter_completion_mode} aria-describedby="course-mode-hint"><option value="self_confirm">Selbst bestätigen</option><option value="all_chapter_exams">Alle Kapitelprüfungen bestehen</option><option value="self_or_all_chapter_exams">Selbst bestätigen oder alle Kapitelprüfungen bestehen</option></select></Field>
+    <Field label="Geplante Abschlussregel für Kapitel" id="course-mode" hint="Dieser Modus regelt den Kapitelabschluss, nicht den Ausbildungsabschluss."><select id="course-mode" name="mode" defaultValue={version.chapter_completion_mode} aria-describedby="course-mode-hint"><option value="self_confirm">Selbst bestätigen</option><option value="all_chapter_exams">Alle Kapitelprüfungen bestehen</option><option value="self_or_all_chapter_exams">Selbst bestätigen oder alle Kapitelprüfungen bestehen</option></select></Field>
     <div className="field-row count-row"><Field label="Module geplant" id="course-modules"><input id="course-modules" name="modules" type="number" min="1" max="500" defaultValue={version.expected_module_count ?? ''}/></Field>
       <Field label="Kapitel geplant" id="course-chapters"><input id="course-chapters" name="chapters" type="number" min="1" max="5000" defaultValue={version.expected_chapter_count ?? ''}/></Field>
       <Field label="Prüfungen je Kapitel geplant" id="course-exams"><input id="course-exams" name="exams" type="number" min="1" max="100" defaultValue={version.expected_exams_per_chapter ?? ''}/></Field></div>
+    <label><input type="checkbox" name="qualification" defaultChecked={version.completion_profile === 'qualification_84_v1'}/> Abschlussnachweis für 14 Module, 42 Kapitel und alle 84 Prüfungen erfassen. Urkundenausgabe nur mit freigegebener Vorlage.</label>
+    {version.completion_profile && <a href={`/admin/urkunden?version=${version.id}`}>Zur Urkundenverwaltung für diese Version</a>}
     <button className="button button-primary" disabled={disabled}>Kursangaben speichern <Arrow/></button>
   </form>;
 }

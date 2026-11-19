@@ -49,10 +49,11 @@ export class Sessions {
     const privileged = roleKeys.some(role => (BACKOFFICE_ROLES as readonly string[]).includes(role));
     if ((found.kind === 'participant' && privileged) || (found.kind === 'preauth' && !privileged) ||
         (found.kind === 'backoffice' && (!privileged || !found.mfa_verified_at))) return null;
-    const touched = await this.db.authSession.updateMany({
-      where: { id: found.id, revoked_at: null, expires_at: { gt: new Date() } }, data: { last_seen_at: new Date() },
-    });
-    if (touched.count !== 1) return null;
+    if (now - found.last_seen_at.getTime() >= MINUTE) {
+      const touched = await this.db.authSession.updateMany({ where: { id: found.id, revoked_at: null,
+        expires_at: { gt: new Date(now) } }, data: { last_seen_at: new Date(now) } });
+      if (!touched.count) return null;
+    }
     const permissionKeys = new Set(found.user.roles.flatMap(x => x.role.permissions.map(y => y.permission.key)));
     return { session: found, user: found.user, roleKeys, permissionKeys };
   }

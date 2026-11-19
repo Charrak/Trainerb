@@ -4,7 +4,7 @@
 
 Verantwortlich: Soufian Charrak
 
-Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die Umsetzung der Benutzerverwaltung, eine geschützte Verwaltung für Kursentwürfe und eine vollständige **Kaufstrecke**: öffentlicher Produktkatalog, Warenkorb, Bestellung mit Positions- und Preis-Snapshot, Rechnung, Zahlungseingangsbestätigung durch die Verwaltung und Freischaltung des Lernzugangs. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Prüfungen, Zertifikate, Medien und ein Auswertungs-Dashboard sind weiterhin **nicht** implementiert.
+Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die Umsetzung der Benutzerverwaltung, eine geschützte Verwaltung für Kursentwürfe und eine vollständige **Kaufstrecke**: öffentlicher Produktkatalog, Warenkorb, Bestellung mit Positions- und Preis-Snapshot, Rechnung, Zahlungseingangsbestätigung durch die Verwaltung und Freischaltung des Lernzugangs. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Kapitelprüfungen, private Lernmedien und der versionsgebundene Abschlussnachweis sind implementiert. Urkunden können aus einer für die Kursversion freigegebenen Vorlage ausgestellt, im Konto heruntergeladen, geprüft und widerrufen werden. Ein Auswertungs-Dashboard steht noch aus.
 
 ## Bereits umgesetzt
 
@@ -54,6 +54,9 @@ npm run dev:web
 ```
 
 Weboberfläche: <http://localhost:3000> · lokales Mailpit-Testpostfach: <http://localhost:8025>. Die Web-App ruft die API über `/api/v1` auf; nur der Next.js-Server verbindet sich intern mit der API. `PUBLIC_BASE_URL` muss exakt zur Browser-Origin passen. Die HTTP-Ausnahme und Secure-Cookies sind nur für `localhost`/`127.0.0.1` im lokalen Entwicklungsmodus vorgesehen; für andere Domains ist HTTPS erforderlich. Web und API binden für Entwicklungs- und Vorschauzwecke an `0.0.0.0`: Netzwerkzugriff lokal einschränken. Mailpit enthält Aktivierungslinks und darf niemals öffentlich oder für echte Daten betrieben werden.
+
+**Cookies und Proxy:** Falls Safari die `__Host-`-Cookies auf HTTP-Localhost verwirft, lokal einen HTTPS-Reverse-Proxy mit vertrauenswürdigem Entwicklungszertifikat verwenden und `PUBLIC_BASE_URL` auf dessen Origin setzen. `Secure` und Cookiepräfix nicht abschalten. Im Betrieb `TRUST_PROXY_CIDRS` auf die tatsächlichen Proxy-Adressen/-Netze begrenzen (ohne Proxy nicht setzen); die API nur vom Proxy erreichbar machen. Der Eingangsproxy muss eingehende `X-Forwarded-For`-Werte ersetzen. Sonst drosselt die API alle Nutzer unter der Proxy-IP oder vertraut falschen Client-Adressen. Vor Freigabe mit zwei verschiedenen Client-Netzen prüfen.
+
 
 Die `.env` ist ignoriert und darf nicht eingecheckt werden. `npm run setup:env` ersetzt **keine** vorhandenen Schlüssel; gehen Schlüssel verloren oder werden sie unkoordiniert geändert, lassen sich bestehende Geheimdaten nicht mehr entschlüsseln. Die API lädt die mitgelieferte [Django-Sperrliste](packages/database/data/common-passwords.md) offline und ergänzt die lokalen Sperreinträge. `COMMON_PASSWORDS_FILE` kann auf eine eigene UTF-8-Datei (eine Zeile je Passwort, optional `.gz`) zeigen; relative Pfade beziehen sich auf das Repository. In Produktion sind weiterhin mindestens 10.000 unterschiedliche normalisierte Einträge in der Basisliste erforderlich. Beim Deployment beide Listendateien mit ausliefern.
 
@@ -201,4 +204,19 @@ Der Job liest maximal 5 MiB, vergleicht Größe und SHA-256 mit dem Beleg und sc
 
 **Phase 6 – Fragenredaktion:** Der [Frageneditor](docs/05-phasen-und-tests.md#phase-6-fragenredaktion-im-kapitelentwurf) unterstützt Entwürfe und fachliche Freigabe im Kapitel. Die Freigabe einer Frage allein veröffentlicht keine Prüfung.
 
-**Lernprüfungen:** Freigegebene Single-Choice-Prüfungen können im Lernkonto gestartet, fortgesetzt und abgegeben werden. Unterhalb von 3/3 richtigen Antworten wird keine Teilpunktzahl oder Lösung ausgegeben. [Profil, Zugriffsgrenzen und Stand der Phase 6](docs/05-phasen-und-tests.md#lernprüfung-phase-6-profil-343). Zertifikate und die Freigabe der geplanten Ausbildung mit festem Prüfungssoll stehen weiterhin aus.
+**Lernprüfungen:** Freigegebene Single-Choice-Prüfungen können im Lernkonto gestartet, fortgesetzt und abgegeben werden. Unterhalb von 3/3 richtigen Antworten wird keine Teilpunktzahl oder Lösung ausgegeben. [Profil, Zugriffsgrenzen und Stand der Phase 6](docs/05-phasen-und-tests.md#lernprüfung-phase-6-profil-343). Das explizite Abschlussprofil `qualification_84_v1` dokumentiert alle 84 bestandenen Prüfungen für genau einen Zugang. Bei freigegebener Urkundenvorlage entsteht daraus ein dauerhafter Ausstellungsauftrag. Zum Betrieb `npm run db:migrate` und `npm run db:seed` (Mailvorlage) ausführen und den Worker starten. [Urkundenbetrieb und Abnahme](docs/06-admin-handbuch.md#urkunden-ausstellen-und-prüfen). Die Ausbildung bleibt bis zur Abnahme gesperrt.
+
+### Urkunden im Browser abnehmen (isoliert, destruktive Testdatenbank)
+
+`npm run test:certificates:browser` baut die Anwendung und prüft den 83/84-Grenzfall sowie Ausstellung, PDF-Download, öffentliche Prüfung, Widerruf und Neuausstellung mit Chromium. Voraussetzungen: Node 24, installiertes Chromium für Playwright (`npx playwright install chromium` oder `E2E_CHROMIUM_PATH`), OpenSSL und Python 3 mit PyMuPDF (`python3 -m pip install PyMuPDF==1.26.7` in einer Testumgebung). Port 4000 auf Loopback muss frei sein. Keine separat laufende Web-App, kein externer SMTP-Server und keine echten Kursinhalte erforderlich.
+
+Die leere PostgreSQL-Wegwerfdatenbank und eine eigene Redis-Testdatenbank (1–15) vorher auf Loopback bereitstellen. **Die Testfixture leert Tabellen; niemals auf Betriebs- oder Stagingdaten richten.** Beispiel nach `npm ci`, mit den lokalen Testzugangsdaten:
+
+```bash
+E2E_ALLOW_TEST_DATA=yes \
+TEST_DATABASE_URL=postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/certificate_e2e_test \
+TEST_REDIS_URL=redis://127.0.0.1:6379/9 \
+npm run test:certificates:browser
+```
+
+Der Lauf startet Nest, die gebaute Next-Oberfläche, den regulären Worker und eine lokale SMTP-Senke. Drei getrennte Browserprozesse verwenden die nur lokal aufgelöste Test-Origin `https://academy.test`. Der Test liest die Prüfcodes **aus den heruntergeladenen PDFs**, nicht aus der Datenbank. Test-PDFs, Testzertifikat und privater TLS-Schlüssel werden anschließend entfernt; Datenbank und Redis nach dem Lauf verwerfen. Der Test läuft bewusst nicht als Teil von `npm run test:integration`.

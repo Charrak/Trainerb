@@ -10,7 +10,7 @@ type Block = { id: string; kind: string; text?: string; level?: number; items?: 
 type Content = { id: string; kind: string; title: string | null; media_available?: boolean; body: { schema_version: number; blocks: Block[] } | null };
 type Chapter = { access_id: string; exams: { id: string; title: string }[]; can_self_complete: boolean; id: string; title: string; summary: string | null; module_title: string; estimated_minutes: number | null;
   completed_at: string | null; contents: Content[] };
-type Course = { course_id: string; slug: string; title: string; subtitle: string | null; duration_minutes: number | null;
+type Course = { completed_at: string | null; course_id: string; slug: string; title: string; subtitle: string | null; duration_minutes: number | null;
   starts_at: string; ends_at: string | null; modules: { id: string; title: string; description: string | null;
     chapters: { id: string; title: string; summary: string | null; estimated_minutes: number | null;
       content_count: number; completed_at: string | null }[] }[] };
@@ -100,6 +100,7 @@ export function CoursePlayer({ slug }: { slug: string }) {
       {course && <p>{course.subtitle}{course.ends_at ? ` · Zugang bis ${dateOnly(course.ends_at)}` : ' · unbefristeter Zugang'}</p>}</div>
       <Link className="button button-secondary" href="/konto/kurse">← Meine Ausbildungen</Link></div>
     <Notice message={error}/>
+    {course?.completed_at && <p className="publication-ok">Ausbildung abgeschlossen am {dateOnly(course.completed_at)}. Alle 84 Prüfungen bestanden.</p>}
     {!course ? !error && <p className="muted">Ausbildung wird geladen …</p> : <div className="learning-grid">
       <aside className="learning-outline dashboard-card"><span className="section-kicker">INHALT</span>
         {course.modules.map(module => <div key={module.id} className="outline-module"><h3>{module.title}</h3>

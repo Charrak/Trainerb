@@ -219,3 +219,49 @@ test('the session is created in the currency of the order', async () => {
     orderBy: { created_at: 'desc' } });
   assert.equal(attempt.currency, 'EUR');
 });
+
+test('foreign references are acknowledged only after verification; oversized payloads are identified', async () => {
+  const event = paidEvent({ id: 'other-app', total_gross_cents: 19900n });
+  delete event.data.object.metadata;
+  const url = '/api/v1/payments/stripe/webhook';
+  const invalid = await request(server).post(url).set('Stripe-Signature', 'invalid').send(event);
+  assert.equal(invalid.body.code, 'INVALID_SIGNATURE');
+  assert.deepEqual((await deliver(event)).body, { received: true });
+  assert.equal(await db.paymentEvent.count({ where: { provider_event_id: event.id } }), 0);
+  assert.equal((await request(server).post(url).set('Content-Type','application/json').send('x'.repeat(262145))).status, 413);
+});
+
+test('untracked money goes to review; tracked money with missing items stays paid but blocked', async () => {
+  for (const tracked of [false, true]) {
+    const order = await makeOrder();
+    const event = paidEvent(order);
+    if (tracked) await db.paymentAttempt.create({ data: { id: uuidv7(), order_id: order.id, provider: 'stripe',
+      environment: 'test', provider_session_id: event.data.object.id, provider_idempotency_key: uuidv7(),
+      status: 'pending', amount_cents: order.total_gross_cents, currency: order.currency } });
+    for (const res of await Promise.all([deliver(event), deliver(event)])) assert.equal(res.status, 200, JSON.stringify(res.body));
+    const after = await db.order.findUniqueOrThrow({ where: { id: order.id } });
+    assert.equal(after.payment_state, tracked ? 'paid' : 'review');
+    if (tracked) assert.equal(after.fulfillment_state, 'blocked');
+    assert.equal(await db.paymentEvent.count({ where: { order_id: order.id } }), 1);
+    assert.equal(await db.courseAccess.count({ where: { order_id: order.id } }), 0);
+    const audit = await db.auditEvent.findFirstOrThrow({ where: { target_ref: order.id, action: tracked ? 'fulfilment.needs_review' : 'payment.unmatched' } });
+    assert.equal(audit.after_safe.reason, tracked ? 'FULFILMENT_INCOMPLETE' : 'payment_not_tracked');
+  }
+});
+
+test('concurrent checkout starts reuse a durable attempt and identical provider idempotency key', async () => {
+  const order = await makeOrder(), payments = stripeService();
+  const keys = new Set();
+  payments.client.checkout.sessions.create = async (payload, options) => {
+    keys.add(options.idempotencyKey);
+    const attempt = await db.paymentAttempt.findUniqueOrThrow({ where: { id: payload.metadata.attempt_id } });
+    assert.equal(attempt.provider_idempotency_key, options.idempotencyKey);
+    // Emulate Stripe returning the same session for the same key.
+    const session = { id: `cs_${attempt.id}`, status: 'open', url: `https://stripe.test/pay/${attempt.id}` };
+    stripe.sessions.set(session.id, session); return session;
+  };
+  const [first, second] = await Promise.all([1,2].map(() => payments.startSession(order.id, order.buyer_email_original)));
+  assert.deepEqual(first, second);
+  assert.equal(keys.size, 1);
+  assert.equal(await db.paymentAttempt.count({ where: { order_id: order.id } }), 1);
+});
