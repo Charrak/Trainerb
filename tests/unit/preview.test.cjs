@@ -89,3 +89,11 @@ test('production accepts the packaged password list but rejects the small local 
   const small = cookieProbe(env);
   assert.notEqual(small.status, 0); assert.match(small.stderr, /common-password list/);
 });
+
+test('non-production configuration rejects live and mixed-mode Stripe key pairs',()=>{
+  const env={STRIPE_SECRET_KEY:'sk_test_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_fixture',STRIPE_WEBHOOK_SECRET:'whsec_fixture'};
+  assert.equal(cookieProbe(env).status,0);
+  for(const overrides of [{STRIPE_SECRET_KEY:'sk_live_fixture'},{STRIPE_PUBLISHABLE_KEY:'pk_live_fixture'}]){
+    const res=cookieProbe({...env,...overrides});assert.notEqual(res.status,0);assert.match(res.stderr,/payment environment/);
+  }
+});

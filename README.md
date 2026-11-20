@@ -1,10 +1,10 @@
 # Online-Akademie – Konzept und Entwicklungsstand
 
-**Stand: 15.11.2026 · Phase 4 (Kaufkonto, Rechnung, Steuern, Aufbewahrung) in Entwicklung · nicht produktionsreif**
+**Entwicklungsstand:** Identität, Kauf, Lernen, Prüfungen, Urkunden und Teile des Backoffice sind implementiert. **Keine Betriebs- oder Verkaufsfreigabe.** [Aktueller Abnahmestand nach Phasen](docs/05-phasen-und-tests.md#aktueller-abnahmestand-nach-der-menüverwaltung).
 
 Verantwortlich: Soufian Charrak
 
-Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die Umsetzung der Benutzerverwaltung, eine geschützte Verwaltung für Kursentwürfe und eine vollständige **Kaufstrecke**: öffentlicher Produktkatalog, Warenkorb, Bestellung mit Positions- und Preis-Snapshot, Rechnung, Zahlungseingangsbestätigung durch die Verwaltung und Freischaltung des Lernzugangs. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Kapitelprüfungen, private Lernmedien und der versionsgebundene Abschlussnachweis sind implementiert. Urkunden können aus einer für die Kursversion freigegebenen Vorlage ausgestellt, im Konto heruntergeladen, geprüft und widerrufen werden. Ein Auswertungs-Dashboard steht noch aus.
+Das Repository enthält das [technische Zielkonzept](docs/01-architektur.md), die Umsetzung der Benutzerverwaltung, eine geschützte Verwaltung für Kursentwürfe und eine vollständige **Kaufstrecke**: öffentlicher Produktkatalog, Warenkorb, Bestellung mit Positions- und Preis-Snapshot, Rechnung, Zahlungseingangsbestätigung durch die Verwaltung und Freischaltung des Lernzugangs. Eine Freigabe von Kursen und eine Aktivierung von Produkten/Preisen ist möglich – nur mit eigener Berechtigung, erfüllten Voraussetzungen und frischer Bestätigung; der öffentliche Katalog zeigt ausschließlich den freigegebenen Kurstext. Kapitelprüfungen, private Lernmedien und der versionsgebundene Abschlussnachweis sind implementiert. Urkunden können aus einer für die Kursversion freigegebenen Vorlage ausgestellt, im Konto heruntergeladen, geprüft und widerrufen werden. Rollenabhängige Kennzahlen und ein erster Finanzbericht sind verfügbar.
 
 ## Bereits umgesetzt
 

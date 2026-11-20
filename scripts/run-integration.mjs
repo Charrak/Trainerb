@@ -44,6 +44,8 @@ const env = { ...process.env, APP_ENV: 'test', NODE_ENV: 'test', DATABASE_URL: d
   TRAINERB_EMBEDDED_PREVIEW_COOKIES: 'false', TRAINERB_DESTRUCTIVE_TEST_DATABASE: 'confirmed' };
 env.TRAINERB_CERTIFICATE_BROWSER = certificateBrowser ? 'yes' : 'no';
 delete env.DATABASE_MIGRATION_URL;
+// Never import operator key history or real provider credentials into a disposable suite.
+for (const k of ['DATA_DECRYPTION_KEYS_FILE','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','STRIPE_PUBLISHABLE_KEY']) env[k] = '';
 // Do not inherit operator storage credentials from .env into a destructive test.
 for (const key of Object.keys(env)) if (/^MEDIA_(?:QUARANTINE|SCAN|PROMOTE|S3)_/.test(key)) env[key] = '';
 for (const key of ['SESSION_HMAC_KEY', 'CSRF_HMAC_KEY', 'TOKEN_HMAC_KEY', 'DATA_ENCRYPTION_KEY', 'AUDIT_PSEUDONYMIZATION_KEY']) {

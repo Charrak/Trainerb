@@ -126,3 +126,12 @@ Die ausgestellten Urkunden liegen derzeit verschlüsselt in PostgreSQL (`certifi
 ## 4.7 Barrierefreiheit und mobile Nutzung
 
 Öffentliche Website, Checkout, Lernbereich, Prüfungen und Admin-Grundfunktionen werden mit Tastatur, Screenreader, Zoom, kleinen Viewports und Touch bedient. Formulare haben Labels, verständliche Fehler und logisch erreichbare Fokusreihenfolge; Prüfungsoptionen sind als zusammengehörige Radiogruppen gekennzeichnet. Kontrast, Fokus, Umbruch, 200-%-Zoom und Nutzbarkeit bei 320 CSS-Pixeln werden geprüft. Videos benötigen freigegebene Untertitel/Transkripte; Animationen respektieren reduzierte Bewegung. Technische Tests ergänzen, ersetzen aber keine manuelle Barrierefreiheitsprüfung und keine rechtliche Anwendbarkeitsprüfung.
+
+### Wechsel des AES-Datenschlüssels (MFA, Outbox, Gastdaten, Urkunden)
+
+`DATA_ENCRYPTION_KEY_ID` und `DATA_ENCRYPTION_KEY` bilden das einzige Schreibpaar. Optional enthält die als Secret gemountete Datei `DATA_DECRYPTION_KEYS_FILE` ein JSON-Array aus Paaren `id` und `key` (kanonisches Base64, je 32 unabhängige Zufallsbytes). Keine Klartextschlüssel in Repository, Tickets, Shellargumenten oder Logs. Der Prozess liest nur die gespeicherte Schlüssel-ID, probiert keine anderen Schlüssel und verweigert den Start bei ungültiger Datei oder Kollision. Ohne Datei gilt wie bisher genau ein Schlüssel.
+
+1. Neue eindeutige ID und Schlüssel im Secret-Manager erzeugen. Alten Schlüssel separat und wiederherstellbar sichern. In Staging zuerst historische Dokumente und MFA testen.
+2. Vor einem rollenden Wechsel **alle** Leser/Worker mit dem neuen Schlüssel als zusätzlichem Leseschlüssel neu starten, während das alte Paar schreibt. Danach neues Schreibpaar ausrollen und die Datei so austauschen, dass sie das alte, nicht das aktive Paar enthält. Gemountete Datei und Umgebung müssen für jeden Prozess konsistent sein. Alternativ alle Schreiber in einem Wartungsfenster pausieren.
+3. Mit neu gestarteten Prozessen altes Dokument lesen, neue Testdaten schreiben und nach Neustart erneut lesen. Beim Rollback das neue Paar als Leseschlüssel behalten. Die CI-Wiederherstellungsprobe prüft alte PDF-Bytes nach Wechsel sowie den Fehler bei fehlendem/falschem Schlüssel.
+4. Ein Wechsel verschlüsselt keine Bestandszeile neu. Alte Schlüssel nicht entfernen, solange Daten oder wiederherstellbare Sicherungen sie benötigen. Bei Kompromittierung gesondertes Incident-Verfahren; ein Wechsel allein genügt nicht. HMAC-Schlüssel, Secret-Escrow und reale Offsite-Wiederherstellung sind getrennte Verfahren.

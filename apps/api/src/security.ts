@@ -22,9 +22,10 @@ export function seal(value: unknown, aad: string): Buffer<ArrayBuffer> {
 }
 export function unseal<T>(value: Uint8Array, aad: string, keyId: string): T {
   const cfg = getConfig();
-  if (keyId !== cfg.encryptionKeyId || value.length < 29) throw new Error('Unavailable encryption key or invalid ciphertext.');
+  const key = keyId === cfg.encryptionKeyId ? cfg.encryptionKey : cfg.decryptionKeys.get(keyId);
+  if (!key || value.length < 29) throw new Error('Unavailable encryption key or invalid ciphertext.');
   const bytes = Buffer.from(value);
-  const decipher = createDecipheriv('aes-256-gcm', cfg.encryptionKey, bytes.subarray(0, 12));
+  const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
   decipher.setAAD(Buffer.from(aad));
   decipher.setAuthTag(bytes.subarray(12, 28));
   return JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8')) as T;
