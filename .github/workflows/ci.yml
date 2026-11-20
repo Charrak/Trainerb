@@ -160,6 +160,7 @@ jobs:
           PATH="$RUNNER_TEMP/pdf-check/bin:$PATH" node scripts/run-integration.mjs --certificate-browser 2>&1 | tee "$RUNNER_TEMP/browser.log" || {
             # Only source locations in annotations; never include private fixture payloads/URLs.
             refs=$(grep -Eo '(certificate-acceptance\.cjs|catalog\.test\.cjs):[0-9]+:[0-9]+' "$RUNNER_TEMP/browser.log" | tail -6 | paste -sd ' ' - || true)
+            grep -oE 'A11Y_DIAGNOSTIC .{1,700}' "$RUNNER_TEMP/browser.log" | head -8 | while read -r diagnostic; do echo "::error title=Accessibility::$diagnostic"; done || true
             echo "::error title=Browser fixture::Failure locations: ${refs:-startup or test tools}"
             exit 1
           }

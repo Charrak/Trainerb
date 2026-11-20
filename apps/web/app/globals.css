@@ -197,3 +197,10 @@ button, input, select, textarea { font: inherit; }
 @media(max-width:700px){.editorial-links-footer {justify-content:flex-start;}}
 .page-banner {padding:1.2rem 1.5rem;border-inline-start:4px solid var(--ink);background:#edf3e9;overflow-wrap:anywhere;}
 .page-image {display:block;max-width:100%;height:auto;margin-block:1.5rem;}
+
+/* Keep interactive targets separate even when a fallback font is wider. */
+.privacy-intake { display: grid; gap: .65rem; }
+.privacy-intake label { font-weight: 650; }
+.privacy-intake input, .privacy-intake select { width: 100%; min-height: 44px; padding: 8px 12px; color: var(--ink-dark); background: white; border: 1px solid #64776a; border-radius: 4px; }
+.privacy-intake a { justify-self: start; padding: 12px 0; text-decoration: underline; }
+.privacy-intake button { justify-self: start; min-height: 44px; }

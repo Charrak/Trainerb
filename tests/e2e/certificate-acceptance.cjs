@@ -25,6 +25,7 @@ async function checkAccessibility(page,label){
     const run=await window.axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']}});
     return run.violations.map(v=>({rule:v.id,targets:v.nodes.map(n=>n.target)}));
   });
+  for(const v of violations)console.log(`A11Y_DIAGNOSTIC ${label}: ${v.rule} ${JSON.stringify(v.targets).slice(0,500)}`);
   assert.deepEqual(violations,[],`Accessibility regression (${label}): ${JSON.stringify(violations)}`);
 }
 

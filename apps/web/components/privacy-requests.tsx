@@ -34,7 +34,7 @@ export function PrivacyIntake() {
         />
       ) : (
         <form
-          className="stack-form"
+          className="stack-form privacy-intake"
           onSubmit={async (e) => {
             e.preventDefault();
             X('');
@@ -54,27 +54,24 @@ export function PrivacyIntake() {
             Auch ohne Konto kannst du eine Anfrage stellen. Wir prüfen deine Identität, bevor wir personenbezogene Daten
             herausgeben oder ändern. Bitte sende hier keine Ausweiskopien.
           </p>
-          <label>
-            Art der Anfrage
-            <select value={type} onChange={(e) => T(e.target.value)}>
-              {Object.entries(types).map(([k, t]) => (
-                <option key={k} value={k}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Kontaktadresse
-            <input
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              maxLength={254}
-              onChange={(e) => E(e.target.value)}
-            />
-          </label>
+          <label htmlFor="privacy-type">Art der Anfrage</label>
+          <select id="privacy-type" value={type} onChange={(e) => T(e.target.value)}>
+            {Object.entries(types).map(([k, t]) => (
+              <option key={k} value={k}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <label htmlFor="privacy-email">Kontaktadresse</label>
+          <input
+            id="privacy-email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            maxLength={254}
+            onChange={(e) => E(e.target.value)}
+          />
           <Link href="/datenschutz">Datenschutz lesen</Link>
           <Notice message={error} />
           <button className="button button-primary" disabled={busy}>
