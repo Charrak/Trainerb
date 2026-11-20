@@ -166,6 +166,16 @@ test('drafts remain private; public routes and backoffice require correct permis
   status(await new Browser().get('/cart'), 401);
 });
 
+test('offline recovery binds the replacement device, invalidates sessions and codes, and cannot replay an old approval',async()=>{
+ const {replaceLostFactor}=require('../../apps/api/dist/offline-mfa');const fixture=await register('offline-recovery');await grant(fixture.user.id,['participant','support']);
+ const codes=await enroll(fixture.browser,fixture.email),id=fixture.user.id,old=await db.userMfaFactor.findFirstOrThrow({where:{user_id:id,status:'active'}}),secret=new OTPAuth.Secret({size:20});
+ const replace=code=>replaceLostFactor(db,id,old.id,'IR-2026-1234',secret.base32,code);
+ await assert.rejects(replace('bad'),/device proof/);status(await fixture.browser.get('/me'),200);
+ const totp=new OTPAuth.TOTP({algorithm:'SHA1',digits:6,period:30,secret});const recovery=await replace(totp.generate());assert.equal(recovery.length,10);status(await fixture.browser.get('/me'),401);await assert.rejects(replace(totp.generate()),/Factor changed/);
+ const browser=new Browser();status(await login(browser,fixture.email),202);status(await browser.change('post','/auth/mfa/challenge',{recovery_code:codes[0]}),401);status(await browser.change('post','/auth/mfa/challenge',{recovery_code:recovery[0]}),200);
+ assert.equal(await db.auditEvent.count({where:{action:'mfa.offline_replaced',target_ref:id}}),1);
+});
+
 test('privacy intake is neutral, separates verification from fulfilment and erases case contact at closure',async()=>{
  const anon=new Browser(),root='/admin/data-requests',email='privacy-contact@example.invalid',payload={type:'deletion',email};
  status(await anon.change('post','/privacy/requests',payload,{noCsrf:true}),403);

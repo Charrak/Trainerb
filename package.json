@@ -14,6 +14,7 @@
     "db:generate": "node scripts/generate-client.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/seed.ts",
+    "mfa:recover": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/mfa-recover.ts",
     "bootstrap": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/bootstrap.ts",
     "build": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && npm run build --workspace @trainerb/web",
     "dev:api": "npm run dev --workspace @trainerb/api",
