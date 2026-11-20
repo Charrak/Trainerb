@@ -324,11 +324,11 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
         <h2>Rechnung</h2></div></div>
         {order.invoice ? <>
           <p><strong>{order.invoice.invoice_number}</strong> · {dateOnly(order.invoice.issued_at)}</p>
-          <p className="muted small-print">Die Rechnung wird an {order.buyer_email} gesendet.</p>
+          <p className="muted small-print">Rechnungsadresse für diese Bestellung: {order.buyer_email}.</p>
           {order.invoice.pdf_href && <InvoiceDownload href={order.invoice.pdf_href}
             label="Rechnung als PDF herunterladen"/>}
           {!order.invoice.pdf_href && <p className="muted small-print">Der Download steht bereit, sobald die Zahlung bestätigt ist.</p>}
-        </> : <p className="muted">Für Kartenzahlungen wird die Rechnung nach bestätigter Zahlung erstellt.</p>}
+        </> : <p className="muted">Für diese Bestellung liegt hier noch kein Rechnungsdokument vor.</p>}
         <div className="legal-block"><span className="section-kicker">BESTÄTIGT</span>
           <ul className="plain-list">{order.acceptances.map(acceptance => <li key={acceptance.kind}>
             {acceptance.kind === 'terms_accepted' ? 'AGB' : acceptance.kind === 'withdrawal_notice_seen'

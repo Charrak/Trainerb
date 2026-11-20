@@ -68,6 +68,7 @@ export function getConfig(): Config {
   if (embeddedPreviewCookies && (appEnv !== 'development' || publicUrl.protocol !== 'https:')) {
     throw new Error('Embedded preview cookies are permitted only for HTTPS development.');
   }
+  if (appEnv === 'production' && process.env.DATABASE_MIGRATION_URL) throw new Error('Do not expose migration credentials to the runtime.');
   const databaseUrl = required('DATABASE_URL');
   const redisUrl = required('REDIS_URL');
   if (!['postgresql:', 'postgres:'].includes(new URL(databaseUrl).protocol)) throw new Error('Invalid DATABASE_URL.');

@@ -14,6 +14,7 @@ async function main() {
   const config = getConfig();
   if (!config.smtpHost) throw new Error('SMTP_HOST is required to start the mail worker.');
   const db = new Database(), outbox = new Outbox();
+  await db.onModuleInit(); // Before starting a consumer or opening Redis connections.
   const transport = nodemailer.createTransport({ host: config.smtpHost, port: config.smtpPort, secure: config.smtpSecure,
     connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000,
     ...(config.smtpUser ? { auth: { user: config.smtpUser, pass: config.smtpPassword || '' } } : {}) });
@@ -29,7 +30,6 @@ async function main() {
   let stopping = false;
   process.on('SIGINT', () => { stopping = true; });
   process.on('SIGTERM', () => { stopping = true; });
-  await db.$connect();
   console.log('Mail-Worker gestartet; PostgreSQL-Aufträge werden über BullMQ abgearbeitet.');
   let lastPurge = 0;
   try {
