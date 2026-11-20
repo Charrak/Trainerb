@@ -109,6 +109,7 @@ before(async () => {
     Object.assign(process.env, { MEDIA_S3_ENDPOINT: process.env.TRAINERB_TEST_S3_ORIGIN, MEDIA_S3_REGION: 'us-east-1',
       MEDIA_S3_ACCESS_KEY_ID: 'trainerb-integration', MEDIA_S3_SECRET_ACCESS_KEY: process.env.TRAINERB_TEST_S3_SECRET });
   }
+  if(process.env.TRAINERB_CERTIFICATE_BROWSER==='yes')Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_qualification_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_qualification_fixture',STRIPE_WEBHOOK_SECRET:'whsec_qualification_fixture'});
   app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
@@ -1432,8 +1433,32 @@ test('published chapter quiz: guarded idempotent start/resume, private grading, 
   status(await participant.get(`/enrollments/${access}/exams/${copy.id}/attempts/current`),404);
 });
 
+// Exercise the real application path from a guest payment to the specific grant that earns the PDF.
+// Publication of the synthetic qualification course is a fixture; production publication is not changed.
+async function buyQualification(course){
+  await require('../../apps/api/dist/cli/commerce').seedCommerce(db);
+  const state=(await admin.get('/admin/provider-profile')).body;
+  const profile=await admin.change('patch','/admin/provider-profile',{revision:state.revision,details:{legal_provider_name:'Abnahme-Testanbieter',responsible_name:'Test Redaktion',street:'Testweg 1',postal_code:'12345',city:'Teststadt',country:'DE',contact_email:'test@example.invalid'}});status(profile,200);
+  const versions={};for(const kind of ['terms','withdrawal','privacy','imprint']){
+    const draft=await admin.change('post','/admin/commerce/legal',{kind,wording:`Synthetischer Testtext: ${kind}`,...(kind==='imprint'?{provider_revision:profile.body.revision}:{})});status(draft,201);
+    status(await admin.change('post','/admin/commerce/legal/'+draft.body.id+'/activate',{}),200);if(kind!=='imprint')versions[kind]=draft.body.id;
+  }
+  const {id,updated_at,updated_by,currency,...fields}=await db.commerceSettings.findUniqueOrThrow({where:{id:1}});
+  status(await admin.change('post','/admin/commerce/settings',{...fields,sales_enabled:true}),200);
+  const product=await admin.change('post','/admin/products',{sku:'ABNAHME-84',type:'single',title:'Prüflauf',description:'Nur für synthetische Tests.',courses:[{course_id:course.id,access_days_override:30}]});status(product,201);
+  const base='/admin/products/'+product.body.id,price=await admin.change('post',base+'/prices',{currency:'EUR',gross_cents:'24900',tax_category:'standard',valid_from:new Date(Date.now()-60000).toISOString().slice(0,16)+'Z'});status(price,201);
+  const p=await db.product.findUniqueOrThrow({where:{id:product.body.id}});status(await admin.change('post',base+'/activate',{revision:p.revision}),200);
+  const rate=await db.price.findUniqueOrThrow({where:{id:price.body.id}});status(await admin.change('post','/admin/prices/'+rate.id+'/activate',{revision:rate.revision}),200);
+  const email='qualifikation@example.invalid',body={idempotency_key:`guest-${uuidv7()}`,participant_first_name:'Test',participant_last_name:'Person',payment_method:'stripe',
+    legal_versions:versions,terms_accepted:true,withdrawal_notice_seen:true,privacy_notice_seen:true,billing_address:{first_name:'Test',last_name:'Person',street:'Testweg 1',postal_code:'12345',city:'Teststadt',country:'DE'}};
+  const orderId=await require('../helpers/guest-card-purchase.cjs').exerciseGuestCard({app,db,server,Browser,product:product.body,body,email});
+  const user=await db.user.findUniqueOrThrow({where:{email_canonical:email}});assert.equal(user.status,'pending_activation');
+  await activate(user);participant=new Browser();status(await login(participant,email),200);
+  return (await db.courseAccess.findFirstOrThrow({where:{order_id:orderId,user_id:user.id,course_version_id:course.version_id,source:'order'}})).id;
+}
+
 test('qualification completion requires 84 different passes on this access, not 84 attempts or self-confirmed chapters', async () => {
-  const slug = 'abschluss-fixture', course = await createCourse(slug, { expected_module_count: 14, expected_chapter_count: 42,
+  const slug = 'abschluss-fixture', course = await createCourse(slug, {visibility:'public', expected_module_count: 14, expected_chapter_count: 42,
     expected_exams_per_chapter: 2, chapter_completion_mode: 'self_or_all_chapter_exams' });
   const version = course.version_id, profile = 'qualification_84_v1';
   status(await admin.change('patch', `/admin/course-versions/${version}`, { revision: 1, completion_profile: profile, expected_module_count: 1 }), 422);
@@ -1469,7 +1494,8 @@ test('qualification completion requires 84 different passes on this access, not 
   await db.course.update({ where:{id:course.id}, data:{status:'published'} });
   await db.coursePublication.create({ data:{ id:uuidv7(), course_id:course.id, course_version_id:version, version:1, action:'published', actor_user_id:adminUser.id } });
   const grant = user_id => db.courseAccess.create({data:{id:uuidv7(), course_id:course.id, course_version_id:version, user_id, source:'manual', granted_by:adminUser.id}});
-  const access = (await grant((await contextFor(participant)).user.id)).id, other = (await grant(adminUser.id)).id;
+  const access = full ? await buyQualification(course) : (await grant((await contextFor(participant)).user.id)).id;
+  const other = (await grant(adminUser.id)).id;
   if (!full) {
     await db.chapterProgress.createMany({data:chapters.map(c => ({id:uuidv7(), access_id:access, course_version_id:version, chapter_id:c.id}))});
     const stub = (access_id, exam_id, attempt_no, passed) => ({ id:uuidv7(), access_id, exam_id, attempt_no, passed });
