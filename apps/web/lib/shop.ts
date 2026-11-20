@@ -1,5 +1,6 @@
+import type { ProviderDetails } from '@trainerb/contracts';
 export type ShopConfig = { sales_enabled: boolean; payment_term_days: number | null; stripe_enabled: boolean;
-  legal: Record<string, { id: string; version: number; wording: string }> };
+  legal: Record<string, { id: string; version: number; wording: string; provider_snapshot?:ProviderDetails }> };
 export type ShopProduct = { id: string; sku: string; type: 'single' | 'bundle'; title: string; variant_name: string | null;
   course_count: number; gross_cents: string; currency: string };
 export type ShopProductDetail = { id: string; sku: string; type: 'single' | 'bundle'; title: string; variant_name: string | null;

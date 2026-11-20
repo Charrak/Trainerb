@@ -3,6 +3,9 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
 import { Notice } from './site';
+import type { ProviderDetails } from '@trainerb/contracts';
+import type { ProfileData } from './provider-editor';
+import { ProviderFacts } from './provider-details';
 import { Reauth } from './reauth';
 const names = {
   terms: 'AGB',
@@ -19,7 +22,14 @@ const paths: Record<Kind, string> = {
   imprint: '/impressum',
   payment_info: '/zahlungsinformationen',
 };
-type V = { id: string; version: number; status: string; wording: string };
+type V = {
+  id: string;
+  version: number;
+  status: string;
+  wording: string;
+  provider_revision: number | null;
+  provider_snapshot: ProviderDetails | null;
+};
 type Data = { versions: V[]; active_version: number | null };
 export function LegalEditor() {
   const [kind, setKind] = useState<Kind>('terms');
@@ -31,6 +41,7 @@ export function LegalEditor() {
           <h1>Rechtstexte</h1>
           <p>Nur geprüfte Fassungen aktivieren. Die technische Freigabe ersetzt keine rechtliche Prüfung.</p>
         </div>
+        <Link href="/admin/anbieter">Anbieterprofil bearbeiten</Link>
         <Link href="/konto">Zum Konto</Link>
       </header>
       <section className="dashboard-card">
@@ -50,6 +61,7 @@ export function LegalEditor() {
   );
 }
 function DocumentEditor({ kind }: { kind: Kind }) {
+  const [profile, setProfile] = useState<ProfileData | null>(null);
   const [data, setData] = useState<Data>(),
     [wording, setWording] = useState(''),
     [checked, check] = useState(false),
@@ -62,9 +74,13 @@ function DocumentEditor({ kind }: { kind: Kind }) {
     setData(undefined);
     check(false);
     setError('');
-    api<Data>('/admin/legal-documents/' + kind)
-      .then((r) => {
+    Promise.all([
+      api<Data>('/admin/legal-documents/' + kind),
+      kind === 'imprint' ? api<ProfileData>('/admin/provider-profile') : Promise.resolve(null),
+    ])
+      .then(([r, p]) => {
         if (active) {
+          setProfile(p);
           setData(r);
           setWording(r.versions[0]?.wording ?? '');
         }
@@ -77,14 +93,21 @@ function DocumentEditor({ kind }: { kind: Kind }) {
     };
   }, [kind, revision]);
   const latest = data?.versions[0],
-    changed = wording !== (latest?.wording ?? '');
+    changed =
+      wording !== (latest?.wording ?? '') || (kind === 'imprint' && profile?.revision !== latest?.provider_revision);
   async function write(activate: boolean) {
     setBusy(true);
     setError('');
     setNotice('');
     try {
       if (activate) await api(`/admin/commerce/legal/${latest!.id}/activate`, 'POST', {});
-      else await api('/admin/commerce/legal', 'POST', { kind, wording, base_id: latest?.id ?? null });
+      else
+        await api('/admin/commerce/legal', 'POST', {
+          kind,
+          wording,
+          base_id: latest?.id ?? null,
+          ...(profile ? { provider_revision: profile.revision } : {}),
+        });
       setNotice(activate ? 'Gespeicherte Fassung aktiviert.' : 'Neue Fassung als Entwurf gespeichert.');
       reload((n) => n + 1);
     } catch (e) {
@@ -130,13 +153,25 @@ function DocumentEditor({ kind }: { kind: Kind }) {
                   }}
                 />
               </label>
-              <button disabled={busy || !wording.trim() || !changed} onClick={() => write(false)}>
+              <button
+                disabled={busy || (kind === 'imprint' && !profile?.details) || !wording.trim() || !changed}
+                onClick={() => write(false)}
+              >
                 Neue Fassung als Entwurf speichern
               </button>
             </div>
           </section>
           <section className="dashboard-card">
             <h2>Vorschau</h2>
+            {kind === 'imprint' &&
+              (profile?.details ? (
+                <>
+                  <p>Anbieterprofil · Stand {profile.revision}</p>
+                  <ProviderFacts details={profile.details} />
+                </>
+              ) : (
+                <p>Vor dem Speichern ein vollständiges Anbieterprofil anlegen.</p>
+              ))}
             <p style={{ whiteSpace: 'pre-wrap' }}>{wording}</p>
             <label>
               <input
@@ -160,6 +195,7 @@ function DocumentEditor({ kind }: { kind: Kind }) {
                   Fassung {v.version} ·{' '}
                   {v.status === 'active' ? 'aktiv' : v.status === 'draft' ? 'Entwurf' : 'abgelöst'}
                 </summary>
+                {v.provider_snapshot && <ProviderFacts details={v.provider_snapshot} />}
                 <p style={{ whiteSpace: 'pre-wrap' }}>{v.wording}</p>
               </details>
             ))}

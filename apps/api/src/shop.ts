@@ -248,6 +248,8 @@ export class Shop {
         { user_id: ctx.user.id, checkout_idempotency_key: key } }, select: { id: true } });
       if (previous) return this.orderView(tx, ctx, previous.id);
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${ctx.user.id}::uuid FOR UPDATE`;
+      // Serialize new orders with withdrawal of the sales approval. Prior orders remain payable.
+      await tx.$queryRaw`SELECT id FROM commerce_settings WHERE id=1 FOR SHARE`;
       const settings = await this.settings(tx);
       if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const now = new Date();

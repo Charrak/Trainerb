@@ -605,6 +605,8 @@ model LegalDocument {
 }
 
 model LegalDocumentVersion {
+  provider_revision Int?
+  provider_snapshot Json?
   id           String   @id @db.Uuid
   document_id  String   @db.Uuid
   version      Int
@@ -1327,4 +1329,11 @@ model PageVersion {
   publisher    User? @relation("PagePublisher", fields:[published_by], references:[id], onDelete:Restrict)
   @@unique([page_id,version])
   @@map("page_versions")
+}
+
+model ProviderProfile {
+  id       Int @id @db.SmallInt
+  revision Int
+  details  Json?
+  @@map("provider_profile")
 }
