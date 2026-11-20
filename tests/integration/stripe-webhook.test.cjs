@@ -265,3 +265,16 @@ test('concurrent checkout starts reuse a durable attempt and identical provider 
   assert.equal(keys.size, 1);
   assert.equal(await db.paymentAttempt.count({ where: { order_id: order.id } }), 1);
 });
+
+
+test('signed events from a different or unspecified mode never reach payment or dispute processing',async()=>{
+  const order=await makeOrder();
+  for(const type of ['checkout.session.completed','charge.dispute.created']){
+    for(const livemode of [true,undefined]){
+      const event={...paidEvent(order),type,livemode};const r=await deliver(event);
+      assert.equal(r.status,400);assert.equal(r.body.code,'WRONG_PAYMENT_ENVIRONMENT');
+      assert.equal(await db.paymentEvent.count({where:{provider_event_id:event.id}}),0);
+    }
+  }
+  assert.equal((await db.order.findUniqueOrThrow({where:{id:order.id}})).payment_state,'awaiting');
+});

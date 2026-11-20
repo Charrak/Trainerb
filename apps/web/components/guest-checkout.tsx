@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, errorMessage } from '../lib/api';
+import { api, errorMessage } from '../lib/api';
 import { checkoutKey, dateOnly, euro, type Cart, type GuestOrder, type ProofStatus, type ShopConfig } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 import { InvoiceDownload } from './invoices';
@@ -286,12 +286,9 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
   async function payWithCard() {
     setBusy(true); setError('');
     try {
-      const session = await api<{ url: string }>(`/orders/${encodeURIComponent(orderId)}/pay`, 'POST', {});
+      const session = await api<{ url: string }>(`/guest/orders/${encodeURIComponent(orderId)}/pay`, 'POST', {});
       window.location.assign(session.url);
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        setError('Bitte melde dich an, um mit Karte zu bezahlen.'); setBusy(false); return;
-      }
       setError(errorMessage(e)); setBusy(false);
     }
   }
@@ -327,11 +324,11 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
         <h2>Rechnung</h2></div></div>
         {order.invoice ? <>
           <p><strong>{order.invoice.invoice_number}</strong> · {dateOnly(order.invoice.issued_at)}</p>
-          <p className="muted small-print">Die Rechnung wird an {order.buyer_email} gesendet.</p>
+          <p className="muted small-print">Rechnungsadresse für diese Bestellung: {order.buyer_email}.</p>
           {order.invoice.pdf_href && <InvoiceDownload href={order.invoice.pdf_href}
             label="Rechnung als PDF herunterladen"/>}
           {!order.invoice.pdf_href && <p className="muted small-print">Der Download steht bereit, sobald die Zahlung bestätigt ist.</p>}
-        </> : <p className="muted">Für Kartenzahlungen wird die Rechnung nach bestätigter Zahlung erstellt.</p>}
+        </> : <p className="muted">Für diese Bestellung liegt hier noch kein Rechnungsdokument vor.</p>}
         <div className="legal-block"><span className="section-kicker">BESTÄTIGT</span>
           <ul className="plain-list">{order.acceptances.map(acceptance => <li key={acceptance.kind}>
             {acceptance.kind === 'terms_accepted' ? 'AGB' : acceptance.kind === 'withdrawal_notice_seen'

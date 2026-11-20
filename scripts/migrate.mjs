@@ -7,6 +7,9 @@ import 'dotenv/config';
 
 // Versioned SQL is applied under a PostgreSQL advisory lock, with a checksum
 // and one transaction per migration. No destructive reset is performed.
+if (process.env.APP_ENV === 'production' && !process.env.DATABASE_MIGRATION_URL) {
+  throw new Error('Production migrations require a separate DATABASE_MIGRATION_URL.');
+}
 const url = process.env.DATABASE_MIGRATION_URL || process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_MIGRATION_URL or DATABASE_URL is required.');
 const migrationsDir = resolve(fileURLToPath(new URL('../packages/database/prisma/migrations/', import.meta.url)));

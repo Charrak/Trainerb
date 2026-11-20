@@ -17,6 +17,7 @@ const templates: Record<string,{subject:string;text:string}> = {
   email_change: { subject:'Neue E-Mail-Adresse bestätigen', text:'Hallo {{first_name}},\n\nbitte bestätige deine neue E-Mail-Adresse über diesen Link:\n{{email_change_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden.' },
   certificate_ready: { subject:'Deine Urkunde steht bereit', text:'Hallo {{first_name}},\n\ndeine Urkunde steht in deinem Konto unter „Meine Urkunden“ zum Download bereit.' },
   password_changed: { subject:'Dein Passwort wurde geändert', text:'Hallo {{first_name}},\n\ndas Passwort für dein Konto wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
+  card_order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\ndeine Bestellung {{order_number}} über {{total}} EUR wurde angelegt. Du hast Kartenzahlung gewählt. Bitte nutze dafür die Zahlungsseite deiner Bestellung. Eine zusätzliche Überweisung ist nicht erforderlich.' },
   order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\nvielen Dank für deine Bestellung {{order_number}} über {{total}} EUR.\n\nBitte überweise den Betrag unter Angabe der Referenz {{payment_reference}} auf das im Konto genannte Konto. Sobald der Zahlungseingang gebucht ist, steht dir der Inhalt in deinem Konto zur Verfügung.' },
   order_paid: { subject:'Zahlungseingang zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben deine Zahlung zur Bestellung {{order_number}} verbucht. Dein Zugang ist jetzt in deinem Konto freigeschaltet.' },
   refund_confirmed: { subject:'Erstattung zu {{order_number}}', text:'Hallo {{first_name}},\n\nwir haben dir {{total}} EUR zur Bestellung {{order_number}} zurückerstattet. Die Gutschrift {{credit_note_number}} findest du in deinem Konto.\n\nOb ein bereits freigeschalteter Kurszugang bestehen bleibt, entscheidet unser Team und meldet sich bei Bedarf. Andere Kurse sind davon nicht betroffen.' },
@@ -71,6 +72,7 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
               { name:'amount', type:'text', secrecy:'public' },
               { name:'reason', type:'text', secrecy:'public' },
               { name:'status', type:'text', secrecy:'public' }] : []),
+            ...(key === 'card_order_placed' ? [{name:'order_number',type:'text',secrecy:'public'},{name:'total',type:'text',secrecy:'public'}] : []),
             ...(key === 'order_placed' || key === 'order_paid' || key === 'refund_confirmed' ? [
               { name:'order_number', type:'text', secrecy:'public' },
               { name:'total', type:'text', secrecy:'public' },

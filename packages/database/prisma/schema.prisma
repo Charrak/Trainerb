@@ -348,6 +348,7 @@ model CourseMediaUpload {
 }
 
 model MediaAsset {
+  page_versions PageVersion[]
   source_upload CourseMediaUpload?
   id                String    @id @db.Uuid
   source            String    @db.Text
@@ -1314,6 +1315,13 @@ model Page {
 }
 
 model PageVersion {
+  banner String? @db.Text
+  button_label String? @db.Text
+  button_path String? @db.Text
+  image_id String? @db.Uuid
+  image_alt String? @db.Text
+  image MediaAsset? @relation(fields:[image_id],references:[id],onDelete:Restrict)
+  @@index([image_id])
   id           String @id @db.Uuid
   page_id      String @db.Uuid
   version      Int

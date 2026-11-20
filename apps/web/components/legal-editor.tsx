@@ -140,19 +140,18 @@ function DocumentEditor({ kind }: { kind: Kind }) {
               )}
             </p>
             <div className="stack-form">
-              <label>
-                Wortlaut
-                <textarea
-                  disabled={busy}
-                  value={wording}
-                  maxLength={20000}
-                  rows={12}
-                  onChange={(e) => {
-                    setWording(e.target.value);
-                    check(false);
-                  }}
-                />
-              </label>
+              <label htmlFor="legal-wording">Wortlaut</label>
+              <textarea
+                id="legal-wording"
+                disabled={busy}
+                value={wording}
+                maxLength={20000}
+                rows={12}
+                onChange={(e) => {
+                  setWording(e.target.value);
+                  check(false);
+                }}
+              />
               <button
                 disabled={busy || (kind === 'imprint' && !profile?.details) || !wording.trim() || !changed}
                 onClick={() => write(false)}

@@ -45,7 +45,7 @@ export class StripePayments {
       if (!order) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
       if (order.payment_method !== 'stripe') throw apiError(409, 'WRONG_PAYMENT_METHOD', 'Falsche Zahlungsart.');
       if (order.payment_state !== 'awaiting') throw apiError(409, 'ORDER_NOT_PAYABLE', 'Diese Bestellung kann nicht mehr bezahlt werden.');
-      const open = await tx.paymentAttempt.findFirst({ where: { order_id: orderId, provider: 'stripe', status: { in: ['created','pending'] } } });
+      const open = await tx.paymentAttempt.findFirst({ where: { order_id: orderId, provider: 'stripe', environment:getConfig().paymentEnvironment,status: { in: ['created','pending'] } } });
       if (open && (!expired || open.id !== expired)) return { order, attempt: open };
       if (open) await tx.paymentAttempt.update({ where: { id: open.id }, data: { status: 'cancelled', failure_code: 'superseded' } });
       const id = uuidv7();
@@ -61,6 +61,7 @@ export class StripePayments {
       reservation = await reserve(reservation.attempt.id);
     }
     const { order, attempt } = reservation, attemptId = attempt.id;
+    const returnPath = `${getConfig().publicBaseUrl}/bestellung/${orderId}?${order.identity_kind === 'guest' ? 'gast=1&' : ''}`;
     const session = await this.client.checkout.sessions.create({
       mode: 'payment',
       customer_email: order.buyer_email_original ?? userEmail,
@@ -72,8 +73,8 @@ export class StripePayments {
         product_data: { name: item.title_snapshot } } })),
       metadata: { order_id: orderId, order_number: order.order_number, attempt_id: attemptId },
       payment_intent_data: { metadata: { order_id: orderId, attempt_id: attemptId } },
-      success_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=pruefung`,
-      cancel_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=abgebrochen`,
+      success_url: `${returnPath}status=pruefung`,
+      cancel_url: `${returnPath}status=abgebrochen`,
     }, { idempotencyKey: attempt.provider_idempotency_key });
     const saved = await this.db.paymentAttempt.updateMany({ where: { id: attemptId, status: { in: ['created','pending'] }, order: { payment_state: 'awaiting' } },
       data: { status: 'pending', provider_session_id: session.id } });
@@ -91,6 +92,8 @@ export class StripePayments {
     try {
       event = this.client.webhooks.constructEvent(rawBody, signature, webhookSecret);
     } catch { throw apiError(400, 'INVALID_SIGNATURE', 'Ungültige Signatur.'); }
+    if (event.livemode !== (getConfig().paymentEnvironment === 'live'))
+      throw apiError(400, 'WRONG_PAYMENT_ENVIRONMENT', 'Das Ereignis gehört nicht zu dieser Zahlungsumgebung.');
     // Chargebacks arrive as their own family of events and never carry a
     // checkout session; they are routed before the payment branch.
     if (event.type.startsWith('charge.dispute.')) {
@@ -132,7 +135,7 @@ export class StripePayments {
     // The order is found through the payment we booked, not through metadata a
     // provider may not send on this event type.
     const attempt = await this.db.paymentAttempt.findFirst({ where: { provider: 'stripe',
-      provider_payment_id: intentId, status: 'succeeded' }, select: { order_id: true } });
+      provider_payment_id: intentId, environment:getConfig().paymentEnvironment,status: 'succeeded' }, select: { order_id: true } });
     if (!attempt) {
       // A chargeback about a payment we never booked is not silently attached to
       // an arbitrary order; the delivery is acknowledged so Stripe stops retrying.
@@ -226,7 +229,7 @@ export class StripePayments {
           || order.payment_state === 'review') {
         // Was this payment already booked for this order? Then the delivery is a
         // late duplicate and there is nothing to do.
-        const booked = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',
+        const booked = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',environment:getConfig().paymentEnvironment,
           status: 'succeeded', OR: [{ provider_payment_id: facts.paymentIntentId ?? '__none__' },
             { provider_session_id: facts.id }] }, select: { id: true } });
         if (booked) return;
@@ -235,14 +238,14 @@ export class StripePayments {
         return;
       }
       const now = new Date();
-      const attempt = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',
+      const attempt = await tx.paymentAttempt.findFirst({ where: { order_id: order.id, provider: 'stripe',environment:getConfig().paymentEnvironment,
         OR: [{ provider_session_id: facts.id }, { provider_payment_id: facts.paymentIntentId ?? '__none__' },
           ...(facts.reservedId ? [{ id: facts.reservedId, provider_session_id: null, status: 'created' }] : [])] },
         orderBy: { created_at: 'desc' } });
       if (!attempt) { await this.reportSurplus(tx, order, facts, eventId, eventType, 'payment_not_tracked'); return; }
       await tx.paymentAttempt.update({ where: { id: attempt.id }, data: { status: 'succeeded', confirmed_at: now,
         provider_session_id: facts.id, provider_payment_id: facts.paymentIntentId } });
-      await tx.paymentAttempt.updateMany({ where: { order_id: order.id, provider: 'stripe', id: { not: attempt.id },
+      await tx.paymentAttempt.updateMany({ where: { order_id: order.id, provider: 'stripe', environment:getConfig().paymentEnvironment,id: { not: attempt.id },
         status: { in: ['created', 'pending'] } }, data: { status: 'cancelled', failure_code: 'superseded' } });
       // A provider callback is a payment confirmation without a human actor;
       // `paid_via` records that instead of a person.

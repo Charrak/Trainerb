@@ -101,6 +101,8 @@ async function proofFromOutbox() {
 before(async () => {
   assert.equal(process.env.TRAINERB_DESTRUCTIVE_TEST_DATABASE, 'confirmed');
   assert.match(new URL(process.env.DATABASE_URL).pathname, /_test$/);
+  // The card acceptance case uses the real signature verifier, an in-process session provider and no network.
+  Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_guest_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_guest_fixture',STRIPE_WEBHOOK_SECRET:'whsec_guest_fixture'});
   app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db); await seedCommerce(db);
@@ -594,4 +596,10 @@ test('the identity guard refuses contradictions the API would never produce', as
     buyer_email_canonical: 'x@example.invalid', currency: 'EUR', payment_method: 'invoice',
     payment_state: 'awaiting', fulfillment_state: 'waiting', subtotal_gross_cents: 100n, discount_cents: 0n,
     total_gross_cents: 100n, billing_snapshot: {}, due_at: new Date(), created_by: null } }));
+});
+
+
+test('verified guest card order: cookie-bound session, payment replay, invoice PDF and read-only provider reconciliation',async()=>{
+  for(const kind of ['guest-proof-ip','guest-checkout-ip']) {const keys=await redis.keys(`trainerb:rl:${kind}:*`);if(keys.length)await redis.del(...keys);}
+  await require('../helpers/guest-card-purchase.cjs').exerciseGuestCard({app,db,server,Browser,product,body:await guestBody({payment_method:'stripe'}),email:'karte@example.invalid'});
 });

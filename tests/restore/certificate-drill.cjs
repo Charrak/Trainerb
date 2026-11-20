@@ -2,7 +2,7 @@
 // Never restore on top of an existing database. No application or workers run on the copy.
 const assert = require('node:assert/strict');
 const { randomUUID, randomBytes, createHash } = require('node:crypto');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -25,7 +25,7 @@ function pgCommand(program, args, url) {
 async function fingerprint(url) {
   const { unseal } = require('../../apps/api/dist/security');
   const { getConfig } = require('../../apps/api/dist/config');
-  const config = getConfig(); // Invalid unrelated configuration must not pass the wrong-key control.
+  getConfig(); // Invalid unrelated configuration must not pass the wrong-key control.
   const db = new Client({ connectionString: url.href });
   await db.connect();
   try {
@@ -43,7 +43,6 @@ async function fingerprint(url) {
     assert.equal(current.evidence_snapshot.exams.length, 84);
     const records = [];
     for (const { document_ciphertext, verification_hash, ...record } of rows) {
-      assert.equal(record.key_id, config.encryptionKeyId);
       let doc;
       try { doc = unseal(document_ciphertext, `certificate:${record.id}`, record.key_id); }
       catch { throw new Error('DOCUMENT_UNSEAL_FAILED'); }
@@ -58,10 +57,10 @@ async function fingerprint(url) {
   } finally { await db.end(); }
 }
 
-function inspect(url, key = process.env.DATA_ENCRYPTION_KEY) {
+function inspect(url, key = process.env.DATA_ENCRYPTION_KEY, rotated = {}) {
   // Fresh configuration in each verifier process. No SMTP, HTTP or Redis calls.
   return spawnSync(process.execPath, [__filename, '--inspect'], {
-    env: { ...process.env, DATABASE_URL: url.href, DATA_ENCRYPTION_KEY: key }, encoding: 'utf8', timeout: 30000,
+    env: { ...process.env, DATABASE_URL: url.href, DATA_ENCRYPTION_KEY: key, ...rotated }, encoding: 'utf8', timeout: 30000,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
 }
@@ -92,6 +91,13 @@ async function drill(source) {
     phase = 'comparing restored certificates';
     const restored = inspect(target);
     assert.ok(restored.status === 0 && restored.stdout === baseline.stdout, 'Restored certificates differ from the source.');
+    phase = 'checking rotated writer and historical read key';
+    const history = join(dir, 'read-keys.json');
+    writeFileSync(history, JSON.stringify([{id:process.env.DATA_ENCRYPTION_KEY_ID,key:process.env.DATA_ENCRYPTION_KEY}]),{mode:0o600});
+    const nextKey = randomBytes(32).toString('base64'), nextId = 'restore-rotated';
+    const rotated = inspect(target, nextKey, {DATA_ENCRYPTION_KEY_ID:nextId, DATA_DECRYPTION_KEYS_FILE:history});
+    assert.ok(rotated.status===0 && rotated.stdout===baseline.stdout, 'Rotated verifier must read both original PDFs.');
+    assert.equal(inspect(target,nextKey,{DATA_ENCRYPTION_KEY_ID:nextId,DATA_DECRYPTION_KEYS_FILE:''}).status,decryptFailure);
     phase = 'checking wrong key';
     const wrong = inspect(target, randomBytes(32).toString('base64'));
     assert.ok(wrong.status === decryptFailure && !wrong.stdout, 'Wrong document key must fail authentication, not just the DB connection.');

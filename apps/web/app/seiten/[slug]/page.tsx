@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import { Shell } from '../../../components/site';
-import { EditorialText } from '../../../components/editorial-text';
+import { EditorialText, type Presentation } from '../../../components/editorial-text';
 export const dynamic = 'force-dynamic';
 const read = cache(async (slug: string) => {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) notFound();
@@ -11,7 +11,7 @@ const read = cache(async (slug: string) => {
   });
   if (res.status === 404) notFound();
   if (!res.ok) throw new Error('Seite nicht verfügbar.');
-  return (await res.json()) as { title: string; description: string; body: string };
+  return (await res.json()) as { title: string; description: string; body: string } & Presentation;
 });
 type Props = { params: Promise<{ slug: string }> };
 export async function generateMetadata({ params }: Props) {

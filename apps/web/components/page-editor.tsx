@@ -7,14 +7,45 @@ import { Reauth } from './reauth';
 import { EditorialText } from './editorial-text';
 
 type Row = { id: string; slug: string };
-type Fields = { title: string; description: string; body: string };
+type Fields = {
+  title: string;
+  description: string;
+  body: string;
+  banner: string | null;
+  button_path: string | null;
+  button_label: string | null;
+  image_id: string | null;
+  image_alt: string | null;
+};
 type Detail = Row & {
   revision: number;
   latest: Fields & { id: string; version: number; state: string };
   published: null | { id: string; version: number };
 };
-const blank: Fields = { title: '', description: '', body: '' };
+const blank: Fields = {
+  title: '',
+  description: '',
+  body: '',
+  banner: null,
+  button_label: null,
+  button_path: null,
+  image_id: null,
+  image_alt: null,
+};
 export function PageEditor() {
+  type Images = { data: { id: string; original_name: string }[]; next_cursor: string | null };
+  const [images, setImages] = useState<Images>({ data: [], next_cursor: null });
+  async function loadImages(after?: string) {
+    setBusy(true);
+    try {
+      const r = await api<Images>('/admin/page-images' + (after ? '?after=' + encodeURIComponent(after) : ''));
+      setImages((prev) => ({ data: after ? [...prev.data, ...r.data] : r.data, next_cursor: r.next_cursor }));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   const [rows, setRows] = useState<Row[]>([]),
     [cursor, setCursor] = useState<string | null>(null),
     [ready, setReady] = useState(false);
@@ -81,7 +112,16 @@ export function PageEditor() {
     setError('');
     setNotice('');
     setBusy(true);
-    const content = { title: fields.title, body: fields.body, description: fields.description };
+    const content = {
+      banner: fields.banner,
+      button_label: fields.button_label,
+      button_path: fields.button_path,
+      image_id: fields.image_id,
+      image_alt: fields.image_alt,
+      title: fields.title,
+      body: fields.body,
+      description: fields.description,
+    };
     try {
       if (!selected) {
         const r = await api<Row>('/admin/pages', 'POST', { slug, ...content });
@@ -219,8 +259,84 @@ export function PageEditor() {
                     Absätze mit Leerzeilen trennen. Für eine Zwischenüberschrift den Absatz mit „## “ beginnen. HTML
                     wird nicht ausgeführt.
                   </small>
+                  <label>
+                    Bannertext (optional)
+                    <textarea
+                      maxLength={240}
+                      rows={2}
+                      value={fields.banner ?? ''}
+                      onChange={(e) => setFields({ ...fields, banner: e.target.value || null })}
+                    />
+                  </label>
+                  <label>
+                    Buttonziel{' '}
+                    <select
+                      value={fields.button_path ?? ''}
+                      onChange={(e) =>
+                        setFields({
+                          ...fields,
+                          button_path: e.target.value || null,
+                          button_label: e.target.value ? fields.button_label : null,
+                        })
+                      }
+                    >
+                      <option value="">Kein Button</option>
+                      <option value="/kurse">Kurskatalog</option>
+                      <option value="/buchen">Buchung</option>
+                      <option value="/seiten">Website-Seiten</option>
+                      <option value="/registrieren">Registrierung</option>
+                    </select>
+                  </label>
+                  {fields.button_path && (
+                    <label>
+                      Buttontext
+                      <input
+                        value={fields.button_label ?? ''}
+                        maxLength={80}
+                        onChange={(e) => setFields({ ...fields, button_label: e.target.value || null })}
+                      />
+                    </label>
+                  )}
+                  <button type="button" onClick={() => loadImages(images.next_cursor ?? undefined)}>
+                    {images.next_cursor ? 'Weitere Bilder laden' : 'Öffentlich freigegebene Bilder laden'}
+                  </button>
+                  <label>
+                    Seitenbild{' '}
+                    <select
+                      value={fields.image_id ?? ''}
+                      onChange={(e) =>
+                        setFields({
+                          ...fields,
+                          image_id: e.target.value || null,
+                          image_alt: e.target.value ? fields.image_alt : null,
+                        })
+                      }
+                    >
+                      <option value="">Kein Bild</option>
+                      {fields.image_id && !images.data.some((a) => a.id === fields.image_id) && (
+                        <option value={fields.image_id}>Gespeichertes Bild</option>
+                      )}
+                      {images.data.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.original_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {fields.image_id && (
+                    <label>
+                      Alternativtext
+                      <input
+                        value={fields.image_alt ?? ''}
+                        maxLength={180}
+                        onChange={(e) => setFields({ ...fields, image_alt: e.target.value || null })}
+                      />
+                    </label>
+                  )}
                   <button
                     disabled={
+                      (!!fields.button_path && !fields.button_label?.trim()) ||
+                      (!!fields.image_id && !fields.image_alt?.trim()) ||
                       !slug ||
                       !fields.title.trim() ||
                       !fields.body.trim() ||
@@ -234,7 +350,11 @@ export function PageEditor() {
               </section>
               <section className="dashboard-card">
                 <h2>Vorschau (nicht öffentlich)</h2>
-                <EditorialText title={fields.title} body={fields.body} />
+                <EditorialText
+                  {...fields}
+                  preview
+                  image_url={fields.image_id ? `/api/v1/admin/page-images/${fields.image_id}` : null}
+                />
               </section>
               {detail && (
                 <section className="dashboard-card">

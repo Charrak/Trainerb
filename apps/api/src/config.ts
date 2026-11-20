@@ -1,3 +1,4 @@
+import { previousKeys } from './keyring';
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -17,6 +18,7 @@ export type Config = {
   tokenKey: Buffer;
   encryptionKey: Buffer;
   encryptionKeyId: string;
+  decryptionKeys: ReadonlyMap<string, Buffer>;
   auditKey: Buffer;
   mailFrom: string;
   smtpHost?: string;
@@ -66,6 +68,7 @@ export function getConfig(): Config {
   if (embeddedPreviewCookies && (appEnv !== 'development' || publicUrl.protocol !== 'https:')) {
     throw new Error('Embedded preview cookies are permitted only for HTTPS development.');
   }
+  if (appEnv === 'production' && process.env.DATABASE_MIGRATION_URL) throw new Error('Do not expose migration credentials to the runtime.');
   const databaseUrl = required('DATABASE_URL');
   const redisUrl = required('REDIS_URL');
   if (!['postgresql:', 'postgres:'].includes(new URL(databaseUrl).protocol)) throw new Error('Invalid DATABASE_URL.');
@@ -96,8 +99,9 @@ export function getConfig(): Config {
       !(stripeSecretKey && stripeWebhookSecret && stripePublishableKey)) {
     throw new Error('Stripe needs STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PUBLISHABLE_KEY together.');
   }
-  if (appEnv === 'production' && stripeSecretKey && !stripeSecretKey.startsWith('sk_live_')) {
-    throw new Error('Production requires live Stripe credentials (sk_live_…).');
+  const stripeMode = appEnv === 'production' ? 'live' : 'test';
+  if (stripeSecretKey && (!stripeSecretKey.startsWith(`sk_${stripeMode}_`) || !stripePublishableKey?.startsWith(`pk_${stripeMode}_`))) {
+    throw new Error('Stripe credentials do not match the payment environment.');
   }
   let mediaStore: Config['mediaStore'];
   if (['ENDPOINT', 'BUCKET', 'REGION', 'ACCESS_KEY_ID', 'SECRET_ACCESS_KEY'].some(k => process.env[`MEDIA_S3_${k}`])) {
@@ -120,10 +124,12 @@ export function getConfig(): Config {
     quarantineStore = { ...mediaStore, bucket, accessKeyId, secretAccessKey: required('MEDIA_QUARANTINE_SECRET_ACCESS_KEY') };
   }
   const paymentEnvironment: 'test' | 'live' = appEnv === 'production' ? 'live' : 'test';
+  const encryptionKeyId = required('DATA_ENCRYPTION_KEY_ID');
+  const decryptionKeys = previousKeys(process.env.DATA_DECRYPTION_KEYS_FILE, encryptionKeyId, keyValues);
   cached = {
     appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
     sessionKey: keyValues[0], csrfKey: keyValues[1], tokenKey: keyValues[2],
-    encryptionKey: keyValues[3], encryptionKeyId: required('DATA_ENCRYPTION_KEY_ID'), auditKey: keyValues[4],
+    encryptionKey: keyValues[3], encryptionKeyId, decryptionKeys, auditKey: keyValues[4],
     mailFrom: required('MAIL_FROM'), smtpHost, smtpPort, smtpSecure,
     smtpUser: process.env.SMTP_USER || undefined, smtpPassword: process.env.SMTP_PASSWORD || undefined,
     commonPasswords, trustProxy: process.env.TRUST_PROXY_CIDRS || false,

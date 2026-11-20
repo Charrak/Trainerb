@@ -195,3 +195,5 @@ button, input, select, textarea { font: inherit; }
 .editorial-links-header {max-width:1320px; margin:auto; padding:0 1.25rem .65rem;}
 .editorial-links-footer {margin-top:.65rem; justify-content:flex-end;}
 @media(max-width:700px){.editorial-links-footer {justify-content:flex-start;}}
+.page-banner {padding:1.2rem 1.5rem;border-inline-start:4px solid var(--ink);background:#edf3e9;overflow-wrap:anywhere;}
+.page-image {display:block;max-width:100%;height:auto;margin-block:1.5rem;}

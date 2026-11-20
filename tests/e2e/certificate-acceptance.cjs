@@ -150,6 +150,11 @@ async function exercise({ admin, participant, ownerEmail }) {
       staff = await pageFor(admin),
       visitor = await pageFor();
     await until(() => notices === 1, 'Initial certificate mail not received via SMTP');
+    await owner.setViewportSize({width:390,height:844});
+    await owner.goto(`${origin}/lernen/abschluss-fixture`);
+    await owner.getByText(/Alle 84 Prüfungen bestanden/).waitFor();
+    await owner.getByRole('button',{name:/K1/}).first().click();
+    await owner.getByText('Synthetischer Lerninhalt.',{exact:true}).waitFor();
     async function download() {
       await owner.goto(`${origin}/konto/urkunden`);
       const link = owner.getByRole('link', { name: 'Urkunde als PDF herunterladen' });
@@ -215,6 +220,9 @@ async function exercise({ admin, participant, ownerEmail }) {
     await staff.getByLabel('Seitenpfad unter /seiten/').fill('browser-fassung');
     await staff.getByLabel('Seitentitel', {exact:true}).fill('Testseite Redaktion');
     await staff.getByLabel('Seiteninhalt', {exact:true}).fill('## Zwischenüberschrift\n\nAbsatz im Browsertest.');
+    await staff.getByLabel('Bannertext (optional)').fill('Synthetischer Hinweis');
+    await staff.getByLabel('Buttonziel').selectOption('/kurse');
+    await staff.getByLabel('Buttontext').fill('Zum Kursangebot');
     await staff.getByRole('button',{name:'Entwurf speichern',exact:true}).click();
     await staff.getByRole('button',{name:'Gespeicherten Entwurf veröffentlichen'}).click();
     await staff.getByRole('status').filter({hasText:'Gespeicherte Fassung veröffentlicht'}).waitFor();
@@ -229,6 +237,8 @@ async function exercise({ admin, participant, ownerEmail }) {
     await visitor.goto(`${origin}/seiten`);
     await visitor.getByRole('navigation',{name:'Weitere Website-Seiten'}).getByRole('link',{name:'Informationen zur Testseite'}).click();
     await visitor.getByRole('heading',{name:'Zwischenüberschrift'}).waitFor();
+    await visitor.getByText('Synthetischer Hinweis',{exact:true}).waitFor();
+    assert.equal(await visitor.getByRole('link',{name:'Zum Kursangebot'}).getAttribute('href'),'/kurse');
     await staff.getByRole('button',{name:'Veröffentlichte Seite zurücknehmen'}).click();
     await staff.getByRole('status').filter({hasText:'Seite zurückgenommen'}).waitFor();
     await staff.goto(`${origin}/admin/rechtstexte`);
