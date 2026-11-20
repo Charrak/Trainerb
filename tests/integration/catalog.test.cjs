@@ -166,6 +166,21 @@ test('drafts remain private; public routes and backoffice require correct permis
   status(await new Browser().get('/cart'), 401);
 });
 
+test('privacy intake is neutral, separates verification from fulfilment and erases case contact at closure',async()=>{
+ const anon=new Browser(),root='/admin/data-requests',email='privacy-contact@example.invalid',payload={type:'deletion',email};
+ status(await anon.change('post','/privacy/requests',payload,{noCsrf:true}),403);
+ const response=await anon.change('post','/privacy/requests',payload);status(response,202);assert.deepEqual(response.body,{received:true});
+ for(const caller of [support,manager,participant])status(await caller.get(root),403);
+ const queue=await admin.get(root);status(queue,200);const row=queue.body.data.find(r=>r.type==='deletion');assert.ok(row);assert.ok(!JSON.stringify(queue.body).includes(email));
+ const base=root+'/'+row.id, step=a=>admin.change('post',base+'/advance',{action:a});
+ status(await support.change('post',base+'/contact',{}),403);status(await admin.change('post',base+'/contact',{},{noCsrf:true}),403);
+ assert.equal((await admin.change('post',base+'/contact',{})).body.email,email);status(await step('fulfilled'),409);
+ status(await step('begin_identification'),200);status(await step('fulfilled'),409);status(await step('identity_verified'),200);status(await step('fulfilled'),200);
+ status(await step('fulfilled'),409);status(await admin.change('post',base+'/contact',{}),404);
+ const closed=await db.dataRequest.findUniqueOrThrow({where:{id:row.id}});assert.equal(closed.contact_cipher,null);assert.equal(closed.contact_key_id,null);assert.ok(closed.identity_verified_at);assert.equal(closed.processed_by,adminUser.id);
+ const audit=await db.auditEvent.findMany({where:{target_type:'data_request',target_ref:row.id}});assert.equal(audit.length,4);assert.ok(!JSON.stringify(audit).includes(email));
+});
+
 test('newsletter consent, audience freeze, unsubscribe, cancellation and complaint suppression are independent of purchases',async()=>{
   const {dispatchNewsletter}=require('../../apps/api/dist/newsletter'),outbox=app.get(require('../../apps/api/dist/outbox').Outbox);
   const {MailWorker}=require('../../apps/api/dist/mail-worker');const messages=[];

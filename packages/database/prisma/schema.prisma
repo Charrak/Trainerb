@@ -1434,3 +1434,17 @@ model AccessExpiryNotice {
   @@unique([user_id,course_id,ends_at,window_days])
   @@map("access_expiry_notices")
 }
+model DataRequest {
+  id String @id @db.Uuid
+  type String @db.Text
+  contact_cipher Bytes?
+  contact_key_id String? @db.Text
+  status String @default("open") @db.Text
+  requested_at DateTime @default(now()) @db.Timestamptz(6)
+  identity_verified_at DateTime? @db.Timestamptz(6)
+  processed_at DateTime? @db.Timestamptz(6)
+  processed_by String? @db.Uuid
+  decision String? @db.Text
+  @@index([status,id])
+  @@map("data_requests")
+}

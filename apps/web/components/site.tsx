@@ -22,7 +22,7 @@ export function Header() {
 }
 export function Footer() {
   return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note">{!liveSite && <><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb.</span></>}
-      <nav aria-label="Rechtliche Informationen"><Link href="/newsletter">Newsletter</Link> · <Link href="/seiten">Website-Seiten</Link> · <Link href="/zahlungsinformationen">Zahlungsinformationen</Link> · <Link href="/widerrufsbelehrung">Widerrufsbelehrung</Link> · <Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav><EditorialNavigation location="footer"/></div></footer>;
+      <nav aria-label="Rechtliche Informationen"><Link href="/datenrechte">Meine Datenrechte</Link> · <Link href="/newsletter">Newsletter</Link> · <Link href="/seiten">Website-Seiten</Link> · <Link href="/zahlungsinformationen">Zahlungsinformationen</Link> · <Link href="/widerrufsbelehrung">Widerrufsbelehrung</Link> · <Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav><EditorialNavigation location="footer"/></div></footer>;
 }
 export function Shell({ children }: { children: ReactNode }) {
   return <NavigationProvider><Header/><main id="inhalt">{children}</main><Footer/></NavigationProvider>;
