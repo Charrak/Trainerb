@@ -322,8 +322,10 @@ model AutomationJobAttempt {
 // Source-specific and publication constraints are enforced in SQL.
 model CourseMediaUpload {
   id            String   @id @db.Uuid
-  course_id     String   @db.Uuid
+  course_id     String?  @db.Uuid
   uploaded_by   String   @db.Uuid
+  intended_use String @default("course") @db.Text
+  rights_ref String? @db.Text
   object_key    String   @unique @db.Uuid
   original_name String   @db.Text
   mime_detected String   @db.Text
@@ -335,7 +337,7 @@ model CourseMediaUpload {
   approved_by   String?   @db.Uuid
   approved_at   DateTime? @db.Timestamptz(6)
   created_at    DateTime @default(now()) @db.Timestamptz(6)
-  course        Course   @relation(fields: [course_id], references: [id], onDelete: Restrict)
+  course        Course?  @relation(fields: [course_id], references: [id], onDelete: Restrict)
   promoted_asset_id String? @unique @db.Uuid
   promoted_asset MediaAsset? @relation(fields: [promoted_asset_id], references: [id], onDelete: Restrict)
   promotion_error String? @db.Text
@@ -1449,4 +1451,26 @@ model DataRequest {
   decision String? @db.Text
   @@index([status,id])
   @@map("data_requests")
+}
+model NewsletterFeedback {
+  server_id String @db.Text
+  event_id String @db.Text
+  kind String @db.Text
+  send_outbox_id String @db.Uuid
+  received_at DateTime @default(now()) @db.Timestamptz(6)
+  @@id([server_id,event_id,kind])
+  @@map("newsletter_feedback")
+}
+model StripeFeeEvidence {
+  balance_id String @db.Text
+  environment String @db.Text
+  payment_id String? @unique @db.Uuid
+  refund_id String? @unique @db.Uuid
+  currency String @db.Char(3)
+  amount_cents BigInt
+  fee_cents BigInt
+  net_cents BigInt
+  captured_at DateTime @default(now()) @db.Timestamptz(6)
+  @@id([environment,balance_id])
+  @@map("stripe_fee_evidence")
 }

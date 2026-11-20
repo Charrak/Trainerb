@@ -1,3 +1,4 @@
+import {postmarkSettings} from './postmark-feedback';
 import {expiryMessage} from './expiry-notices';
 import {campaignMessage,policy,tokenHash} from './newsletter';
 import type { Prisma } from '@prisma/client';
@@ -113,6 +114,7 @@ export class MailWorker {
       const c=await campaignMessage(this.db,item.id,item.to_email);if(!c)return null;
       variables.subject=c.subject;variables.body=c.body;variables.leave_url=`${getConfig().publicBaseUrl}/newsletter/abmelden#token=${c.leave_token}`;
       headers={'List-Unsubscribe':`<${getConfig().publicBaseUrl}/api/v1/newsletter/one-click/${c.leave_token}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'};
+      const postmark=postmarkSettings();if(postmark){headers['X-PM-Message-Stream']=postmark.stream;headers['X-PM-Metadata-trainerb_outbox']=item.id;}
     } else if(key==='newsletter_confirm'){
       if(!item.variables_secret_ciphertext||!item.secret_key_id||!item.secret_delete_after||item.secret_delete_after<=new Date())return null;
       const p=unseal<{token:string;purpose:string}>(item.variables_secret_ciphertext,`outbox:${item.id}`,item.secret_key_id);

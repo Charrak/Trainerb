@@ -13,6 +13,7 @@
     "@trainerb/contracts": "0.1.0",
     "aws4fetch": "1.0.20",
     "dejavu-fonts-ttf": "2.37.3",
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "1.17.1",
+    "sharp": "0.35.5"
   }
 }

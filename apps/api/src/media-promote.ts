@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import {publicImage} from './public-image';
+import { createHash, randomUUID } from 'node:crypto';
 import { AwsClient } from 'aws4fetch';
 import { Prisma, type PrismaClient, type CourseMediaUpload } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -6,18 +7,19 @@ import { readVerified } from './quarantine-read';
 import type { promotionConfig } from './media-scan-config';
 
 type JobStores = Pick<ReturnType<typeof promotionConfig>, 'source' | 'destination'>;
-type Receipt = Pick<CourseMediaUpload, 'id' | 'original_name' | 'object_key' | 'sha256' | 'size_bytes' | 'mime_detected' | 'uploaded_by'>;
+type Receipt = Pick<CourseMediaUpload, 'id' | 'original_name' | 'object_key' | 'sha256' | 'size_bytes' | 'mime_detected' | 'uploaded_by' | 'intended_use'>;
 
 /** Lock one eligible receipt. A fresh key per PUT makes even an ambiguous network/DB
  * failure safe for existing assets. A private orphan may need offline cleanup. */
 export async function promoteNext(db: PrismaClient, stores: JobStores, retryId?: string) {
   return db.$transaction(async tx => {
-    const [row] = await tx.$queryRaw<Receipt[]>`SELECT id, original_name, object_key, sha256, size_bytes, mime_detected, uploaded_by
+    const [row] = await tx.$queryRaw<Receipt[]>`SELECT id, intended_use, original_name, object_key, sha256, size_bytes, mime_detected, uploaded_by
       FROM course_media_uploads WHERE status = 'clean' AND approved_at IS NOT NULL AND promoted_asset_id IS NULL
       AND ${retryId ? Prisma.sql`promotion_error IS NOT NULL AND id = ${retryId}::uuid` : Prisma.sql`promotion_error IS NULL`}
       ORDER BY approved_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
     if (!row) return null;
-    const bytes = await readVerified(row, stores.source);
+    let bytes = await readVerified(row, stores.source);
+    if(Buffer.isBuffer(bytes)&&row.intended_use==='website'){try{bytes=await publicImage(bytes,row.mime_detected);}catch{bytes='integrity';}}
     const key = randomUUID();
     let error: 'storage' | 'integrity' | 'destination' | null = null;
     if (!Buffer.isBuffer(bytes)) error = bytes;
@@ -32,10 +34,10 @@ export async function promoteNext(db: PrismaClient, stores: JobStores, retryId?:
       } catch { error = 'destination'; }
     }
     let assetId: string | null = null;
-    if (!error) {
+    if (!error && Buffer.isBuffer(bytes)) {
       const asset = await tx.mediaAsset.create({ select: { id: true }, data: { id: uuidv7(), source: 's3', storage_key: key,
-        original_name: row.original_name, mime_detected: row.mime_detected, size_bytes: row.size_bytes, sha256: row.sha256,
-        uploaded_by: row.uploaded_by, status: 'ready', visibility: 'private' } });
+        original_name: row.original_name, mime_detected: row.mime_detected, size_bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest(),
+        uploaded_by: row.uploaded_by, status: 'ready', visibility: row.intended_use==='website'?'public':'private' } });
       assetId = asset.id;
     }
     await tx.courseMediaUpload.update({ where: { id: row.id }, select: { id: true }, data: { promoted_asset_id: assetId, promotion_error: error } });
