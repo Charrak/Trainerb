@@ -1,3 +1,4 @@
+import {approvedForNewSales} from './release-approval';
 import { unexpiredGrant } from './access-period';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -102,7 +103,7 @@ export class Shop {
       // Serialize cart mutations per account so the single-open-cart rule holds.
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${ctx.user.id}::uuid FOR UPDATE`;
       const settings = await this.settings(tx);
-      if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
+      if (!settings?.sales_enabled || !await approvedForNewSales()) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const now = new Date();
       const product = await tx.product.findUnique({ where: { id: productId },
         include: { prices: { where: activeWindow(now), orderBy: { valid_from: 'desc' }, take: 1 } } });
@@ -147,7 +148,7 @@ export class Shop {
     const productId = requireUuid(productIdInput);
     const now = new Date();
     const settings = await this.settings();
-    if (!settings?.sales_enabled) throw missing();
+    if (!settings?.sales_enabled || !await approvedForNewSales()) throw missing();
     const product = await this.db.product.findUnique({ where: { id: productId },
       include: { prices: { where: activeWindow(now), orderBy: { valid_from: 'desc' }, take: 1 },
         courses: { orderBy: { position: 'asc' }, include: { course: { select: { slug: true, status: true,
@@ -168,7 +169,7 @@ export class Shop {
   async publicProducts() {
     const now = new Date();
     const settings = await this.settings();
-    if (!settings?.sales_enabled) return { data: [], sales_enabled: false };
+    if (!settings?.sales_enabled || !await approvedForNewSales()) return { data: [], sales_enabled: false };
     const products = await this.db.product.findMany({ where: { status: 'active',
       prices: { some: activeWindow(now) }, courses: { some: { course: { status: 'published' } } } },
       orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
@@ -252,7 +253,7 @@ export class Shop {
       // Serialize new orders with withdrawal of the sales approval. Prior orders remain payable.
       await tx.$queryRaw`SELECT id FROM commerce_settings WHERE id=1 FOR SHARE`;
       const settings = await this.settings(tx);
-      if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
+      if (!settings?.sales_enabled || !await approvedForNewSales()) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const now = new Date();
       const cart = await this.openCart(tx, ctx.user.id, false);
       if (!cart) throw apiError(409, 'CART_EMPTY', 'Der Warenkorb ist leer.');

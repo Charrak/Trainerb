@@ -1,3 +1,4 @@
+import {approvedForNewSales} from './release-approval';
 import { unexpiredGrant } from './access-period';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -140,7 +141,7 @@ export class GuestCheckout {
     if (!/^[0-9a-f-]{36}$/i.test(productId)) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Auswahl.');
     return this.db.$transaction(async tx => {
       const settings = await tx.commerceSettings.findUnique({ where: { id: 1 } });
-      if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
+      if (!settings?.sales_enabled || !await approvedForNewSales()) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const cart = await this.cartFor(req, res, true, tx);
       if (!cart) throw missing();
       await tx.$queryRaw`SELECT id FROM carts WHERE id = ${cart.id}::uuid FOR UPDATE`;
@@ -324,7 +325,7 @@ export class GuestCheckout {
       // Serialize new orders with withdrawal of the sales approval. Prior orders remain payable.
       await tx.$queryRaw`SELECT id FROM commerce_settings WHERE id=1 FOR SHARE`;
       const settings = await tx.commerceSettings.findUnique({ where: { id: 1 } });
-      if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
+      if (!settings?.sales_enabled || !await approvedForNewSales()) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const now = new Date();
       const items = await tx.cartItem.findMany({ where: { cart_id: cart.id }, include: { product: true, price: true },
         orderBy: { added_at: 'asc' } });

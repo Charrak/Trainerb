@@ -53,6 +53,7 @@ const key = (name: string): Buffer => {
 
 export function getConfig(): Config {
   if (cached) return cached;
+  if(process.env.NODE_ENV==='production'&&!process.env.APP_ENV)throw new Error('Set APP_ENV explicitly in a deployed process.');
   const appEnv = (process.env.APP_ENV || 'development') as AppEnv;
   if (!['development', 'test', 'production'].includes(appEnv)) throw new Error('Invalid APP_ENV.');
   const publicUrl = new URL(required('PUBLIC_BASE_URL'));
