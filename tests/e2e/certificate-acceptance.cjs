@@ -182,6 +182,15 @@ async function exercise({ admin, participant, ownerEmail }) {
     await owner.getByText(/Alle 84 Prüfungen bestanden/).waitFor();
     await owner.getByRole('button',{name:/K1/}).first().click();
     await owner.getByText('Synthetischer Lerninhalt.',{exact:true}).waitFor();
+    // Anzeigeprobe im mobilen Player; echte Sperrentscheidungen prüft der API-Integrationstest.
+    const resumePattern='**/exams/*/attempts/current';
+    const unlockAt=new Date(Date.now()+60000).toISOString();
+    await owner.route(resumePattern, route=>route.fulfill({json:{attempt:{status:'failed',id:'fixture'},cooldown:{retry_at:unlockAt,retry_after_ms:'60000'}}}));
+    await owner.getByText('Prüfung: P1',{exact:true}).first().click();
+    const wait=owner.getByRole('status').filter({hasText:'Nächster Versuch ab'});await wait.waitFor();
+    assert.equal(await wait.locator('time').getAttribute('datetime'),unlockAt);
+    assert.ok(await owner.getByRole('button',{name:'Erneut versuchen'}).isDisabled());
+    await owner.unroute(resumePattern);
     async function download() {
       await owner.goto(`${origin}/konto/urkunden`);
       const link = owner.getByRole('link', { name: 'Urkunde als PDF herunterladen' });
