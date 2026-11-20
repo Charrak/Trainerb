@@ -229,3 +229,5 @@ Die ältere Phasentabelle ist ein Zielplan. Folgende Nachweise haben bewusst unt
 Für den externen Teil der Phasen 3/4 gibt es eine [Anleitung mit lesendem Stripe-/Datenbankabgleich](09-staging-kaufabnahme.md). Ohne Staging und tatsächlich durchgeführten Testkauf entsteht kein Abnahmebeleg.
 
 **Fortschritt Phase 8 – Migration 029:** Der Newsletter-Kern hat eine eigene freiwillige Anmeldung mit Double-Opt-in, versioniertem Einwilligungsnachweis, Themenauswahl, terminierbaren Klartextkampagnen, Sperren, Abmeldung und unterdrücktem Versand nach Widerruf. Siehe [Bedienung und Grenzen](06-admin-handbuch.md#newsletter-einwilligung-themen-und-versand-migration-029). Noch offen sind u. a. automatische Anbietermeldungen, weitergehende Segmentregeln, Ablaufhinweise und externe Versandabnahme. Dies ist keine Freigabe für Werbung mit realen Adressen.
+
+**Migration 030:** Ablaufhinweise sind jetzt separat konfigurierbar und werden bei geändertem Zugang vor der Mailübergabe unterdrückt. Es werden keine Zahlungserinnerungen eingerichtet.

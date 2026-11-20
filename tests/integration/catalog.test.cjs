@@ -1709,3 +1709,23 @@ test('backoffice mail: version pinning, concurrent publishing, private monitorin
   assert.equal(await db.auditEvent.count({where:{target_ref:second.job.id,action:'automation_job.retry_requested'}}),1);
   status(await admin.get(jobs+'?status=anything'),422);status(await admin.get(jobs+'?payload=1'),400);
 });
+
+test('expiry reminders merge touching periods, ignore gaps and recheck grant changes before delivery',async()=>{
+  const {queueExpiryNotices}=require('../../apps/api/dist/expiry-notices'),{MailWorker}=require('../../apps/api/dist/mail-worker');
+  const outbox=app.get(require('../../apps/api/dist/outbox').Outbox),messages=[],worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to],messageId:m.messageId};}});
+  const person=await db.user.findUniqueOrThrow({where:{email_canonical:'catalog-participant@example.invalid'}}),cid=uuidv7(),vid=uuidv7();
+  await db.course.create({data:{id:cid,slug:'ablauffixture',status:'published',visibility:'private'}});
+  await db.courseVersion.create({data:{id:vid,course_id:cid,version:1,title:'Ablauftest',description:{schema_version:1,blocks:[]},state:'published',created_by:adminUser.id,published_by:adminUser.id,published_at:new Date()}});
+  const now=Date.now(),d=86400000,end=new Date(now+4*d),edge=new Date(now+d/2);
+  const grant=(a,b)=>db.courseAccess.create({data:{id:uuidv7(),course_id:cid,course_version_id:vid,user_id:person.id,source:'manual',granted_by:adminUser.id,starts_at:a,ends_at:b}});
+  await grant(new Date(now-d),edge);await grant(edge,end);await grant(new Date(now+10*d),null);
+  const own=()=>db.accessExpiryNotice.findMany({where:{course_id:cid}});
+  async function deliver(notice){const job=await db.automationJob.findFirstOrThrow({where:{ref_id:notice.outbox_id}});await worker.runOne(job.id);return (await db.emailOutbox.findUniqueOrThrow({where:{id:notice.outbox_id}})).status;}
+  process.env.ACCESS_EXPIRY_NOTICES_ENABLED='true';try{
+    await Promise.all([queueExpiryNotices(db,outbox),queueExpiryNotices(db,outbox)]);let notices=await own();assert.equal(notices.length,1);assert.equal(notices[0].ends_at.getTime(),end.getTime());assert.equal(notices[0].window_days,7);
+    const extension=await grant(end,new Date(now+8*d));assert.equal(await deliver(notices[0]),'suppressed');assert.equal(messages.length,0);
+    await db.courseAccess.update({where:{id:extension.id},data:{revoked_at:new Date(),revoke_reason:'test'}});
+    const adjacent=await db.courseAccess.findFirstOrThrow({where:{course_id:cid,starts_at:edge}});await db.courseAccess.update({where:{id:adjacent.id},data:{suspended_at:new Date(),suspend_reason:'review'}});
+    await queueExpiryNotices(db,outbox);notices=await own();assert.equal(notices.length,2);const soon=notices.find(n=>n.window_days===1);assert.equal(await deliver(soon),'accepted');assert.equal(messages.length,1);assert.match(messages[0].text,/Ablauftest/);
+  }finally{delete process.env.ACCESS_EXPIRY_NOTICES_ENABLED;}
+});

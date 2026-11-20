@@ -1424,3 +1424,13 @@ model NewsletterSend {
   @@id([campaign_id,subscriber_id])
   @@map("newsletter_sends")
 }
+model AccessExpiryNotice {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  course_id String @db.Uuid
+  ends_at DateTime @db.Timestamptz(6)
+  window_days Int
+  outbox_id String? @unique @db.Uuid
+  @@unique([user_id,course_id,ends_at,window_days])
+  @@map("access_expiry_notices")
+}

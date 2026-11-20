@@ -1,3 +1,4 @@
+import {expiryMessage} from './expiry-notices';
 import {campaignMessage,policy,tokenHash} from './newsletter';
 import type { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
@@ -107,7 +108,9 @@ export class MailWorker {
     const purposes = { activation: 'activation_url', password_reset: 'reset_url', email_change: 'email_change_url' } as const;
     let headers:Record<string,string>|undefined;
     if ((item.purpose==='newsletter') !== (key==='newsletter_campaign'))return null;
-    if(key==='newsletter_campaign'){
+    if(key==='course_expiry'){
+      const n=await expiryMessage(this.db,item.id,item.to_email);if(!n)return null;variables.course_title=n.title;variables.ends_at=n.ends_at;
+    } else if(key==='newsletter_campaign'){
       const c=await campaignMessage(this.db,item.id,item.to_email);if(!c)return null;
       variables.subject=c.subject;variables.body=c.body;variables.leave_url=`${getConfig().publicBaseUrl}/newsletter/abmelden#token=${c.leave_token}`;
       headers={'List-Unsubscribe':`<${getConfig().publicBaseUrl}/api/v1/newsletter/one-click/${c.leave_token}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'};
