@@ -1305,6 +1305,7 @@ model Certificate {
 }
 
 model Page {
+  navigation_items NavigationItem[]
   id       String @id @db.Uuid
   slug     String @unique @db.Text
   revision Int @default(1)
@@ -1336,4 +1337,24 @@ model ProviderProfile {
   revision Int
   details  Json?
   @@map("provider_profile")
+}
+
+model NavigationMenu {
+  location String @id @db.Text
+  revision Int @default(0)
+  items NavigationItem[]
+  @@map("navigation_menus")
+}
+
+model NavigationItem {
+  location String @db.Text
+  position Int
+  page_id String @db.Uuid
+  label String @db.Text
+  visible Boolean
+  menu NavigationMenu @relation(fields:[location], references:[location], onDelete:Restrict)
+  page Page @relation(fields:[page_id], references:[id], onDelete:Restrict)
+  @@id([location,position])
+  @@unique([location,page_id])
+  @@map("navigation_items")
 }

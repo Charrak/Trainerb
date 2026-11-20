@@ -218,7 +218,16 @@ async function exercise({ admin, participant, ownerEmail }) {
     await staff.getByRole('button',{name:'Entwurf speichern',exact:true}).click();
     await staff.getByRole('button',{name:'Gespeicherten Entwurf veröffentlichen'}).click();
     await staff.getByRole('status').filter({hasText:'Gespeicherte Fassung veröffentlicht'}).waitFor();
-    await visitor.goto(`${origin}/seiten/browser-fassung`);
+    const menu=await staff.context().newPage();
+    await menu.goto(`${origin}/admin/navigation`);
+    await menu.getByLabel('Website-Seite hinzufügen').selectOption({label:'browser-fassung'});
+    await menu.getByRole('button',{name:'Link hinzufügen'}).click();
+    await menu.getByLabel('Linktext').fill('Informationen zur Testseite');
+    await menu.getByRole('button',{name:'Menü speichern'}).click();
+    await menu.getByRole('status').filter({hasText:'Menü gespeichert'}).waitFor();
+    await menu.close();
+    await visitor.goto(`${origin}/seiten`);
+    await visitor.getByRole('navigation',{name:'Weitere Website-Seiten'}).getByRole('link',{name:'Informationen zur Testseite'}).click();
     await visitor.getByRole('heading',{name:'Zwischenüberschrift'}).waitFor();
     await staff.getByRole('button',{name:'Veröffentlichte Seite zurücknehmen'}).click();
     await staff.getByRole('status').filter({hasText:'Seite zurückgenommen'}).waitFor();
