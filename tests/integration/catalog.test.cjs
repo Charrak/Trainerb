@@ -193,6 +193,39 @@ test('editorial pages remain private until release; drafts, release and withdraw
   assert.equal(await db.auditEvent.count({where:{target_ref:id,action:'page.published'}}),2);
 });
 
+test('editorial menu is revisioned per area and projects only visible published targets in configured order',async()=>{
+  const visitor=new Browser(), root='/admin/navigation/',pub=async()=>(await visitor.get('/navigation')).body;
+  const read=async(area)=>(await admin.get(root+area)).body;
+  const write=(area,revision,items,who=admin,opts)=>who.change('put',root+area,{revision,items},opts);
+  status(await visitor.get(root+'header'),401);
+  for(const who of [participant,support,manager,instructor]) {status(await who.get(root+'header'),403);status(await write('header',0,[],who),403);}
+  status(await admin.get(root+'system'),404);
+  const {revision:h}=await read('header'),{revision:f}=await read('footer');
+  status(await write('header',h,[],admin,{noCsrf:true}),403);
+  const targets=[];
+  for(const slug of ['menutest-a','menutest-b']){
+    const created=await admin.change('post','/admin/pages',{slug,title:slug,body:'Testabsatz.'});status(created,201);
+    targets.push((await admin.get('/admin/pages/'+created.body.id)).body);
+  }
+  const [a,b]=targets;
+  const links=targets.map(t=>({page_id:t.id,label:'Link '+t.slug,visible:true}));
+  for(const bad of [[links[0],links[0]],[{...links[0],page_id:uuidv7()}],[{...links[0],visible:'yes'}],Array(13).fill(links[0])]) status(await write('header',h,bad),422);
+  status(await write('header',h,[{...links[0],href:'https://example.invalid'}]),400);
+  const saves=await Promise.all([write('header',h,links),write('header',h,links)]);assert.deepEqual(saves.map(r=>r.status).sort(),[200,409]);
+  status(await write('footer',f,[links[0]]),200);assert.deepEqual(await pub(),{header:[],footer:[]});
+  for(const t of targets)status(await admin.change('post',`/admin/pages/${t.id}/publish`,{revision:t.revision,version_id:t.latest.id}),200);
+  const visible=targets.map((t,i)=>({href:'/seiten/'+t.slug,label:links[i].label}));
+  assert.deepEqual(await pub(),{header:visible,footer:visible.slice(0,1)});
+  status(await write('header',h+1,[links[1],links[0]]),200);assert.deepEqual((await pub()).header,[visible[1],visible[0]]);
+  status(await write('header',h+2,[links[1],{...links[0],visible:false}]),200);
+  status(await admin.change('post',`/admin/pages/${b.id}/withdraw`,{revision:b.revision+1,version_id:b.latest.id}),200);
+  assert.deepEqual(await pub(),{header:[],footer:[visible[0]]});
+  assert.equal((await read('header')).items[0].published,false);
+  status(await write('footer',f+1,[]),200);assert.deepEqual((await pub()).footer,[]);
+  const audit=await db.auditEvent.findFirstOrThrow({where:{action:'navigation.updated',target_ref:'header'},orderBy:{id:'desc'}});
+  assert.deepEqual(audit.after_safe,{count:2,revision:h+3});
+});
+
 test('legal editor versions without exposing payment settings or creating checkout consents',async()=>{
   const path='/admin/commerce/legal', kind='payment_info', view='/admin/legal-documents/'+kind;
   const viewer=new Browser(), form={kind,base_id:null,wording:'Synthetische Zahlungsinformation'};

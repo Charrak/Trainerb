@@ -1,3 +1,4 @@
+import {NavigationProvider,EditorialNavigation} from './editorial-navigation';
 import Link from 'next/link';
 import { liveSite } from '../lib/site-stage';
 import type { ReactNode } from 'react';
@@ -17,14 +18,14 @@ export function Shield() {
 export function Header() {
   return <header className="site-header"><div className="header-inner"><Brand/><nav aria-label="Hauptnavigation" className="top-nav">
     <Link className="catalog-link" href="/kurse">Katalog</Link><Link className="catalog-link" href="/buchen">Buchen</Link><Link href="/anmelden">Anmelden</Link><Link className="nav-cta" href="/registrieren">Konto erstellen <Arrow diagonal/></Link>
-  </nav></div></header>;
+  </nav></div><EditorialNavigation location="header"/></header>;
 }
 export function Footer() {
   return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note">{!liveSite && <><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb.</span></>}
-      <nav aria-label="Rechtliche Informationen"><Link href="/seiten">Website-Seiten</Link> · <Link href="/zahlungsinformationen">Zahlungsinformationen</Link> · <Link href="/widerrufsbelehrung">Widerrufsbelehrung</Link> · <Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav></div></footer>;
+      <nav aria-label="Rechtliche Informationen"><Link href="/seiten">Website-Seiten</Link> · <Link href="/zahlungsinformationen">Zahlungsinformationen</Link> · <Link href="/widerrufsbelehrung">Widerrufsbelehrung</Link> · <Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav><EditorialNavigation location="footer"/></div></footer>;
 }
 export function Shell({ children }: { children: ReactNode }) {
-  return <><Header/><main id="inhalt">{children}</main><Footer/></>;
+  return <NavigationProvider><Header/><main id="inhalt">{children}</main><Footer/></NavigationProvider>;
 }
 export function AuthLayout({ children }: { children: ReactNode }) {
   return <Shell><section className="auth-layout content-width">
