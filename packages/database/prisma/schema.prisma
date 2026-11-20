@@ -1366,3 +1366,87 @@ model NavigationItem {
   @@unique([location,page_id])
   @@map("navigation_items")
 }
+
+model NewsletterSubscriber {
+  id String @id @db.Uuid
+  email String @unique @db.Text
+  status String @default("pending") @db.Text
+  epoch String? @db.Uuid
+  policy String? @db.Text
+  topic String? @db.Text
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@map("newsletter_subscribers")
+}
+model NewsletterProof {
+  subscriber_id String @id @db.Uuid
+  token_hash Bytes @unique
+  policy String @db.Text
+  wording String @db.Text
+  privacy_id String @db.Uuid
+  topic String @db.Text
+  expires_at DateTime @db.Timestamptz(6)
+  @@map("newsletter_proofs")
+}
+model NewsletterConsentEvent {
+  id String @id @db.Uuid
+  subscriber_id String @db.Uuid
+  action String @db.Text
+  epoch String @db.Uuid
+  policy String @db.Text
+  wording String @db.Text
+  privacy_id String @db.Uuid
+  topic String @db.Text
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([epoch,action])
+  @@map("newsletter_consent_events")
+}
+model NewsletterCampaign {
+  id String @id @db.Uuid
+  subject String @db.Text
+  body String @db.Text
+  audience String @db.Text
+  created_by String @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  status String @default("draft") @db.Text
+  scheduled_at DateTime? @db.Timestamptz(6)
+  approved_by String? @db.Uuid
+  policy String? @db.Text
+  frozen_at DateTime? @db.Timestamptz(6)
+  @@index([status,scheduled_at])
+  @@map("newsletter_campaigns")
+}
+model NewsletterSend {
+  campaign_id String @db.Uuid
+  subscriber_id String @db.Uuid
+  epoch String @db.Uuid
+  outbox_id String? @unique @db.Uuid
+  dispatched_at DateTime? @db.Timestamptz(6)
+  @@id([campaign_id,subscriber_id])
+  @@map("newsletter_sends")
+}
+model AccessExpiryNotice {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  course_id String @db.Uuid
+  ends_at DateTime @db.Timestamptz(6)
+  window_days Int
+  outbox_id String? @unique @db.Uuid
+  @@unique([user_id,course_id,ends_at,window_days])
+  @@map("access_expiry_notices")
+}
+model DataRequest {
+  erased_user_id String? @db.Uuid
+  profile_erased_at DateTime? @db.Timestamptz(6)
+  id String @id @db.Uuid
+  type String @db.Text
+  contact_cipher Bytes?
+  contact_key_id String? @db.Text
+  status String @default("open") @db.Text
+  requested_at DateTime @default(now()) @db.Timestamptz(6)
+  identity_verified_at DateTime? @db.Timestamptz(6)
+  processed_at DateTime? @db.Timestamptz(6)
+  processed_by String? @db.Uuid
+  decision String? @db.Text
+  @@index([status,id])
+  @@map("data_requests")
+}

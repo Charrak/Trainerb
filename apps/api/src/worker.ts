@@ -1,3 +1,5 @@
+import {queueExpiryNotices} from './expiry-notices';
+import {dispatchNewsletter} from './newsletter';
 import 'reflect-metadata';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
@@ -31,11 +33,13 @@ async function main() {
   process.on('SIGINT', () => { stopping = true; });
   process.on('SIGTERM', () => { stopping = true; });
   console.log('Mail-Worker gestartet; PostgreSQL-Aufträge werden über BullMQ abgearbeitet.');
-  let lastPurge = 0;
+  let lastPurge = 0,lastExpiry=0;
   try {
     while (!stopping) {
       try {
         if (Date.now() - lastPurge > 60_000) { await mailer.purgeExpiredSecrets(); lastPurge = Date.now(); }
+        if(Date.now()-lastExpiry>60000){lastExpiry=Date.now();try{await queueExpiryNotices(db,outbox);}catch{console.error(JSON.stringify({level:'error',event:'expiry_dispatch_failed'}));}}
+        try {await dispatchNewsletter(db,outbox);} catch {console.error(JSON.stringify({level:'error',event:'newsletter_dispatch_failed'}));}
         await dispatchDueMail(db, jobId => queue.add('email.send', { job_id: jobId }, {
           jobId, removeOnComplete: true, removeOnFail: true,
         }));

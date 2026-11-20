@@ -13,11 +13,11 @@ import { ApiRequest, SessionContext, Sessions } from './sessions';
 import { GuestCheckout } from './guest';
 
 const fail = () => apiError(401, 'MFA_FAILED', 'Der Bestätigungscode ist ungültig oder abgelaufen.');
-const recoveryHash = (code: string) => keyedHash(getConfig().tokenKey, 'mfa-recovery', code.replace(/-/g, '').toLowerCase());
+export const recoveryHash = (code: string) => keyedHash(getConfig().tokenKey, 'mfa-recovery', code.replace(/-/g, '').toLowerCase());
 function totp(secret: string, label: string): OTPAuth.TOTP {
   return new OTPAuth.TOTP({ issuer: 'Online-Akademie', label, algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(secret) });
 }
-function matchingStep(secret: string, label: string, code: string): bigint | null {
+export function matchingStep(secret: string, label: string, code: string): bigint | null {
   if (!/^\d{6}$/.test(code)) return null;
   const timestamp = Date.now();
   const delta = totp(secret, label).validate({ token: code, timestamp, window: 1 });

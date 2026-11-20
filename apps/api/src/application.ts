@@ -35,6 +35,7 @@ export async function createApplication(): Promise<INestApplication> {
     }
     next();
   });
+  app.use('/api/v1/newsletter/one-click',express.urlencoded({extended:false,limit:'1kb',parameterLimit:1}));
   app.use(express.json({ limit:'32kb', strict:true }));
   app.use(cookieParser());
   app.setGlobalPrefix('api/v1');

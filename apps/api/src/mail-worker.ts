@@ -1,3 +1,5 @@
+import {expiryMessage} from './expiry-notices';
+import {campaignMessage,policy,tokenHash} from './newsletter';
 import type { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
@@ -7,7 +9,7 @@ import { keyedHash, normalizeEmail, unseal } from './security';
 /** SMTP may accept a message before a process dies. A stable Message-ID helps
  * reconciliation, but SMTP itself does not guarantee exactly-once delivery. */
 export interface MailMessage {
-  from: string; to: string; subject: string; text: string; messageId: string;
+  from: string; to: string; subject: string; text: string; messageId: string; headers?: Record<string,string>;
 }
 export interface MailTransport {
   sendMail(message: MailMessage): Promise<{ accepted?: unknown[]; messageId?: string }>;
@@ -80,12 +82,11 @@ export class MailWorker {
   }
 
   private render(template: string, variables: Record<string, string>): string {
-    const result = template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_whole, key: string) => {
+    if (/[{}]/.test(template.replace(/\{\{\s*[a-z_]+\s*\}\}/g,''))) throw new Error('Invalid template.');
+    return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_whole, key: string) => {
       if (!Object.hasOwn(variables, key)) throw new Error('Unknown template variable.');
       return variables[key];
     });
-    if (result.includes('{{') || result.includes('}}')) throw new Error('Invalid template.');
-    return result;
   }
 
   private async message(outboxId: string): Promise<MailMessage | null> {
@@ -95,7 +96,7 @@ export class MailWorker {
     if (!item || item.status !== 'sending') return null;
     if (item.user && !['pending_activation', 'active'].includes(item.user.status)) return null;
     if (!item.user && item.template_version.template.key !== 'checkout_email_verify' &&
-        !['order_placed', 'card_order_placed', 'order_paid', 'refund_confirmed',
+        !['newsletter_confirm','newsletter_campaign','order_placed', 'card_order_placed', 'order_paid', 'refund_confirmed',
           'withdrawal_received', 'withdrawal_decided', 'withdrawal_verify'].includes(item.template_version.template.key)) return null;
     const publicVars = item.variables_public;
     if (!publicVars || typeof publicVars !== 'object' || Array.isArray(publicVars) || typeof publicVars.first_name !== 'string') {
@@ -104,7 +105,23 @@ export class MailWorker {
     const variables: Record<string, string> = { first_name: publicVars.first_name };
     const key = item.template_version.template.key;
     const purposes = { activation: 'activation_url', password_reset: 'reset_url', email_change: 'email_change_url' } as const;
-    if (key in purposes) {
+    let headers:Record<string,string>|undefined;
+    if ((item.purpose==='newsletter') !== (key==='newsletter_campaign'))return null;
+    if(key==='course_expiry'){
+      const n=await expiryMessage(this.db,item.id,item.to_email);if(!n)return null;variables.course_title=n.title;variables.ends_at=n.ends_at;
+    } else if(key==='newsletter_campaign'){
+      const c=await campaignMessage(this.db,item.id,item.to_email);if(!c)return null;
+      variables.subject=c.subject;variables.body=c.body;variables.leave_url=`${getConfig().publicBaseUrl}/newsletter/abmelden#token=${c.leave_token}`;
+      headers={'List-Unsubscribe':`<${getConfig().publicBaseUrl}/api/v1/newsletter/one-click/${c.leave_token}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'};
+    } else if(key==='newsletter_confirm'){
+      if(!item.variables_secret_ciphertext||!item.secret_key_id||!item.secret_delete_after||item.secret_delete_after<=new Date())return null;
+      const p=unseal<{token:string;purpose:string}>(item.variables_secret_ciphertext,`outbox:${item.id}`,item.secret_key_id);
+      if(p.purpose!=='newsletter_confirm')return null;
+      const proof=await this.db.newsletterProof.findUnique({where:{token_hash:tokenHash(p.token)}});
+      if(!proof||proof.expires_at<=new Date()||proof.policy!==(await policy(this.db))?.policy)return null;
+      if(!await this.db.newsletterSubscriber.count({where:{id:proof.subscriber_id,email:item.to_email,status:{notIn:['complained','bounced']}}}))return null;
+      variables.wording=proof.wording;variables.topic=proof.topic==='kurse'?'Kurse':'Akademie';variables.confirm_url=`${getConfig().publicBaseUrl}/newsletter/bestaetigen#token=${p.token}`;
+    } else if (key in purposes) {
       if (!item.user) return null;
       if (!item.variables_secret_ciphertext || !item.secret_key_id || !item.secret_delete_after || item.secret_delete_after <= new Date()) return null;
       const payload = unseal<{ token: string; purpose: string }>(item.variables_secret_ciphertext, `outbox:${item.id}`, item.secret_key_id);
@@ -138,13 +155,15 @@ export class MailWorker {
       const proof = await this.db.withdrawalVerification.findUnique({
         where: { token_hash: keyedHash(getConfig().tokenKey, 'withdrawal-verify', payload.token) } });
       if (!proof || proof.consumed_at || proof.verified_at || proof.expires_at <= new Date()) return null;
+      const reference=publicVars.request_reference;if(typeof reference!=='string'||!/^[0-9a-f]{8}$/.test(reference))throw new Error('Invalid withdrawal reference.');
+      variables.request_reference=reference;
       variables.verification_url = `${getConfig().publicBaseUrl}/widerruf/bestaetigen#token=${encodeURIComponent(payload.token)}`;
     } else if (key === 'withdrawal_received') {
       // The receipt is the proof of the deadline, so its timestamp is the one
       // stored at submission — not the time the mail happened to be sent.
       for (const name of ['received_date', 'received_time']) {
         const value = publicVars[name];
-        if (typeof value !== 'string' || !/^[0-9.:]{4,5}$/.test(value)) throw new Error('Invalid template variables.');
+        if (typeof value !== 'string' || !(name==='received_date'?/^\d{2}\.\d{2}\.\d{4}$/:/^\d{2}:\d{2}$/).test(value)) throw new Error('Invalid template variables.');
         variables[name] = value;
       }
     } else if (key === 'withdrawal_decided') {
@@ -179,7 +198,7 @@ export class MailWorker {
     }
     const subject = this.render(item.template_version.subject_template, variables);
     if (/[\r\n]/.test(subject)) throw new Error('Invalid subject.');
-    return { from: getConfig().mailFrom, to: item.to_email, subject,
+    return { headers, from: getConfig().mailFrom, to: item.to_email, subject,
       text: this.render(item.template_version.body_text_template, variables),
       messageId: `<trainerb-${item.id}@mail.invalid>` };
   }

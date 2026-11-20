@@ -111,7 +111,7 @@ before(async () => {
   }
   if(process.env.TRAINERB_CERTIFICATE_BROWSER==='yes')Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_qualification_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_qualification_fixture',STRIPE_WEBHOOK_SECRET:'whsec_qualification_fixture'});
   app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
-  await db.$executeRawUnsafe('TRUNCATE TABLE pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE TABLE newsletter_subscribers, pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
   redis = new Redis(process.env.REDIS_URL);
   const keys = await redis.keys('trainerb:rl:*'); if (keys.length) await redis.del(...keys);
@@ -164,6 +164,130 @@ test('drafts remain private; public routes and backoffice require correct permis
   assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
+});
+
+test('mail library pins versions, checks supported variables and keeps actionable secrets only in the body',async()=>{
+ const base='/admin/mail-templates',keys=await admin.get(base);status(keys,200);assert.ok(keys.body.keys.includes('activation'));status(await support.get(base),403);status(await admin.get(base+'/not_a_template'),404);
+ for(const k of keys.body.keys){const current=await admin.get(base+'/'+k);status(current,200);assert.ok(current.body.published.id);}
+ const path=base+'/activation',v=(await admin.get(path)).body.published,payload={base_id:v.id,subject:'Dein Konto bestätigen',text:v.body_text_template+'\nDanke.'};
+ for(const patch of [{subject:'{{activation_url}}'},{text:'Ohne Aktivierungslink.'},{text:'https://invalid.example/?q={{activation_url}}'},{text:'Weiter: X{{activation_url}}'},{text:'{{token}}\n{{activation_url}}'}])status(await admin.change('post',path+'/drafts',{...payload,...patch}),422);
+ status(await admin.change('post',path+'/drafts',payload,{noCsrf:true}),403);const draft=await admin.change('post',path+'/drafts',payload);status(draft,201);status(await admin.change('post',path+'/publish',{draft_id:draft.body.id}),200);
+ const queued=await db.emailOutbox.findFirstOrThrow({where:{template_version_id:v.id}});assert.equal(queued.template_version_id,v.id);
+ await assert.rejects(db.emailTemplateVersion.update({where:{id:v.id},data:{body_text_template:'Ersatz'}}),/MAIL_TEMPLATE_VERSION_IMMUTABLE/);
+});
+
+test('offline recovery binds the replacement device, invalidates sessions and codes, and cannot replay an old approval',async()=>{
+ const {replaceLostFactor}=require('../../apps/api/dist/offline-mfa');const fixture=await register('offline-recovery');await grant(fixture.user.id,['participant','support']);
+ const codes=await enroll(fixture.browser,fixture.email),id=fixture.user.id,old=await db.userMfaFactor.findFirstOrThrow({where:{user_id:id,status:'active'}}),secret=new OTPAuth.Secret({size:20});
+ const replace=code=>replaceLostFactor(db,id,old.id,'IR-2026-1234',secret.base32,code);
+ await assert.rejects(replace('bad'),/device proof/);status(await fixture.browser.get('/me'),200);
+ const totp=new OTPAuth.TOTP({algorithm:'SHA1',digits:6,period:30,secret});const recovery=await replace(totp.generate());assert.equal(recovery.length,10);status(await fixture.browser.get('/me'),401);await assert.rejects(replace(totp.generate()),/Factor changed/);
+ const browser=new Browser();status(await login(browser,fixture.email),202);status(await browser.change('post','/auth/mfa/challenge',{recovery_code:codes[0]}),401);status(await browser.change('post','/auth/mfa/challenge',{recovery_code:recovery[0]}),200);
+ assert.equal(await db.auditEvent.count({where:{action:'mfa.offline_replaced',target_ref:id}}),1);
+});
+
+test('account data copy requires fresh identity, ignores no extra identity selectors and returns only projected own records',async()=>{
+ const path='/me/export',fetch=(body,options)=>participant.change('post',path,body,options);
+ status(await fetch({section:'profile'}),403);status(await participant.change('post','/auth/reauth',{password}),204);
+ status(await fetch({section:'profile'},{noCsrf:true}),403);status(await fetch({section:'profile',user_id:adminUser.id}),400);status(await fetch({section:'__proto__'}),422);
+ const own=(await participant.get('/me')).body.id;
+ const bills=[own,adminUser.id].map((user_id,i)=>({id:uuidv7(),user_id,first_name:'Test',last_name:'Kopie',street:'Teststraße '+(i+1),postal_code:'10115',city:'Berlin',country:'DE'}));
+ await db.billingProfile.createMany({data:bills});try{
+ for(const section of ['profile','billing','orders','acceptances','invoices','credits','access','progress','exams','completions','certificates']){
+  const r=await fetch({section});status(r,200);if(section==='profile'){assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].email,'catalog-participant@example.invalid');assert.ok(!('password_hash' in r.body.data[0]));}else if(section==='billing'){assert.deepEqual(r.body.data.map(b=>b.id),[bills[0].id]);}else assert.deepEqual(r.body.data,[]);
+ }
+ }finally{await db.billingProfile.deleteMany({where:{id:{in:bills.map(b=>b.id)}}});}
+});
+
+test('privacy intake is neutral, separates verification from fulfilment and erases case contact at closure',async()=>{
+ const anon=new Browser(),root='/admin/data-requests',email='privacy-contact@example.invalid',payload={type:'deletion',email};
+ status(await anon.change('post','/privacy/requests',payload,{noCsrf:true}),403);
+ const response=await anon.change('post','/privacy/requests',payload);status(response,202);assert.deepEqual(response.body,{received:true});
+ for(const caller of [support,manager,participant])status(await caller.get(root),403);
+ const queue=await admin.get(root);status(queue,200);const row=queue.body.data.find(r=>r.type==='deletion');assert.ok(row);assert.ok(!JSON.stringify(queue.body).includes(email));
+ const base=root+'/'+row.id, step=a=>admin.change('post',base+'/advance',{action:a});
+ status(await support.change('post',base+'/contact',{}),403);status(await admin.change('post',base+'/contact',{},{noCsrf:true}),403);
+ assert.equal((await admin.change('post',base+'/contact',{})).body.email,email);status(await step('fulfilled'),409);
+ status(await step('begin_identification'),200);status(await step('fulfilled'),409);status(await step('identity_verified'),200);status(await step('fulfilled'),200);
+ status(await step('fulfilled'),409);status(await admin.change('post',base+'/contact',{}),404);
+ const closed=await db.dataRequest.findUniqueOrThrow({where:{id:row.id}});assert.equal(closed.contact_cipher,null);assert.equal(closed.contact_key_id,null);assert.ok(closed.identity_verified_at);assert.equal(closed.processed_by,adminUser.id);
+ const audit=await db.auditEvent.findMany({where:{target_type:'data_request',target_ref:row.id}});assert.equal(audit.length,4);assert.ok(!JSON.stringify(audit).includes(email));
+});
+
+test('newsletter consent, audience freeze, unsubscribe, cancellation and complaint suppression are independent of purchases',async()=>{
+  const {dispatchNewsletter}=require('../../apps/api/dist/newsletter'),outbox=app.get(require('../../apps/api/dist/outbox').Outbox);
+  const {MailWorker}=require('../../apps/api/dist/mail-worker');const messages=[];
+  const worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to],messageId:m.messageId};}});
+  const publicClient=new Browser(),root='/admin/newsletter/campaigns',signup='/newsletter/subscribe',verify='/newsletter/confirm';
+  const runMail=async id=>{const job=await db.automationJob.findFirstOrThrow({where:{ref_id:id,kind:'email.send'}});assert.equal(await worker.runOne(job.id),true);return (await db.emailOutbox.findUniqueOrThrow({where:{id}})).status;};
+  const draft={subject:'Neu in der Akademie',body:'Nur synthetische Daten.',audience:'kurse'};
+  for(const caller of [participant,manager,support]){status(await caller.get(root),403);status(await caller.change('post',root,draft),403);}
+  status(await publicClient.get(root),401);status(await admin.change('post',root,draft,{noCsrf:true}),403);
+  process.env.NEWSLETTER_CONSENT_WORDING='Synthetischer Einwilligungstext.';process.env.NEWSLETTER_DELIVERY_ENABLED='true';
+  try {
+    const doc=await admin.change('post','/admin/commerce/legal',{kind:'privacy',wording:'Datenschutz im Test.'});status(doc,201);
+    status(await admin.change('post',`/admin/commerce/legal/${doc.body.id}/activate`,{}),200);
+    const p=(await publicClient.get('/newsletter/policy')).body;
+    const form=(email,topic='kurse')=>({email,topic,policy:p.policy,accepted:true});
+    const code=async(email,topic='kurse')=>{
+      status(await publicClient.change('post',signup,form(email,topic)),202);
+      const mail=await db.emailOutbox.findFirstOrThrow({where:{to_email:email,template_version:{template:{key:'newsletter_confirm'}}},orderBy:{created_at:'desc'}});
+      assert.deepEqual(mail.variables_public,{first_name:''});assert.equal(await runMail(mail.id),'accepted');
+      return messages.at(-1).text.split('#token=')[1].split('\n')[0];
+    };
+    status(await publicClient.change('post',signup,{...form('a@example.invalid'),accepted:false}),422);
+    status(await publicClient.change('post',signup,{...form('a@example.invalid'),policy:'old'}),409);
+    const token=await code('eins@example.invalid');status(await publicClient.get(verify+'?token='+token),404);
+    const attempts=await Promise.all([1,2].map(()=>publicClient.change('post',verify,{token})));assert.deepEqual(attempts.map(r=>r.status).sort(),[200,410]);
+    const leave=attempts.find(r=>r.status===200).body.unsubscribe_token;
+    const token2=await code('zwei@example.invalid');status(await publicClient.change('post',verify,{token:token2}),200);
+    const token3=await code('drei@example.invalid','akademie');status(await publicClient.change('post',verify,{token:token3}),200);
+    const stale=await code('pending@example.invalid');
+    const pending=await db.newsletterSubscriber.findUniqueOrThrow({where:{email:'pending@example.invalid'}});
+    await db.newsletterProof.update({where:{subscriber_id:pending.id},data:{expires_at:new Date(Date.now()-1)}});
+    status(await publicClient.change('post',verify,{token:stale}),410);
+    const {runRetention}=require('../../apps/api/dist/retention');
+    for(const dryRun of [true,false]){const report=await db.$transaction(tx=>runRetention(tx,{dryRun}));assert.equal(report.newsletter_unconfirmed_deleted,1);assert.equal(await db.newsletterSubscriber.count({where:{id:pending.id}}),dryRun?1:0);}
+    await code('pending2@example.invalid');
+    const plan=async()=>{const c=await admin.change('post',root,draft);status(c,201);const path=`${root}/${c.body.id}/schedule`,time={scheduled_at:new Date().toISOString()};
+      status(await admin.change('post',path,time),200);status(await admin.change('post',path,time),409);await dispatchNewsletter(db,outbox);return c.body.id;};
+    const first=await plan();let sends=await db.newsletterSend.findMany({where:{campaign_id:first}});assert.equal(sends.length,2);
+    status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200);
+    const delivered=await Promise.all(sends.map(s=>runMail(s.outbox_id)));assert.deepEqual(delivered.sort(),['accepted','suppressed']);
+    const campaign=messages.find(m=>m.subject===draft.subject);assert.equal(campaign.to,'zwei@example.invalid');assert.ok(campaign.text.includes('/newsletter/abmelden#token='));
+    const link=new URL(campaign.headers['List-Unsubscribe'].slice(1,-1)).pathname;
+    status(await request(server).get(link),404);assert.equal((await db.newsletterSubscriber.findUnique({where:{email:'zwei@example.invalid'}})).status,'confirmed');
+    status(await request(server).post(link).type('form').send({'List-Unsubscribe':'One-Click'}),200);
+    status(await request(server).post(link).type('form').send({'List-Unsubscribe':'One-Click'}),200);
+    const next=await code('eins@example.invalid');status(await publicClient.change('post',verify,{token:next}),200);
+    status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200); // prior epoch cannot revoke new consent
+    const repeat=await plan();sends=await db.newsletterSend.findMany({where:{campaign_id:repeat}});assert.equal(sends.length,1);
+    status(await admin.change('post',root+'/'+repeat+'/cancel',{}),200);assert.equal(await runMail(sends[0].outbox_id),'suppressed');
+    const blocked=await plan();status(await admin.change('post','/admin/newsletter/suppress',{email:'eins@example.invalid',reason:'complained'}),200);
+    assert.equal(await runMail((await db.newsletterSend.findFirstOrThrow({where:{campaign_id:blocked}})).outbox_id),'suppressed');
+    const n=await db.newsletterProof.count();status(await publicClient.change('post',signup,form('eins@example.invalid')),202);assert.equal(await db.newsletterProof.count(),n);
+    const evidence=await db.newsletterConsentEvent.findFirstOrThrow({where:{action:'grant'}});assert.equal(evidence.privacy_id,doc.body.id);assert.equal(evidence.wording,p.wording);
+    await assert.rejects(db.newsletterConsentEvent.update({where:{id:evidence.id},data:{action:'withdraw'}}),/NEWSLETTER_EVIDENCE_IMMUTABLE/);
+    assert.equal((await admin.get(root)).body.data.find(c=>c.id===first).accepted,1);
+  }finally{delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
+});
+
+test('verified deletion erases only a matched participant profile, withdraws marketing and invalidates access atomically',async()=>{
+ const fixture=await register('erase-fixture');status(await login(fixture.browser,fixture.email),200);
+ const intake=await new Browser().change('post','/privacy/requests',{type:'deletion',email:fixture.email});status(intake,202);
+ const record=await db.dataRequest.findFirstOrThrow({where:{type:'deletion',status:'open'},orderBy:{id:'desc'}}),root='/admin/data-requests/'+record.id;
+ const perform=(user_id=fixture.user.id,reviewed=true)=>admin.change('post',root+'/erase-profile',{user_id,reviewed});
+ status(await perform(),409);status(await admin.change('post',root+'/advance',{action:'begin_identification'}),200);status(await perform(),409);
+ status(await admin.change('post',root+'/advance',{action:'identity_verified'}),200);status(await perform(managerUser.id),409);status(await perform(fixture.user.id,false),422);
+ const doc=await admin.change('post','/admin/commerce/legal',{kind:'privacy',wording:'Nur Fixture für Löschprüfung.'});status(doc,201);
+ const sid=uuidv7(),epoch=uuidv7();await db.newsletterSubscriber.create({data:{id:sid,email:fixture.email,status:'confirmed',epoch,topic:'kurse',policy:'test'}});
+ await db.newsletterConsentEvent.create({data:{id:uuidv7(),subscriber_id:sid,epoch,action:'grant',policy:'test',wording:'Test',topic:'kurse',privacy_id:doc.body.id}});
+ await db.billingProfile.create({data:{id:uuidv7(),user_id:fixture.user.id,first_name:'Test',last_name:'Kopie',street:'Teststraße',postal_code:'10115',city:'Berlin',country:'DE'}});
+ status(await perform(),200);status(await perform(),409);status(await fixture.browser.get('/me'),401);status(await login(new Browser(),fixture.email),401);
+ const user=await db.user.findUniqueOrThrow({where:{id:fixture.user.id}});assert.equal(user.status,'deleted');for(const field of ['first_name','last_name','password_hash','email_original','email_canonical'])assert.equal(user[field],null);
+ assert.equal(await db.billingProfile.count({where:{user_id:user.id}}),0);assert.equal(await db.newsletterConsentEvent.count({where:{epoch,action:'withdraw'}}),1);
+ const linked=await db.dataRequest.findUniqueOrThrow({where:{id:record.id}});assert.equal(linked.status,'in_progress');assert.equal(linked.erased_user_id,user.id);assert.ok(linked.profile_erased_at);
+ status(await admin.change('post',root+'/advance',{action:'not_applicable'}),409);status(await admin.change('post',root+'/advance',{action:'partially_retained'}),200);
 });
 
 test('editorial pages remain private until release; drafts, release and withdrawal use revisions',async()=>{
@@ -1656,4 +1780,25 @@ test('backoffice mail: version pinning, concurrent publishing, private monitorin
   status(await retry(third.job.id),409);assert.equal((await admin.get(jobs+'?status=failed')).body.data.find(j=>j.id===third.job.id).retry_candidate,false);
   assert.equal(await db.auditEvent.count({where:{target_ref:second.job.id,action:'automation_job.retry_requested'}}),1);
   status(await admin.get(jobs+'?status=anything'),422);status(await admin.get(jobs+'?payload=1'),400);
+});
+
+test('expiry reminders merge touching periods, ignore gaps and recheck grant changes before delivery',async()=>{
+  const {queueExpiryNotices}=require('../../apps/api/dist/expiry-notices'),{MailWorker}=require('../../apps/api/dist/mail-worker');
+  const outbox=app.get(require('../../apps/api/dist/outbox').Outbox),messages=[],worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to],messageId:m.messageId};}});
+  const person=await db.user.findUniqueOrThrow({where:{email_canonical:'catalog-participant@example.invalid'}}),cid=uuidv7(),vid=uuidv7();
+  await db.course.create({data:{id:cid,slug:'ablauffixture',status:'published',visibility:'private'}});
+  await db.courseVersion.create({data:{id:vid,course_id:cid,version:1,title:'Ablauftest',description:{schema_version:1,blocks:[]},state:'published',created_by:adminUser.id,published_by:adminUser.id,published_at:new Date()}});
+  await db.coursePublication.create({data:{id:uuidv7(),course_id:cid,course_version_id:vid,version:1,action:'published',actor_user_id:adminUser.id}});
+  const now=Date.now(),d=86400000,end=new Date(now+4*d),edge=new Date(now+d/2);
+  const grant=(a,b)=>db.courseAccess.create({data:{id:uuidv7(),course_id:cid,course_version_id:vid,user_id:person.id,source:'manual',granted_by:adminUser.id,starts_at:a,ends_at:b}});
+  await grant(new Date(now-d),edge);await grant(edge,end);await grant(new Date(now+10*d),null);
+  const own=()=>db.accessExpiryNotice.findMany({where:{course_id:cid}});
+  async function deliver(notice){const job=await db.automationJob.findFirstOrThrow({where:{ref_id:notice.outbox_id}});await worker.runOne(job.id);return (await db.emailOutbox.findUniqueOrThrow({where:{id:notice.outbox_id}})).status;}
+  process.env.ACCESS_EXPIRY_NOTICES_ENABLED='true';try{
+    await Promise.all([queueExpiryNotices(db,outbox),queueExpiryNotices(db,outbox)]);let notices=await own();assert.equal(notices.length,1);assert.equal(notices[0].ends_at.getTime(),end.getTime());assert.equal(notices[0].window_days,7);
+    const extension=await grant(end,new Date(now+8*d));assert.equal(await deliver(notices[0]),'suppressed');assert.equal(messages.length,0);
+    await db.courseAccess.update({where:{id:extension.id},data:{revoked_at:new Date(),revoke_reason:'test'}});
+    const adjacent=await db.courseAccess.findFirstOrThrow({where:{course_id:cid,starts_at:edge}});await db.courseAccess.update({where:{id:adjacent.id},data:{suspended_at:new Date(),suspend_reason:'review'}});
+    await queueExpiryNotices(db,outbox);notices=await own();assert.equal(notices.length,2);const soon=notices.find(n=>n.window_days===1);assert.equal(await deliver(soon),'accepted');assert.equal(messages.length,1);assert.match(messages[0].text,/Ablauftest/);
+  }finally{delete process.env.ACCESS_EXPIRY_NOTICES_ENABLED;}
 });

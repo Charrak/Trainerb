@@ -90,7 +90,7 @@ export class Outbox {
   }
 
   async notify(tx: Prisma.TransactionClient, userId: string, toEmail: string, firstName: string, templateKey: string,
-               variables: Record<string, string> = {}): Promise<void> {
+               variables: Record<string, string> = {}): Promise<string> {
     const version = await this.template(tx, templateKey);
     const id = uuidv7(); const now = new Date();
     await tx.emailOutbox.create({ data: {
@@ -102,5 +102,6 @@ export class Outbox {
       id: uuidv7(), kind: 'email.send', ref_type: 'email_outbox', ref_id: id, payload_schema_version: 1,
       payload: { schema_version: 1 }, idempotency_key: `email-${id}`, status: 'queued', max_attempts: 8, run_after: now,
     } });
+    return id;
   }
 }

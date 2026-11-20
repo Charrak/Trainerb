@@ -692,6 +692,11 @@ test('an open chargeback cannot decide the access question yet', async () => {
 // Widerruf
 // --------------------------------------------------------------------------
 
+async function deliverWithdrawalMail(id){
+  const messages=[],{MailWorker}=require('../../apps/api/dist/mail-worker');
+  const worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to]};}});
+  const job=await db.automationJob.findFirstOrThrow({where:{ref_id:id}});await worker.runOne(job.id);assert.equal((await db.emailOutbox.findUniqueOrThrow({where:{id}})).status,'accepted');return messages[0];
+}
 test('a public withdrawal is a documented claim, never an automatic refund', async () => {
   const order = await paidOrder();
   const anonymous = new Browser();
@@ -713,6 +718,7 @@ test('a public withdrawal is a documented claim, never an automatic refund', asy
   assert.equal(mail.template_version_id !== null, true);
   assert.equal(mail.to_email, 'widerruf@example.invalid');
   assert.match(mail.variables_public.received_date, /^\d{2}\.\d{2}\.\d{4}$/);
+  const message=await deliverWithdrawalMail(mail.id);assert.ok(message.text.includes(mail.variables_public.received_date));
 });
 
 test('a withdrawal never reveals whether an order or address exists', async () => {
@@ -764,7 +770,7 @@ test('staff verify the identity before linking a withdrawal to an order', async 
     template_version: { template: { key: 'withdrawal_verify' } } }, orderBy: { created_at: 'desc' } });
   // The link never sits in the row in clear: it is sealed and only the worker builds it.
   assert.equal(Object.hasOwn(proofMail.variables_public, 'verification_url'), false);
-  const { token } = unseal(proofMail.variables_secret_ciphertext, `outbox:${proofMail.id}`, proofMail.secret_key_id);
+  const message=await deliverWithdrawalMail(proofMail.id);assert.ok(message.text.includes(item.id.slice(0,8)));const token=message.text.match(/\/widerruf\/bestaetigen#token=([A-Za-z0-9_-]{43})/)[1];
   const verify = await anonymous.change('post', '/withdrawal-requests/verify', { token });
   status(verify, 200);
   assert.equal(verify.body.verified, true);

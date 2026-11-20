@@ -1,0 +1,7 @@
+{
+  "name": "trainerb-ci-chromium",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated Linux headless Chromium for synthetic acceptance only (not an application dependency).",
+  "dependencies": { "@sparticuz/chromium": "153.0.0" }
+}

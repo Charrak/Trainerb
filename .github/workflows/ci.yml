@@ -138,13 +138,29 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Browser acceptance (certificates and backoffice)
+      - name: Install the locked Linux test browser
+        working-directory: tests/e2e/browser-tools
+        run: |
+          npm ci --ignore-scripts
+          node --input-type=module -e "import chromium from '@sparticuz/chromium';import {appendFileSync} from 'node:fs';appendFileSync(process.env.GITHUB_ENV,'E2E_CHROMIUM_PATH='+(await chromium.executablePath())+'\n');"
+
+      - name: Install the PDF verifier
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pdf-check"
+          "$RUNNER_TEMP/pdf-check/bin/pip" install PyMuPDF==1.26.7
+
+      - name: Browser acceptance (certificates, privacy, accessibility and backoffice)
         env:
           E2E_ALLOW_TEST_DATA: 'yes'
+          E2E_SINGLE_PROCESS: 'yes'
           TEST_DATABASE_URL: postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/cert_browser_e2e_test
           TEST_REDIS_URL: redis://127.0.0.1:6379/13
         run: |
-          npx --no-install playwright install --with-deps --only-shell chromium
-          python3 -m venv "$RUNNER_TEMP/pdf-check"
-          "$RUNNER_TEMP/pdf-check/bin/pip" install PyMuPDF==1.26.7
-          PATH="$RUNNER_TEMP/pdf-check/bin:$PATH" node scripts/run-integration.mjs --certificate-browser
+          set -o pipefail
+          PATH="$RUNNER_TEMP/pdf-check/bin:$PATH" node scripts/run-integration.mjs --certificate-browser 2>&1 | tee "$RUNNER_TEMP/browser.log" || {
+            # Only source locations in annotations; never include private fixture payloads/URLs.
+            refs=$(grep -Eo '(certificate-acceptance\.cjs|catalog\.test\.cjs):[0-9]+:[0-9]+' "$RUNNER_TEMP/browser.log" | tail -6 | paste -sd ' ' - || true)
+            grep -oE 'A11Y_DIAGNOSTIC .{1,700}' "$RUNNER_TEMP/browser.log" | head -8 | while read -r diagnostic; do echo "::error title=Accessibility::$diagnostic"; done || true
+            echo "::error title=Browser fixture::Failure locations: ${refs:-startup or test tools}"
+            exit 1
+          }

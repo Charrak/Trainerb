@@ -91,6 +91,17 @@ async function drill(source) {
     phase = 'comparing restored certificates';
     const restored = inspect(target);
     assert.ok(restored.status === 0 && restored.stdout === baseline.stdout, 'Restored certificates differ from the source.');
+    phase = 'checking privacy state before enabling any restored services';
+    const {fingerprintPrivacy,matchPrivacy}=await import('../../scripts/privacy-restore-check.mjs');
+    const privacySource=await fingerprintPrivacy(db);
+    assert.ok((await db.query('SELECT FROM data_requests WHERE profile_erased_at IS NOT NULL LIMIT 1')).rowCount);
+    assert.ok((await db.query("SELECT FROM newsletter_consent_events WHERE action='withdraw' LIMIT 1")).rowCount);
+    const copy=new Client({connectionString:target.href});await copy.connect();
+    try{const privacyCopy=await fingerprintPrivacy(copy);matchPrivacy(privacySource,privacyCopy);
+      // Genuine post-backup suppression in the isolated source: an old copy must now be rejected.
+      await db.query("INSERT INTO newsletter_subscribers(id,email,status) VALUES($1,$2,'complained')",[randomUUID(),randomUUID()+'@example.invalid']);
+      const newer=await fingerprintPrivacy(db);assert.throws(()=>matchPrivacy(newer,privacyCopy),/PRIVACY_CHECK_MISMATCH/);
+    }finally{await copy.end();}
     phase = 'checking rotated writer and historical read key';
     const history = join(dir, 'read-keys.json');
     writeFileSync(history, JSON.stringify([{id:process.env.DATA_ENCRYPTION_KEY_ID,key:process.env.DATA_ENCRYPTION_KEY}]),{mode:0o600});

@@ -1,3 +1,4 @@
+import { templates } from './mail-catalog';
 import { backofficeWrite } from './backoffice-write';
 import { Body, Controller, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
@@ -13,18 +14,39 @@ const conflict = () =>
   apiError(409, 'STATE_CONFLICT', 'Der Stand hat sich geändert oder der Vorgang ist nicht zulässig. Bitte neu laden.');
 const invalid = () => apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.');
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
-const mailKey = { key: 'certificate_ready', locale: 'de-DE' };
+function checkedKey(key?: string) {
+  const k = key ?? 'certificate_ready';
+  if (!Object.hasOwn(templates, k)) throw missing();
+  return { key: k, locale: 'de-DE' };
+}
+const names = (s: string) => Array.from(new Set([...s.matchAll(/\{\{([a-z_]+)\}\}/g)].map((m) => m[1])));
+
 const fields = { id: true, version: true, state: true, subject_template: true, body_text_template: true } as const;
 
-// Only plain text and the one variable actually rendered for certificate_ready.
-function templateText(value: unknown, subject: boolean) {
+// Each field is restricted to its built-in contract. Never move a secret into a subject or concatenate it with a URL.
+function templateText(value: unknown, subject: boolean, key: string) {
   const s = requireString(value, subject ? 'subject' : 'text', subject ? 160 : 6000)
     .replace(/\r\n/g, '\n')
     .trim();
+  const baseline = templates[key][subject ? 'subject' : 'text'],
+    allowed = new Set(names(baseline));
+  if (key === 'certificate_ready') allowed.add('first_name');
+  const used = names(s);
+  if (used.some((n) => !allowed.has(n)) || names(baseline).some((n) => n !== 'first_name' && !used.includes(n)))
+    throw invalid();
+  for (const m of s.matchAll(/\{\{(?:[a-z_]+_url|code)\}\}/g)) {
+    if (
+      subject ||
+      !/^\s*$/.test(s.slice(Math.max(0, m.index - 1), m.index)) ||
+      !/^\s*$/.test(s.slice(m.index + m[0].length, m.index + m[0].length + 1))
+    )
+      throw invalid();
+  }
   if (
     !s ||
     /[\p{Cc}\p{Cf}]/u.test(subject ? s : s.replace(/\n/g, '')) ||
-    /[{}<>]/.test(s.replace(/\{\{first_name\}\}/g, ''))
+    /[{}<>]/.test(s.replace(/\{\{[a-z_]+\}\}/g, '')) ||
+    /(?:https?:|mailto:|www\.)/i.test(s)
   )
     throw invalid();
   return s;
@@ -71,18 +93,16 @@ export class BackofficeOperations {
       },
     });
     return {
-      data: rows
-        .slice(0, 25)
-        .map(({ _count, last_error_safe, ...job }) => ({
-          ...job,
-          error_code: last_error_safe ? (errorCodes.includes(last_error_safe) ? last_error_safe : 'OTHER') : null,
-          retry_candidate:
-            job.status === 'failed' &&
-            job.attempts > 0 &&
-            job.attempts === job.max_attempts &&
-            _count.job_attempts === job.attempts &&
-            last_error_safe === preflightError,
-        })),
+      data: rows.slice(0, 25).map(({ _count, last_error_safe, ...job }) => ({
+        ...job,
+        error_code: last_error_safe ? (errorCodes.includes(last_error_safe) ? last_error_safe : 'OTHER') : null,
+        retry_candidate:
+          job.status === 'failed' &&
+          job.attempts > 0 &&
+          job.attempts === job.max_attempts &&
+          _count.job_attempts === job.attempts &&
+          last_error_safe === preflightError,
+      })),
       next_cursor: rows.length > 25 ? rows[24].id : null,
     };
   }
@@ -155,10 +175,17 @@ export class BackofficeOperations {
     });
   }
 
-  @Get('certificate-mail-template') async template(@Req() req: ApiRequest) {
+  @Get('mail-templates') async keys(@Req() req: ApiRequest) {
+    await this.sessions.require(req, { backoffice: true, permission: 'mail.manage' });
+    return { keys: Object.keys(templates).sort() };
+  }
+  @Get(['certificate-mail-template', 'mail-templates/:key']) async template(
+    @Req() req: ApiRequest,
+    @Param('key') key?: string,
+  ) {
     await this.sessions.require(req, { backoffice: true, permission: 'mail.manage' });
     const template = await this.db.emailTemplate.findUnique({
-      where: { key_locale: mailKey },
+      where: { key_locale: checkedKey(key) },
       select: {
         status: true,
         versions: {
@@ -175,23 +202,28 @@ export class BackofficeOperations {
       draft: template.versions.find((v) => v.state === 'draft') ?? null,
     };
   }
-  private async lockTemplate(tx: Prisma.TransactionClient) {
+  private async lockTemplate(tx: Prisma.TransactionClient, key?: string) {
+    const mailKey = checkedKey(key);
     const [t] = await tx.$queryRaw<
       { id: string }[]
     >`SELECT id FROM email_templates WHERE key=${mailKey.key} AND locale=${mailKey.locale} AND status='active' FOR UPDATE`;
     if (!t) throw missing();
     return t.id;
   }
-  @Post('certificate-mail-template/drafts') draft(@Req() req: ApiRequest, @Body() input: unknown) {
+  @Post(['certificate-mail-template/drafts', 'mail-templates/:key/drafts']) draft(
+    @Req() req: ApiRequest,
+    @Body() input: unknown,
+    @Param('key') key?: string,
+  ) {
     return backofficeWrite(this.db, this.sessions, req, 'mail.manage', async (tx, actor) => {
       const { base_id, subject, text } = bodyObject(input, ['base_id', 'subject', 'text']);
-      const subject_template = templateText(subject, true),
-        body_text_template = templateText(text, false);
-      const template_id = await this.lockTemplate(tx);
+      const subject_template = templateText(subject, true, checkedKey(key).key),
+        body_text_template = templateText(text, false, checkedKey(key).key);
+      const template_id = await this.lockTemplate(tx, key);
       const last = await tx.emailTemplateVersion.findFirst({
         where: { template_id },
         orderBy: { version: 'desc' },
-        select: { id: true, version: true, state: true },
+        select: { id: true, version: true, state: true, allowed_variables: true },
       });
       if (!last || last.id !== base_id || !['draft', 'published'].includes(last.state)) throw conflict();
       if (last.state === 'draft')
@@ -205,7 +237,7 @@ export class BackofficeOperations {
           subject_template,
           body_text_template,
           body_html_template: body_text_template.replaceAll('&', '&amp;').replaceAll('\n', '<br>'),
-          allowed_variables: [{ name: 'first_name', type: 'text', secrecy: 'personal' }],
+          allowed_variables: last.allowed_variables as Prisma.InputJsonValue,
           created_by: actor,
         },
         select: fields,
@@ -214,10 +246,14 @@ export class BackofficeOperations {
       return v;
     });
   }
-  @Post('certificate-mail-template/publish') @HttpCode(200) publish(@Req() req: ApiRequest, @Body() input: unknown) {
+  @Post(['certificate-mail-template/publish', 'mail-templates/:key/publish']) @HttpCode(200) publish(
+    @Req() req: ApiRequest,
+    @Body() input: unknown,
+    @Param('key') key?: string,
+  ) {
     return backofficeWrite(this.db, this.sessions, req, 'mail.manage', async (tx, actor) => {
       const { draft_id } = bodyObject(input, ['draft_id']);
-      const template_id = await this.lockTemplate(tx);
+      const template_id = await this.lockTemplate(tx, key);
       const last = await tx.emailTemplateVersion.findFirst({
         where: { template_id },
         orderBy: { version: 'desc' },
