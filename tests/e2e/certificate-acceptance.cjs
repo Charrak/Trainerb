@@ -255,7 +255,8 @@ async function exercise({ admin, participant, ownerEmail }) {
     await staff.goto(`${origin}/admin/website`);
     await staff.getByLabel('Seitenpfad unter /seiten/').fill('browser-fassung');
     await staff.getByLabel('Seitentitel', {exact:true}).fill('Testseite Redaktion');
-    await staff.getByLabel('Seiteninhalt', {exact:true}).fill('## Zwischenüberschrift\n\nAbsatz im Browsertest.');
+    assert.equal(await staff.getByLabel('Seiteninhalt',{exact:true}).getAttribute('maxlength'),'100000');
+    await staff.getByLabel('Seiteninhalt', {exact:true}).fill('## Zwischenüberschrift\n\nAbsatz im Browsertest.\n\n'+'Testabsatz. '.repeat(5000)+'\n\nEnde des langen Testtexts.');
     await staff.getByLabel('Bannertext (optional)').fill('Synthetischer Hinweis');
     await staff.getByLabel('Buttonziel').selectOption('/kurse');
     await staff.getByLabel('Buttontext').fill('Zum Kursangebot');
@@ -273,12 +274,14 @@ async function exercise({ admin, participant, ownerEmail }) {
     await visitor.goto(`${origin}/seiten`);
     await visitor.getByRole('navigation',{name:'Weitere Website-Seiten'}).getByRole('link',{name:'Informationen zur Testseite'}).click();
     await visitor.getByRole('heading',{name:'Zwischenüberschrift'}).waitFor();
+    await visitor.getByText('Ende des langen Testtexts.',{exact:true}).waitFor();
     await visitor.getByText('Synthetischer Hinweis',{exact:true}).waitFor();
     assert.equal(await visitor.getByRole('link',{name:'Zum Kursangebot'}).getAttribute('href'),'/kurse');
     await staff.getByRole('button',{name:'Veröffentlichte Seite zurücknehmen'}).click();
     await staff.getByRole('status').filter({hasText:'Seite zurückgenommen'}).waitFor();
     await staff.goto(`${origin}/admin/rechtstexte`);
     await staff.getByLabel('Rechtsdokument').selectOption('payment_info');
+    assert.equal(await staff.getByLabel('Wortlaut',{exact:true}).getAttribute('maxlength'),'100000');
     await staff.getByLabel('Wortlaut',{exact:true}).fill('Synthetischer Browser-Wortlaut.');
     await staff.getByRole('button',{name:'Neue Fassung als Entwurf speichern'}).click();
     await staff.getByRole('checkbox').check();

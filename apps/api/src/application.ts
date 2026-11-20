@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { uuidv7 } from 'uuidv7';
 import { AppModule } from './app.module';
+import { parseJsonBody } from './json-body';
 import { SafeExceptionFilter } from './errors';
 import { getConfig } from './config';
 
@@ -36,7 +37,7 @@ export async function createApplication(): Promise<INestApplication> {
     next();
   });
   app.use('/api/v1/newsletter/one-click',express.urlencoded({extended:false,limit:'1kb',parameterLimit:1}));
-  app.use(express.json({ limit:'32kb', strict:true }));
+  app.use(parseJsonBody);
   app.use(cookieParser());
   app.setGlobalPrefix('api/v1');
   app.useGlobalFilters(new SafeExceptionFilter());

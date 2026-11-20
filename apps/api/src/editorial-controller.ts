@@ -1,3 +1,4 @@
+import { EDITORIAL_TEXT_LIMIT } from '@trainerb/contracts';
 import { Body, Controller, Get, HttpCode, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { getConfig } from './config';
@@ -36,7 +37,7 @@ function validSlug(s: unknown): s is string {
 function values(b: Record<string, unknown>) {
   return {
     title: plainText(b.title, 'title', 160)!,
-    body: plainText(b.body, 'body', 20000, false, true)!,
+    body: plainText(b.body, 'body', EDITORIAL_TEXT_LIMIT, false, true)!,
     description: plainText(b.description, 'description', 300, true) ?? '',
   };
 }

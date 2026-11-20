@@ -1,4 +1,5 @@
 'use client';
+import { EDITORIAL_TEXT_LIMIT } from '@trainerb/contracts';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
@@ -145,7 +146,7 @@ function DocumentEditor({ kind }: { kind: Kind }) {
                 id="legal-wording"
                 disabled={busy}
                 value={wording}
-                maxLength={20000}
+                maxLength={EDITORIAL_TEXT_LIMIT}
                 rows={12}
                 onChange={(e) => {
                   setWording(e.target.value);

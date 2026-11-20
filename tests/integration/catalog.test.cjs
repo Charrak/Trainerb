@@ -429,6 +429,35 @@ test('legal editor versions without exposing payment settings or creating checko
   const archived=(await admin.get(view)).body.versions.find(v=>v.id===first.id);assert.equal(archived.status,'retired');assert.equal(archived.wording,form.wording);
 });
 
+test('Lange CMS- und Rechtsentwürfe: Zeichengrenze, Bytegrenze und private Versionierung',async()=>{
+  const pages='/admin/pages', legal='/admin/commerce/legal', slug='langtext-test';
+  const text='ä'.repeat(60_000), maximum='b'.repeat(100_000), over=maximum+'c';
+  const form={slug,title:'Synthetischer Langtext',body:text};
+  status(await participant.change('post',pages,form),403);
+  status(await admin.change('post',legal,{kind:'terms',wording:text},{noCsrf:true}),403);
+  const created=await admin.change('post',pages,form);status(created,201);
+  const page=pages+'/'+created.body.id, first=(await admin.get(page)).body;
+  assert.equal(first.latest.body,text);status(await new Browser().get('/pages/'+slug),404);
+  const save=body=>admin.change('post',page+'/drafts',{title:form.title,revision:first.revision,body});
+  status(await save(over),422);status(await save(maximum),201);
+  assert.equal((await admin.get(page)).body.latest.body,maximum);
+  const before=(await admin.get('/shop/config')).body.legal.terms;
+  const written=await admin.change('post',legal,{kind:'terms',wording:text});status(written,201);
+  assert.equal(written.body.status,'draft');assert.equal(written.body.wording,text);
+  status(await admin.change('post',legal,{kind:'terms',wording:maximum}),201);
+  status(await admin.change('post',legal,{kind:'terms',wording:over}),422);
+  assert.deepEqual((await admin.get('/shop/config')).body.legal.terms,before);
+  // 90.000 Zeichen, aber mehr als 256 KiB UTF-8. Andere POSTs bleiben bei 32 KiB.
+  const tooLarge=await admin.change('post',legal,{kind:'terms',wording:'界'.repeat(90_000)});
+  status(tooLarge,413);assert.equal(tooLarge.body.code,'PAYLOAD_TOO_LARGE');
+  for(const path of [page+'/publish',legal+'/'+written.body.id+'/activate','/admin/commerce/settings'])
+    status(await admin.change('post',path,{padding:text}),413);
+  // Direkte Inserts dürfen die Obergrenze nicht an der API vorbei überschreiten.
+  const doc=await db.legalDocumentVersion.findUniqueOrThrow({where:{id:written.body.id}});
+  await assert.rejects(db.legalDocumentVersion.create({data:{id:uuidv7(),document_id:doc.document_id,version:doc.version+10,wording:over}}),/legal_document_versions_wording_check/);
+  await assert.rejects(db.pageVersion.create({data:{id:uuidv7(),page_id:first.id,version:10,state:'retired',title:form.title,body:over,description:'',created_by:adminUser.id}}),/page_versions_body_check/);
+});
+
 test('dashboard scopes are derived from roles and current course assignments, not query parameters', async () => {
   const path='/admin/dashboard';status(await new Browser().get(path),401);status(await participant.get(path),403);
   assert.deepEqual((await support.get(path)).body,{scope:'basic',public_courses:0});
