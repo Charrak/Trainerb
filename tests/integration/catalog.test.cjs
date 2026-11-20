@@ -176,6 +176,19 @@ test('offline recovery binds the replacement device, invalidates sessions and co
  assert.equal(await db.auditEvent.count({where:{action:'mfa.offline_replaced',target_ref:id}}),1);
 });
 
+test('account data copy requires fresh identity, ignores no extra identity selectors and returns only projected own records',async()=>{
+ const path='/me/export',fetch=(body,options)=>participant.change('post',path,body,options);
+ status(await fetch({section:'profile'}),403);status(await participant.change('post','/auth/reauth',{password}),204);
+ status(await fetch({section:'profile'},{noCsrf:true}),403);status(await fetch({section:'profile',user_id:adminUser.id}),400);status(await fetch({section:'__proto__'}),422);
+ const own=(await participant.get('/me')).body.id;
+ const bills=[own,adminUser.id].map((user_id,i)=>({id:uuidv7(),user_id,first_name:'Test',last_name:'Kopie',street:'Teststraße '+(i+1),postal_code:'10115',city:'Berlin',country:'DE'}));
+ await db.billingProfile.createMany({data:bills});try{
+ for(const section of ['profile','billing','orders','acceptances','invoices','credits','access','progress','exams','completions','certificates']){
+  const r=await fetch({section});status(r,200);if(section==='profile'){assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].email,'catalog-participant@example.invalid');assert.ok(!('password_hash' in r.body.data[0]));}else if(section==='billing'){assert.deepEqual(r.body.data.map(b=>b.id),[bills[0].id]);}else assert.deepEqual(r.body.data,[]);
+ }
+ }finally{await db.billingProfile.deleteMany({where:{id:{in:bills.map(b=>b.id)}}});}
+});
+
 test('privacy intake is neutral, separates verification from fulfilment and erases case contact at closure',async()=>{
  const anon=new Browser(),root='/admin/data-requests',email='privacy-contact@example.invalid',payload={type:'deletion',email};
  status(await anon.change('post','/privacy/requests',payload,{noCsrf:true}),403);

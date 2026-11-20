@@ -1,3 +1,4 @@
+import {AccountExport} from './account-export';
 import {PrivacyRequests} from './privacy-requests';
 import {NewsletterController} from './newsletter-controller';
 import { NavigationController } from './navigation-controller';
@@ -36,7 +37,7 @@ import { Refunds } from './refunds';
 import { Disputes } from './disputes';
 import { Withdrawals } from './withdrawals';
 
-@Module({ controllers:[PrivacyRequests, NewsletterController, NavigationController, ProviderProfileController, EditorialController, DashboardController, BackofficeOperations, CertificateController, ExamController, IdentityController, CatalogController, ProductController, PublicationController,
+@Module({ controllers:[AccountExport, PrivacyRequests, NewsletterController, NavigationController, ProviderProfileController, EditorialController, DashboardController, BackofficeOperations, CertificateController, ExamController, IdentityController, CatalogController, ProductController, PublicationController,
   ShopController, CommerceAdminController, GuestController], providers:[ExamRunner, Database, RateLimiter, Sessions, Outbox, Auth,
   Mfa, Admin, Customers, Catalog, Products, Publication, Shop, Learning, Accesses, Commerce, StripePayments, GuestCheckout,
   Invoices, Refunds, Disputes, Withdrawals] })
