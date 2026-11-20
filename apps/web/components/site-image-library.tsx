@@ -14,6 +14,7 @@ type Row = {
   promotion_error: string | null;
   asset_status?: string;
   rights_ref: string | null;
+  rights_withdrawn_at: string | null;
 };
 type List = { data: Row[]; next_cursor: string | null };
 const path = '/admin/site-image-uploads';
@@ -129,7 +130,7 @@ export function SiteImageLibrary() {
           <>
             <p>
               {states[row.status]} ·{' '}
-              {row.asset_status === 'rejected'
+              {row.rights_withdrawn_at || row.asset_status === 'rejected'
                 ? 'Zurückgenommen'
                 : row.asset_status === 'ready'
                   ? 'Für Seiten verwendbar'
@@ -181,7 +182,7 @@ export function SiteImageLibrary() {
                 </button>
               </>
             )}
-            {row.asset_status === 'ready' && (
+            {row.approved_at && !row.rights_withdrawn_at && (
               <button
                 onClick={() => run(() => api(path + '/' + id + '/withdraw', 'POST', {}), 'Freigabe zurückgenommen.')}
               >

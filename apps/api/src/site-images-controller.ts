@@ -61,17 +61,16 @@ export class SiteImagesController {
         promotion_error: true,
         promoted_asset: { select: { status: true } },
         rights_ref: true,
+        rights_withdrawn_at: true,
       },
     });
     return {
-      data: rows
-        .slice(0, 50)
-        .map(({ uploaded_by, sha256, promoted_asset, ...r }) => ({
-          ...r,
-          own: uploaded_by === ctx.user.id,
-          sha256: Buffer.from(sha256).toString('hex'),
-          asset_status: promoted_asset?.status,
-        })),
+      data: rows.slice(0, 50).map(({ uploaded_by, sha256, promoted_asset, ...r }) => ({
+        ...r,
+        own: uploaded_by === ctx.user.id,
+        sha256: Buffer.from(sha256).toString('hex'),
+        asset_status: promoted_asset?.status,
+      })),
       next_cursor: rows.length > 50 ? rows[49].id : null,
     };
   }
@@ -118,16 +117,15 @@ export class SiteImagesController {
   ) {
     return backofficeWrite(this.db, this.sessions, req, perm, async (tx, actor) => {
       bodyObject(input, []);
-      const r = await tx.courseMediaUpload.findFirst({
-        where: { id: requireUuid(id), intended_use: 'website' },
-        select: { promoted_asset_id: true },
-      });
-      if (!r?.promoted_asset_id) throw changed();
-      const n = await tx.mediaAsset.updateMany({
-        where: { id: r.promoted_asset_id, visibility: 'public', status: 'ready' },
-        data: { visibility: 'private', status: 'rejected' },
-      });
-      if (!n.count) throw changed();
+      const [r] = await tx.$queryRaw<
+        { promoted_asset_id: string | null }[]
+      >`UPDATE course_media_uploads SET rights_withdrawn_at=now() WHERE id=${requireUuid(id)}::uuid AND intended_use='website' AND approved_at IS NOT NULL AND rights_withdrawn_at IS NULL RETURNING promoted_asset_id`;
+      if (!r) throw changed();
+      if (r.promoted_asset_id)
+        await tx.mediaAsset.update({
+          where: { id: r.promoted_asset_id },
+          data: { visibility: 'private', status: 'rejected' },
+        });
       await tx.auditEvent.create({
         data: {
           id: uuidv7(),

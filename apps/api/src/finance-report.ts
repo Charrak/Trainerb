@@ -18,9 +18,14 @@ export async function financeReport(db: Database, period: FinancePeriod, asOf = 
   const [row] = await db.$queryRaw<
     Array<{
       starts_at: Date | null;
-      stripe_fees:{expected:number;verified:number;known_cents:string};
-      sold_course_positions:number;
-      orders_by_state:{payment_state:string;fulfillment_state:string;count:number}[];
+      stripe_fees: { expected: number; verified: number; known_cents: string };
+      accounts: number;
+      registrations: number;
+      active_learners: number;
+      subscribers: number;
+      daily: { day: string; payments: string; refunds: string }[];
+      sold_course_positions: number;
+      orders_by_state: { payment_state: string; fulfillment_state: string; count: number }[];
       payments_cents: string;
       refunds_cents: string;
       dispute_face_value_cents: string;
@@ -29,7 +34,15 @@ export async function financeReport(db: Database, period: FinancePeriod, asOf = 
     , movements AS (
       SELECT p.id AS payment_id,NULL::uuid AS refund_id FROM payment_attempts p,bounds WHERE p.provider='stripe' AND p.environment=${environment} AND p.currency='EUR' AND p.status='succeeded' AND p.confirmed_at BETWEEN coalesce(starts_at,'-infinity') AND stamp
       UNION ALL SELECT NULL::uuid,r.id FROM refunds r,bounds WHERE r.provider='stripe' AND r.environment=${environment} AND r.currency='EUR' AND r.status='succeeded' AND r.confirmed_at BETWEEN coalesce(starts_at,'-infinity') AND stamp)
+    , participants AS (SELECT u.id,u.created_at FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE r.key='participant' AND u.deleted_at IS NULL AND u.status<>'deletion_requested'),
+    days AS (SELECT ((stamp AT TIME ZONE ${zone})::date - n) AS day FROM clock CROSS JOIN generate_series(0,6) n),
+    ticks AS (SELECT day,day::timestamp AT TIME ZONE ${zone} AS lo,(day+1)::timestamp AT TIME ZONE ${zone} AS hi FROM days)
     SELECT starts_at,
+      (SELECT count(*)::int FROM participants) AS accounts,
+      (SELECT count(*)::int FROM participants WHERE created_at BETWEEN coalesce(starts_at,'-infinity') AND stamp) AS registrations,
+      (SELECT count(DISTINCT a.user_id)::int FROM course_access a JOIN participants p ON p.id=a.user_id WHERE a.revoked_at IS NULL AND a.suspended_at IS NULL AND a.starts_at<=stamp AND (a.ends_at IS NULL OR a.ends_at>stamp)) AS active_learners,
+      (SELECT count(*)::int FROM newsletter_subscribers WHERE status='confirmed') AS subscribers,
+      (SELECT jsonb_agg(jsonb_build_object('day',to_char(day,'YYYY-MM-DD'),'payments',(SELECT coalesce(sum(amount_cents),0)::text FROM payment_attempts WHERE environment=${environment} AND currency='EUR' AND status='succeeded' AND confirmed_at>=lo AND confirmed_at<hi AND confirmed_at<=stamp),'refunds',(SELECT coalesce(sum(amount_cents),0)::text FROM refunds WHERE environment=${environment} AND currency='EUR' AND status='succeeded' AND confirmed_at>=lo AND confirmed_at<hi AND confirmed_at<=stamp)) ORDER BY day) FROM ticks) AS daily,
       (SELECT jsonb_build_object('expected',count(*),'verified',count(f.balance_id),'known_cents',coalesce(sum(f.fee_cents),0)::text) FROM movements m LEFT JOIN stripe_fee_evidence f ON f.payment_id=m.payment_id OR f.refund_id=m.refund_id) AS stripe_fees,
       (SELECT count(*)::int FROM order_item_courses i WHERE EXISTS(SELECT FROM payment_attempts p WHERE p.order_id=i.order_id AND p.environment=${environment} AND p.currency='EUR' AND p.status='succeeded' AND p.confirmed_at BETWEEN coalesce(starts_at,'-infinity') AND stamp)) AS sold_course_positions,
       (SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.payment_state,g.fulfillment_state),'[]'::jsonb) FROM (SELECT o.payment_state,o.fulfillment_state,count(*)::int AS count FROM orders o WHERE o.currency='EUR' AND o.placed_at BETWEEN coalesce(starts_at,'-infinity') AND stamp GROUP BY o.payment_state,o.fulfillment_state) g) AS orders_by_state,
@@ -51,6 +64,9 @@ export async function financeReport(db: Database, period: FinancePeriod, asOf = 
     as_of: asOf,
     ...row,
     balance_cents: String(BigInt(row.payments_cents) - BigInt(row.refunds_cents)),
-    fees_cents: row.stripe_fees.expected>0 && row.stripe_fees.expected===row.stripe_fees.verified?row.stripe_fees.known_cents:null,
+    fees_cents:
+      row.stripe_fees.expected > 0 && row.stripe_fees.expected === row.stripe_fees.verified
+        ? row.stripe_fees.known_cents
+        : null,
   };
 }

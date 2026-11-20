@@ -326,6 +326,7 @@ model CourseMediaUpload {
   uploaded_by   String   @db.Uuid
   intended_use String @default("course") @db.Text
   rights_ref String? @db.Text
+  rights_withdrawn_at DateTime? @db.Timestamptz(6)
   object_key    String   @unique @db.Uuid
   original_name String   @db.Text
   mime_detected String   @db.Text

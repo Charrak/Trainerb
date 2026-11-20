@@ -182,6 +182,9 @@ test('website image needs a clean scan, matching rights evidence and a distinct 
  const bytes=Buffer.from(await(await aws.fetch(url)).arrayBuffer());assert.equal((await sharp(bytes).metadata()).exif,undefined);assert.ok(!bytes.equals(img));
  status(await admin.get('/admin/page-images/'+asset.id),302);status(await releaseAdmin.change('post',endpoint+'/'+id+'/withdraw',{}),200);status(await admin.get('/admin/page-images/'+asset.id),404);
  await assert.rejects(db.courseMediaUpload.update({where:{id},data:{rights_ref:'OTHER'}}),/UPLOAD_ORIGIN_IMMUTABLE/);
+ const queued=await post(admin);status(queued,201);const q=queued.body.id;await withTestClamd(async({socket})=>{assert.equal((await scanNext(db,r=>inspectUpload(r,src,socket))).id,q);});
+ status(await releaseAdmin.change('post',endpoint+'/'+q+'/approve',proof),200);status(await admin.change('post',endpoint+'/'+q+'/withdraw',{}),200);
+ assert.equal(await promoteNext(db,{source:src,destination:dst}),null);await assert.rejects(db.courseMediaUpload.update({where:{id:q},data:{rights_withdrawn_at:null}}),/RIGHTS_WITHDRAWAL_FINAL/);
  }finally{Object.assign(cfg,old);}
 });
 

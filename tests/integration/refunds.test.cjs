@@ -311,6 +311,7 @@ test('a partial refund leaves the payment standing and issues one credit note', 
     const day=await financeReport(tx,'today',asOf), month=await financeReport(tx,'month',asOf);
     assert.equal(day.starts_at.toISOString(),'2025-10-25T22:00:00.000Z');assert.equal(day.balance_cents,'-4900');
     assert.equal(month.starts_at.toISOString(),'2025-09-30T22:00:00.000Z');assert.equal(month.balance_cents,String(large+15000n));
+    assert.equal(day.daily.length,7);assert.deepEqual(day.daily.at(-1),{day:'2025-10-26',payments:'0',refunds:'4900'});assert.equal(day.daily.at(-2).payments,'19900');
     throw rollback;
   }), err => err.message === rollback.message);
 

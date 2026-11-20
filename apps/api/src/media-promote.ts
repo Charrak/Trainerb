@@ -14,7 +14,7 @@ type Receipt = Pick<CourseMediaUpload, 'id' | 'original_name' | 'object_key' | '
 export async function promoteNext(db: PrismaClient, stores: JobStores, retryId?: string) {
   return db.$transaction(async tx => {
     const [row] = await tx.$queryRaw<Receipt[]>`SELECT id, intended_use, original_name, object_key, sha256, size_bytes, mime_detected, uploaded_by
-      FROM course_media_uploads WHERE status = 'clean' AND approved_at IS NOT NULL AND promoted_asset_id IS NULL
+      FROM course_media_uploads WHERE status = 'clean' AND approved_at IS NOT NULL AND rights_withdrawn_at IS NULL AND promoted_asset_id IS NULL
       AND ${retryId ? Prisma.sql`promotion_error IS NOT NULL AND id = ${retryId}::uuid` : Prisma.sql`promotion_error IS NULL`}
       ORDER BY approved_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
     if (!row) return null;

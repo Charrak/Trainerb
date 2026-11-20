@@ -24,7 +24,7 @@ Phase 7 kann für einzelne bereits vorhandene Funktionen früher vorbereitet wer
 
 ## 5.2 Phasen mit Ergebnissen und Abnahmekriterien
 
-Die Tabelle beschreibt die geplanten vollständigen Phasen. Phase 2 ist in einem begrenzten Ausschnitt umgesetzt: geschützte Kursentwürfe, Kapitelinhalte, Produkt-/Preisentwürfe sowie die Freigabe (Veröffentlichung eines Kurses, Aktivierung eines Produkts und Aktivierung/Zurückziehen von Preiszeiträumen). Details und aktuelle Grenzen stehen in [07 – Entwicklungsstand](07-entwicklung.md#73-erster-ausschnitt-von-phase-2-kursentwürfe).
+Die Tabelle beschreibt die Ziele und enthält historische Zwischenstände. Der aktuelle Stand ist unten nach Migrationen zusammengefasst. Eine im Testbetrieb umgesetzte Funktion ist keine fachliche oder betriebliche Produktionsabnahme.
 
 | Phase | Ergebnis / zentrale Tabellen | Tests und Ende der Phase |
 |---|---|---|
@@ -80,7 +80,7 @@ Die Abnahme erfolgt getrennt: `MED-01` für Schema und Verwaltung, `MED-02` für
 
 ### 5.3.4 Ausführung in der CI
 
-`.github/workflows/ci.yml` führt bei Push und Pull Request gegen `main` dieselben Befehle aus, die lokal gelten: `npm run typecheck`, `npm test`, `npm run test:integration`, `npm run build` — mit PostgreSQL 16 und Redis als Diensten, einer angelegten `trainerb_test`-Datenbank und einer aus `.env.example` erzeugten `.env` mit fünf unabhängigen Zufallsschlüsseln. Damit läuft die Prüfung gegen echte Datenbank-Trigger und echte Migrationen, nicht gegen Attrappen. Die Browser-Smoke-Tests bleiben außerhalb der CI (Playwright/Chromium und eine vollständige lokale Umgebung mit Mailpit sind dort nicht vorhanden); sie ersetzen die hier geforderte manuelle Abnahme nicht. Eine `deno.yml` aus der Projektvorlage wurde entfernt, weil sie Node-Quellen und generierten Prisma-Code mit `deno lint`/`deno test` prüfte und deshalb strukturell nicht grün werden konnte.
+`.github/workflows/ci.yml` führt bei Push und Pull Request gegen `main` dieselben Befehle aus, die lokal gelten: `npm run typecheck`, `npm test`, `npm run test:integration`, `npm run build` — mit PostgreSQL 16 und Redis als Diensten, einer angelegten `trainerb_test`-Datenbank und einer aus `.env.example` erzeugten `.env` mit fünf unabhängigen Zufallsschlüsseln. Damit läuft die Prüfung gegen echte Datenbank-Trigger und echte Migrationen, nicht gegen Attrappen. Die CI prüft inzwischen auch einen isolierten Browserablauf mit Chromium und eine getrennte Wiederherstellungsprobe. Beide ersetzen weder die manuelle Abnahme noch den Nachweis im Zielbetrieb. Eine `deno.yml` aus der Projektvorlage wurde entfernt, weil sie Node-Quellen und generierten Prisma-Code mit `deno lint`/`deno test` prüfte und deshalb strukturell nicht grün werden konnte.
 
 ## 5.4 Automatisierte Testmatrix
 
@@ -245,3 +245,5 @@ Für den externen Teil der Phasen 3/4 gibt es eine [Anleitung mit lesendem Strip
 **Migration 033 – Phase 7:** Der versionierte Mail-Editor ist nicht mehr auf die Urkundenmail beschränkt. Alle im Katalog eingebauten deutschen Mailarten können mit festen Platzhalterverträgen und synthetischer Vorschau redigiert werden. Ein Datenbanktrigger schützt den Inhalt alter Versionen; separat geprüfte Vorlagen ersetzen bereits eingeplante Nachrichten nicht.
 
 **Stand ab Migration 036:** Öffentlicher Website-Bildupload, unabhängige Rechtefreigabe, Entzug und private Auslieferung sind implementiert. Der S3-/ClamAV-Test durchläuft Scan, Zweitfreigabe und Übernahme einschließlich Metadatenentfernung. Automatisiertes Postmark-Feedback ist mit korrelierten synthetischen Meldungen und Replay getestet; ein echter Providerkanal ist davon getrennt. Der Finanzbericht trennt belegte und fehlende Stripe-Gebühren und zählt bezahlte Kurspositionen und Bestellzustände. Die vorherigen Zwischenstände sind keine Beschreibung dieser neuen Funktionen. Betriebsanleitung: [Seitenbilder, Versandfeedback und Gebühren](06-admin-handbuch.md#seitenbilder-versandfeedback-und-gebühren-migrationen-034036).
+
+**Stand ab Migration 037:** Bildfreigaben sind auch zwischen Rechteprüfung und Übernahme endgültig zurücknehmbar. Globaler Bericht mit Teilnehmer-/Zugangs-/Newsletterbestand, Registrierungen und sieben Berliner Kalendertagen Zahlungs-/Erstattungsverlauf. Die produktive neue Kaufstrecke verlangt einen extern signierten zeitlich begrenzten Betriebsbeleg für Commit und Origin zusätzlich zur administrativen Freischaltung. Die Prüfsoftware erzeugt bewusst keine Freigabe. Details: [Betriebsfreigabe](04-sicherheit-und-betrieb.md#signierte-betriebsfreigabe-für-neue-verkäufe).

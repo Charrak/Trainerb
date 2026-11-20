@@ -1,5 +1,5 @@
 import type Stripe from 'stripe';
-import type { Database } from './database';
+import type { PrismaClient } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 type Entry = {
   id: string;
@@ -79,7 +79,7 @@ export async function readStripeFee(api: Stripe, r: Entry, environment: 'test' |
     refund_id: r.kind === 'refund' ? r.id : null,
   };
 }
-export async function reconcileFees(db: Database, api: Stripe, environment: 'test' | 'live', after?: string) {
+export async function reconcileFees(db: PrismaClient, api: Stripe, environment: 'test' | 'live', after?: string) {
   const rows = await db.$queryRaw<Entry[]>`SELECT * FROM (
  SELECT p.id,'payment' AS kind,p.provider_payment_id AS remote_id,p.provider_payment_id AS intent,p.order_id,p.amount_cents,p.currency FROM payment_attempts p WHERE p.status='succeeded' AND p.environment=${environment} AND p.provider='stripe' AND p.provider_payment_id IS NOT NULL AND NOT EXISTS(SELECT FROM stripe_fee_evidence f WHERE f.payment_id=p.id)
  UNION ALL SELECT r.id,'refund',r.provider_refund_id,p.provider_payment_id,r.order_id,r.amount_cents,r.currency FROM refunds r JOIN payment_attempts p ON p.id=r.payment_attempt_id WHERE r.status='succeeded' AND r.environment=${environment} AND p.environment=r.environment AND r.provider='stripe' AND r.provider_refund_id IS NOT NULL AND NOT EXISTS(SELECT FROM stripe_fee_evidence f WHERE f.refund_id=r.id)
