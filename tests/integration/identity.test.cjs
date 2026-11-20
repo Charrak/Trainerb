@@ -87,6 +87,16 @@ before(async () => {
 });
 after(async () => { if (redis) redis.disconnect(); if (app) await app.close(); });
 
+test('Die API liefert auch bei Fehlern eine nicht ausführbare, nicht einbettbare Antwort', async () => {
+  for (const path of ['/health','/nicht-vorhanden']) {
+    const r=await new Browser().get(path);
+    assert.equal(r.status,path==='/health'?200:404);
+    for(const directive of ["default-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'none'"])
+      assert.ok(r.headers['content-security-policy'].split(';').includes(directive));
+    assert.equal(r.headers['cross-origin-opener-policy'],'same-origin');assert.match(r.headers['permissions-policy'],/camera=\(\)/);
+  }
+});
+
 test('documented name rule agrees with PostgreSQL and invalid registrations leave no records', async () => {
   const beforeCounts = await Promise.all(['user', 'accountToken', 'emailOutbox'].map(count));
   const browser = new Browser();

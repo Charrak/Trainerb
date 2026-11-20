@@ -16,8 +16,14 @@ export async function createApplication(): Promise<INestApplication> {
   const expressApp = app.getHttpAdapter().getInstance();
   expressApp.disable('x-powered-by');
   expressApp.set('trust proxy', cfg.trustProxy);
-  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+  app.use(helmet({
+    contentSecurityPolicy: { useDefaults: false, directives: {
+      defaultSrc: ["'none'"], baseUri: ["'none'"], frameAncestors: ["'none'"], formAction: ["'none'"],
+    } },
+    xFrameOptions: { action: 'deny' }, crossOriginEmbedderPolicy: false,
+  }));
   app.use((req: any, res: any, next: () => void) => {
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
     req.requestId = uuidv7(); res.setHeader('X-Request-ID', req.requestId);
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); next();
   });

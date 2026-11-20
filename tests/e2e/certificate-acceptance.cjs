@@ -131,6 +131,7 @@ async function exercise({ admin, participant, ownerEmail }) {
       site.once('error', reject);
       site.listen(0, '127.0.0.1', resolve);
     });
+    const cspViolations=[];
     async function pageFor(session) {
       const browser = await chromium.launch({
         executablePath: process.env.E2E_CHROMIUM_PATH || undefined,
@@ -144,6 +145,9 @@ async function exercise({ admin, participant, ownerEmail }) {
       });
       browsers.push(browser);
       const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      // Keine URLs, Nonces oder Skriptinhalte protokollieren (Links können Tokens enthalten).
+      await context.exposeFunction('recordCspViolation', directive=>{ cspViolations.push(directive); });
+      await context.addInitScript(()=>document.addEventListener('securitypolicyviolation', e=>window.recordCspViolation(e.effectiveDirective)));
       if (session)
         await context.addCookies(
           [...session.cookies].map(([name, value]) => ({
@@ -174,6 +178,24 @@ async function exercise({ admin, participant, ownerEmail }) {
     await visitor.getByRole('button',{name:'Anfrage senden'}).click();await visitor.getByRole('status').filter({hasText:'Deine Anfrage ist eingegangen'}).waitFor();
     assert.deepEqual(outside,[]);assert.ok((await visitor.context().cookies()).every(c=>c.name==='__Host-csrf'&&c.secure));
     assert.equal(await visitor.evaluate(()=>localStorage.length),0);visitor.off('request',monitor);
+    const productId=await visitor.evaluate(async()=> (await (await fetch('/api/v1/shop/products')).json()).data[0].id);
+    const usedNonces=new Set();
+    for (const path of ['/','/anmelden','/registrieren','/passwort-vergessen','/aktivierung-erneut','/konto/aktivieren',
+      '/konto/email-bestaetigen','/konto/passwort-zuruecksetzen','/mfa','/mfa/einrichten','/kurse','/kurse/abschluss-fixture',
+      '/buchen','/buchen/'+productId,'/warenkorb','/kasse/gast','/kasse/bestaetigen','/newsletter','/newsletter/bestaetigen',
+      '/newsletter/abmelden','/agb','/datenschutz','/widerruf','/widerrufsbelehrung','/widerruf/bestaetigen','/anmelden']) {
+      const res=await visitor.goto(origin+path);
+      assert.equal(res.status(),200,`Dokument: ${path}`);
+      const h=res.headers(), nonce=h['content-security-policy']?.match(/'nonce-([^']+)'/)?.[1];
+      assert.ok(nonce && !usedNonces.has(nonce),'Neue Dokument-Nonce fehlt');usedNonces.add(nonce);
+      assert.match(h['cache-control'],/no-store/);assert.match(h['content-security-policy'],/frame-ancestors 'none'/);
+      assert.equal(h['cross-origin-opener-policy'],'same-origin');assert.match(h['permissions-policy'],/camera=\(\)/);
+      assert.ok(await visitor.evaluate(value=>{
+        const inline=[...document.scripts].filter(s=>!s.src && (!s.type || s.type==='text/javascript') && s.textContent.trim());
+        return inline.length>0 && inline.every(s=>s.nonce===value);
+      },nonce),'Inline-Bootstrap stimmt nicht mit dem Header überein');
+    }
+    await owner.goto(`${origin}/kasse`);
     await staff.goto(`${origin}/admin/datenschutzanfragen`);await staff.getByLabel('Vorgang auswählen').locator('option').filter({hasText:'Auskunft'}).waitFor({state:'attached'});
     await staff.goto(`${origin}/admin/newsletter`);await staff.getByText(/Der Kampagnenversand ist in dieser Umgebung ausgeschaltet/).waitFor();
     await checkAccessibility(staff,'newsletter workspace');
@@ -309,6 +331,7 @@ async function exercise({ admin, participant, ownerEmail }) {
     await owner.goto(`${origin}/admin/urkundenmail`);
     await owner.getByRole('alert').filter({hasText:'Kein Zugriff'}).waitFor();
     assert.equal(await owner.getByLabel('Betreff').count(), 0);
+    assert.deepEqual(cspViolations,[],'CSP-Verletzung im Browserlauf');
   } finally {
     await Promise.all(browsers.map((b) => b.close()));
     if (worker && worker.exitCode === null && worker.signalCode === null) {

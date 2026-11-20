@@ -23,8 +23,9 @@ const config: NextConfig = {
     return [{ source: '/:path*', headers: [
       { key: 'Referrer-Policy', value: 'no-referrer' },
       { key: 'X-Content-Type-Options', value: 'nosniff' },
-      // Development previews are embedded in Arena's iframe. Production must
-      // refuse framing (and additionally receive a reviewed CSP at the proxy).
+      { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },
+      { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+      // Zusätzlicher Framing-Schutz für ältere Browser im Produktionsbuild.
       ...(process.env.NODE_ENV === 'production' ? [{ key: 'X-Frame-Options', value: 'DENY' }] : []),
     ] }, ...['api', 'konto', 'admin', 'lernen', 'kasse', 'bestellung', 'warenkorb', 'mfa',
       'anmelden', 'registrieren', 'passwort-vergessen', 'aktivierung-erneut', 'test-postfach', 'widerruf'].map(area => ({
