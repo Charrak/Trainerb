@@ -150,6 +150,17 @@ async function exercise({ admin, participant, ownerEmail }) {
       staff = await pageFor(admin),
       visitor = await pageFor();
     await until(() => notices === 1, 'Initial certificate mail not received via SMTP');
+    // Anonymous public pages do not introduce optional tracking, third-party requests or local storage.
+    const outside=[]; const monitor=req=>{if(new URL(req.url()).origin!==origin)outside.push(new URL(req.url()).origin);};
+    visitor.on('request',monitor);
+    await visitor.goto(`${origin}/cookie-einstellungen`);await visitor.getByRole('heading',{name:'Cookie-Einstellungen'}).waitFor();
+    await visitor.getByRole('main').getByRole('link',{name:'Meine Datenrechte'}).click();
+    await visitor.getByLabel('Kontaktadresse').fill('datenrechte-browser@example.invalid');await visitor.getByLabel('Art der Anfrage').selectOption('access');
+    await visitor.getByRole('button',{name:'Anfrage senden'}).click();await visitor.getByRole('status').filter({hasText:'Deine Anfrage ist eingegangen'}).waitFor();
+    assert.deepEqual(outside,[]);assert.ok((await visitor.context().cookies()).every(c=>c.name==='__Host-csrf'&&c.secure));
+    assert.equal(await visitor.evaluate(()=>localStorage.length),0);visitor.off('request',monitor);
+    await staff.goto(`${origin}/admin/datenschutzanfragen`);await staff.getByLabel('Vorgang auswählen').locator('option').filter({hasText:'Auskunft'}).waitFor({state:'attached'});
+    await staff.goto(`${origin}/admin/newsletter`);await staff.getByText(/Der Kampagnenversand ist in dieser Umgebung ausgeschaltet/).waitFor();
     await owner.setViewportSize({width:390,height:844});
     await owner.goto(`${origin}/lernen/abschluss-fixture`);
     await owner.getByText(/Alle 84 Prüfungen bestanden/).waitFor();

@@ -16,7 +16,7 @@ function sections(id: string) {
     credits: Prisma.sql`SELECT i.id,i.order_id,i.document_number,i.issued_at,i.total_gross_cents::text,i.currency FROM credit_notes i JOIN orders o ON o.id=i.order_id WHERE o.user_id=${id}::uuid`,
     access: Prisma.sql`SELECT a.id,a.course_id,a.course_version_id,v.title,a.source,a.starts_at,a.ends_at,a.revoked_at,a.suspended_at FROM course_access a JOIN course_versions v ON v.id=a.course_version_id WHERE a.user_id=${id}::uuid`,
     progress: Prisma.sql`SELECT p.id,p.access_id,p.chapter_id,p.completed_at FROM chapter_progress p JOIN course_access a ON a.id=p.access_id WHERE a.user_id=${id}::uuid`,
-    exams: Prisma.sql`SELECT e.id,e.access_id,e.exam_id,e.attempt_no,e.status,e.started_at,e.submitted_at,r.passed,r.correct_count FROM exam_attempts e JOIN course_access a ON a.id=e.access_id LEFT JOIN exam_attempt_results r ON r.attempt_id=e.id WHERE a.user_id=${id}::uuid`,
+    exams: Prisma.sql`SELECT e.id,e.access_id,e.exam_id,e.attempt_no,e.status,e.started_at,e.submitted_at,r.passed FROM exam_attempts e JOIN course_access a ON a.id=e.access_id LEFT JOIN exam_attempt_results r ON r.attempt_id=e.id WHERE a.user_id=${id}::uuid`,
     completions: Prisma.sql`SELECT r.id,r.access_id,r.completed_at,r.completion_profile FROM completion_records r JOIN course_access a ON a.id=r.access_id WHERE a.user_id=${id}::uuid`,
     certificates: Prisma.sql`SELECT c.id,c.completion_id,c.status,c.issued_at,c.revoked_at FROM certificates c JOIN completion_records r ON r.id=c.completion_id JOIN course_access a ON a.id=r.access_id WHERE a.user_id=${id}::uuid`,
   };
