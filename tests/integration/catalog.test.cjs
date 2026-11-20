@@ -166,6 +166,16 @@ test('drafts remain private; public routes and backoffice require correct permis
   status(await new Browser().get('/cart'), 401);
 });
 
+test('mail library pins versions, checks supported variables and keeps actionable secrets only in the body',async()=>{
+ const base='/admin/mail-templates',keys=await admin.get(base);status(keys,200);assert.ok(keys.body.keys.includes('activation'));status(await support.get(base),403);status(await admin.get(base+'/not_a_template'),404);
+ for(const k of keys.body.keys){const current=await admin.get(base+'/'+k);status(current,200);assert.ok(current.body.published.id);}
+ const path=base+'/activation',v=(await admin.get(path)).body.published,payload={base_id:v.id,subject:'Dein Konto bestätigen',text:v.body_text_template+'\nDanke.'};
+ for(const patch of [{subject:'{{activation_url}}'},{text:'Ohne Aktivierungslink.'},{text:'https://invalid.example/?q={{activation_url}}'},{text:'Weiter: X{{activation_url}}'},{text:'{{token}}\n{{activation_url}}'}])status(await admin.change('post',path+'/drafts',{...payload,...patch}),422);
+ status(await admin.change('post',path+'/drafts',payload,{noCsrf:true}),403);const draft=await admin.change('post',path+'/drafts',payload);status(draft,201);status(await admin.change('post',path+'/publish',{draft_id:draft.body.id}),200);
+ const queued=await db.emailOutbox.findFirstOrThrow({where:{template_version_id:v.id}});assert.equal(queued.template_version_id,v.id);
+ await assert.rejects(db.emailTemplateVersion.update({where:{id:v.id},data:{body_text_template:'Ersatz'}}),/MAIL_TEMPLATE_VERSION_IMMUTABLE/);
+});
+
 test('offline recovery binds the replacement device, invalidates sessions and codes, and cannot replay an old approval',async()=>{
  const {replaceLostFactor}=require('../../apps/api/dist/offline-mfa');const fixture=await register('offline-recovery');await grant(fixture.user.id,['participant','support']);
  const codes=await enroll(fixture.browser,fixture.email),id=fixture.user.id,old=await db.userMfaFactor.findFirstOrThrow({where:{user_id:id,status:'active'}}),secret=new OTPAuth.Secret({size:20});

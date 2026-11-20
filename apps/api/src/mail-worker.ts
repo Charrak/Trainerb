@@ -82,12 +82,11 @@ export class MailWorker {
   }
 
   private render(template: string, variables: Record<string, string>): string {
-    const result = template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_whole, key: string) => {
+    if (/[{}]/.test(template.replace(/\{\{\s*[a-z_]+\s*\}\}/g,''))) throw new Error('Invalid template.');
+    return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_whole, key: string) => {
       if (!Object.hasOwn(variables, key)) throw new Error('Unknown template variable.');
       return variables[key];
     });
-    if (result.includes('{{') || result.includes('}}')) throw new Error('Invalid template.');
-    return result;
   }
 
   private async message(outboxId: string): Promise<MailMessage | null> {
@@ -156,13 +155,15 @@ export class MailWorker {
       const proof = await this.db.withdrawalVerification.findUnique({
         where: { token_hash: keyedHash(getConfig().tokenKey, 'withdrawal-verify', payload.token) } });
       if (!proof || proof.consumed_at || proof.verified_at || proof.expires_at <= new Date()) return null;
+      const reference=publicVars.request_reference;if(typeof reference!=='string'||!/^[0-9a-f]{8}$/.test(reference))throw new Error('Invalid withdrawal reference.');
+      variables.request_reference=reference;
       variables.verification_url = `${getConfig().publicBaseUrl}/widerruf/bestaetigen#token=${encodeURIComponent(payload.token)}`;
     } else if (key === 'withdrawal_received') {
       // The receipt is the proof of the deadline, so its timestamp is the one
       // stored at submission — not the time the mail happened to be sent.
       for (const name of ['received_date', 'received_time']) {
         const value = publicVars[name];
-        if (typeof value !== 'string' || !/^[0-9.:]{4,5}$/.test(value)) throw new Error('Invalid template variables.');
+        if (typeof value !== 'string' || !(name==='received_date'?/^\d{2}\.\d{2}\.\d{4}$/:/^\d{2}:\d{2}$/).test(value)) throw new Error('Invalid template variables.');
         variables[name] = value;
       }
     } else if (key === 'withdrawal_decided') {
