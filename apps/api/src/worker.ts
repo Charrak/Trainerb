@@ -1,3 +1,4 @@
+import {dispatchNewsletter} from './newsletter';
 import 'reflect-metadata';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
@@ -36,6 +37,7 @@ async function main() {
     while (!stopping) {
       try {
         if (Date.now() - lastPurge > 60_000) { await mailer.purgeExpiredSecrets(); lastPurge = Date.now(); }
+        try {await dispatchNewsletter(db,outbox);} catch {console.error(JSON.stringify({level:'error',event:'newsletter_dispatch_failed'}));}
         await dispatchDueMail(db, jobId => queue.add('email.send', { job_id: jobId }, {
           jobId, removeOnComplete: true, removeOnFail: true,
         }));

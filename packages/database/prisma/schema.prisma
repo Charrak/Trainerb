@@ -1366,3 +1366,61 @@ model NavigationItem {
   @@unique([location,page_id])
   @@map("navigation_items")
 }
+
+model NewsletterSubscriber {
+  id String @id @db.Uuid
+  email String @unique @db.Text
+  status String @default("pending") @db.Text
+  epoch String? @db.Uuid
+  policy String? @db.Text
+  topic String? @db.Text
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@map("newsletter_subscribers")
+}
+model NewsletterProof {
+  subscriber_id String @id @db.Uuid
+  token_hash Bytes @unique
+  policy String @db.Text
+  wording String @db.Text
+  privacy_id String @db.Uuid
+  topic String @db.Text
+  expires_at DateTime @db.Timestamptz(6)
+  @@map("newsletter_proofs")
+}
+model NewsletterConsentEvent {
+  id String @id @db.Uuid
+  subscriber_id String @db.Uuid
+  action String @db.Text
+  epoch String @db.Uuid
+  policy String @db.Text
+  wording String @db.Text
+  privacy_id String @db.Uuid
+  topic String @db.Text
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([epoch,action])
+  @@map("newsletter_consent_events")
+}
+model NewsletterCampaign {
+  id String @id @db.Uuid
+  subject String @db.Text
+  body String @db.Text
+  audience String @db.Text
+  created_by String @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  status String @default("draft") @db.Text
+  scheduled_at DateTime? @db.Timestamptz(6)
+  approved_by String? @db.Uuid
+  policy String? @db.Text
+  frozen_at DateTime? @db.Timestamptz(6)
+  @@index([status,scheduled_at])
+  @@map("newsletter_campaigns")
+}
+model NewsletterSend {
+  campaign_id String @db.Uuid
+  subscriber_id String @db.Uuid
+  epoch String @db.Uuid
+  outbox_id String? @unique @db.Uuid
+  dispatched_at DateTime? @db.Timestamptz(6)
+  @@id([campaign_id,subscriber_id])
+  @@map("newsletter_sends")
+}

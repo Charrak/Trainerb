@@ -111,7 +111,7 @@ before(async () => {
   }
   if(process.env.TRAINERB_CERTIFICATE_BROWSER==='yes')Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_qualification_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_qualification_fixture',STRIPE_WEBHOOK_SECRET:'whsec_qualification_fixture'});
   app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
-  await db.$executeRawUnsafe('TRUNCATE TABLE pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE TABLE newsletter_subscribers, pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
   redis = new Redis(process.env.REDIS_URL);
   const keys = await redis.keys('trainerb:rl:*'); if (keys.length) await redis.del(...keys);
@@ -164,6 +164,58 @@ test('drafts remain private; public routes and backoffice require correct permis
   assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
+});
+
+test('newsletter consent, audience freeze, unsubscribe, cancellation and complaint suppression are independent of purchases',async()=>{
+  const {dispatchNewsletter}=require('../../apps/api/dist/newsletter'),outbox=app.get(require('../../apps/api/dist/outbox').Outbox);
+  const {MailWorker}=require('../../apps/api/dist/mail-worker');const messages=[];
+  const worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to],messageId:m.messageId};}});
+  const publicClient=new Browser(),root='/admin/newsletter/campaigns',signup='/newsletter/subscribe',verify='/newsletter/confirm';
+  const runMail=async id=>{const job=await db.automationJob.findFirstOrThrow({where:{ref_id:id,kind:'email.send'}});assert.equal(await worker.runOne(job.id),true);return (await db.emailOutbox.findUniqueOrThrow({where:{id}})).status;};
+  const draft={subject:'Neu in der Akademie',body:'Nur synthetische Daten.',audience:'kurse'};
+  for(const caller of [participant,manager,support]){status(await caller.get(root),403);status(await caller.change('post',root,draft),403);}
+  status(await publicClient.get(root),401);status(await admin.change('post',root,draft,{noCsrf:true}),403);
+  process.env.NEWSLETTER_CONSENT_WORDING='Synthetischer Einwilligungstext.';process.env.NEWSLETTER_DELIVERY_ENABLED='true';
+  try {
+    const doc=await admin.change('post','/admin/commerce/legal',{kind:'privacy',wording:'Datenschutz im Test.'});status(doc,201);
+    status(await admin.change('post',`/admin/commerce/legal/${doc.body.id}/activate`,{}),200);
+    const p=(await publicClient.get('/newsletter/policy')).body;
+    const form=(email,topic='kurse')=>({email,topic,policy:p.policy,accepted:true});
+    const code=async(email,topic='kurse')=>{
+      status(await publicClient.change('post',signup,form(email,topic)),202);
+      const mail=await db.emailOutbox.findFirstOrThrow({where:{to_email:email,template_version:{template:{key:'newsletter_confirm'}}},orderBy:{created_at:'desc'}});
+      assert.deepEqual(mail.variables_public,{first_name:''});assert.equal(await runMail(mail.id),'accepted');
+      return messages.at(-1).text.split('#token=')[1].split('\n')[0];
+    };
+    status(await publicClient.change('post',signup,{...form('a@example.invalid'),accepted:false}),422);
+    status(await publicClient.change('post',signup,{...form('a@example.invalid'),policy:'old'}),409);
+    const token=await code('eins@example.invalid');status(await publicClient.get(verify+'?token='+token),404);
+    const attempts=await Promise.all([1,2].map(()=>publicClient.change('post',verify,{token})));assert.deepEqual(attempts.map(r=>r.status).sort(),[200,410]);
+    const leave=attempts.find(r=>r.status===200).body.unsubscribe_token;
+    const token2=await code('zwei@example.invalid');status(await publicClient.change('post',verify,{token:token2}),200);
+    const token3=await code('drei@example.invalid','akademie');status(await publicClient.change('post',verify,{token:token3}),200);
+    await code('pending@example.invalid');
+    const plan=async()=>{const c=await admin.change('post',root,draft);status(c,201);const path=`${root}/${c.body.id}/schedule`,time={scheduled_at:new Date().toISOString()};
+      status(await admin.change('post',path,time),200);status(await admin.change('post',path,time),409);await dispatchNewsletter(db,outbox);return c.body.id;};
+    const first=await plan();let sends=await db.newsletterSend.findMany({where:{campaign_id:first}});assert.equal(sends.length,2);
+    status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200);
+    const delivered=await Promise.all(sends.map(s=>runMail(s.outbox_id)));assert.deepEqual(delivered.sort(),['accepted','suppressed']);
+    const campaign=messages.find(m=>m.subject===draft.subject);assert.equal(campaign.to,'zwei@example.invalid');assert.ok(campaign.text.includes('/newsletter/abmelden#token='));
+    const link=new URL(campaign.headers['List-Unsubscribe'].slice(1,-1)).pathname;
+    status(await request(server).get(link),404);assert.equal((await db.newsletterSubscriber.findUnique({where:{email:'zwei@example.invalid'}})).status,'confirmed');
+    status(await request(server).post(link).type('form').send({'List-Unsubscribe':'One-Click'}),200);
+    status(await request(server).post(link).type('form').send({'List-Unsubscribe':'One-Click'}),200);
+    const next=await code('eins@example.invalid');status(await publicClient.change('post',verify,{token:next}),200);
+    status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200); // prior epoch cannot revoke new consent
+    const repeat=await plan();sends=await db.newsletterSend.findMany({where:{campaign_id:repeat}});assert.equal(sends.length,1);
+    status(await admin.change('post',root+'/'+repeat+'/cancel',{}),200);assert.equal(await runMail(sends[0].outbox_id),'suppressed');
+    const blocked=await plan();status(await admin.change('post','/admin/newsletter/suppress',{email:'eins@example.invalid',reason:'complained'}),200);
+    assert.equal(await runMail((await db.newsletterSend.findFirstOrThrow({where:{campaign_id:blocked}})).outbox_id),'suppressed');
+    const n=await db.newsletterProof.count();status(await publicClient.change('post',signup,form('eins@example.invalid')),202);assert.equal(await db.newsletterProof.count(),n);
+    const evidence=await db.newsletterConsentEvent.findFirstOrThrow({where:{action:'grant'}});assert.equal(evidence.privacy_id,doc.body.id);assert.equal(evidence.wording,p.wording);
+    await assert.rejects(db.newsletterConsentEvent.update({where:{id:evidence.id},data:{action:'withdraw'}}),/NEWSLETTER_EVIDENCE_IMMUTABLE/);
+    assert.equal((await admin.get(root)).body.data.find(c=>c.id===first).accepted,1);
+  }finally{delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
 });
 
 test('editorial pages remain private until release; drafts, release and withdrawal use revisions',async()=>{

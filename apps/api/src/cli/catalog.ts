@@ -15,6 +15,8 @@ const templates: Record<string,{subject:string;text:string}> = {
   activation: { subject:'Aktiviere dein Konto', text:'Hallo {{first_name}},\n\nbitte öffne den folgenden Link und lege dein Passwort selbst fest:\n{{activation_url}}\n\nDer Link ist 24 Stunden gültig und kann nur einmal verwendet werden. Falls du kein Konto angefordert hast, ignoriere diese Nachricht.' },
   password_reset: { subject:'Passwort zurücksetzen', text:'Hallo {{first_name}},\n\nüber diesen Link kannst du dein Passwort zurücksetzen:\n{{reset_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden. Falls du das nicht angefordert hast, ignoriere diese Nachricht.' },
   email_change: { subject:'Neue E-Mail-Adresse bestätigen', text:'Hallo {{first_name}},\n\nbitte bestätige deine neue E-Mail-Adresse über diesen Link:\n{{email_change_url}}\n\nDer Link ist 30 Minuten gültig und kann nur einmal verwendet werden.' },
+  newsletter_confirm: {subject:'Newsletter-Anmeldung bestätigen',text:'Für diese Adresse wurde der Newsletter angefordert. Thema: {{topic}}. Einwilligung: {{wording}}\n\nZum Bestätigen innerhalb von 30 Minuten öffnen und die Anmeldung bestätigen: {{confirm_url}}\nOhne Bestätigung erfolgt keine Anmeldung.'},
+  newsletter_campaign: {subject:'{{subject}}',text:'{{body}}\n\nNewsletter abbestellen: {{leave_url}}'},
   certificate_ready: { subject:'Deine Urkunde steht bereit', text:'Hallo {{first_name}},\n\ndeine Urkunde steht in deinem Konto unter „Meine Urkunden“ zum Download bereit.' },
   password_changed: { subject:'Dein Passwort wurde geändert', text:'Hallo {{first_name}},\n\ndas Passwort für dein Konto wurde geändert. Falls du das nicht selbst warst, kontaktiere den Betreiber.' },
   card_order_placed: { subject:'Bestellung {{order_number}} ist eingegangen', text:'Hallo {{first_name}},\n\ndeine Bestellung {{order_number}} über {{total}} EUR wurde angelegt. Du hast Kartenzahlung gewählt. Bitte nutze dafür die Zahlungsseite deiner Bestellung. Eine zusätzliche Überweisung ist nicht erforderlich.' },
@@ -51,6 +53,8 @@ export async function seedCatalog(db: PrismaClient): Promise<void> {
           subject_template: content.subject, body_text_template: content.text, body_html_template: content.text,
           allowed_variables: [
             { name: 'first_name', type: 'text', secrecy: 'personal' },
+            ...(key === 'newsletter_confirm' ? [{name:'topic',type:'text',secrecy:'public'},{name:'wording',type:'text',secrecy:'public'},{name:'confirm_url',type:'url',secrecy:'secret'}] : []),
+            ...(key === 'newsletter_campaign' ? [{name:'subject',type:'text',secrecy:'public'},{name:'body',type:'text',secrecy:'public'},{name:'leave_url',type:'url',secrecy:'secret'}] : []),
             ...(key === 'activation' ? [{ name:'activation_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'password_reset' ? [{ name:'reset_url', type:'url', secrecy:'secret' }] : []),
             ...(key === 'email_change' ? [{ name:'email_change_url', type:'url', secrecy:'secret' }] : []),
