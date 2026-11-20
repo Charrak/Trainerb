@@ -1,3 +1,4 @@
+import { examPolicy } from './exam-policy';
 import { previousKeys } from './keyring';
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
@@ -9,6 +10,7 @@ loadEnv({ path: resolve(__dirname, '../../../.env'), quiet: true });
 type AppEnv = 'development' | 'test' | 'production';
 export type Config = {
   appEnv: AppEnv;
+  examPolicy: ReturnType<typeof examPolicy>;
   databaseUrl: string;
   redisUrl: string;
   publicBaseUrl: string;
@@ -128,7 +130,7 @@ export function getConfig(): Config {
   const encryptionKeyId = required('DATA_ENCRYPTION_KEY_ID');
   const decryptionKeys = previousKeys(process.env.DATA_DECRYPTION_KEYS_FILE, encryptionKeyId, keyValues);
   cached = {
-    appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
+    examPolicy: examPolicy(process.env), appEnv, databaseUrl, redisUrl, publicBaseUrl: publicUrl.origin, embeddedPreviewCookies,
     sessionKey: keyValues[0], csrfKey: keyValues[1], tokenKey: keyValues[2],
     encryptionKey: keyValues[3], encryptionKeyId, decryptionKeys, auditKey: keyValues[4],
     mailFrom: required('MAIL_FROM'), smtpHost, smtpPort, smtpSecure,

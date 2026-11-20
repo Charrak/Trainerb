@@ -1571,18 +1571,56 @@ test('published chapter quiz: guarded idempotent start/resume, private grading, 
   await db.courseAccess.update({ where:{id:access}, data:{suspended_at:new Date(), suspend_reason:'review'} });
   status(await participant.get(`${path}/current`),403); status(await submit(first.id,picks,submitKey),403);
   await db.courseAccess.update({ where:{id:access}, data:{suspended_at:null, suspend_reason:null} });
+  await new Promise(r=>setTimeout(r,1050));
   const submissions = await Promise.all([submit(first.id,picks,submitKey),submit(first.id,picks,submitKey)]);
   submissions.forEach(r => {status(r,200); assert.deepEqual(r.body,{id:first.id,status:'failed'});});
   status(await submit(first.id,choices(first,3),submitKey),409); status(await submit(first.id,picks,randomUUID()),409);
   assert.equal((await participant.get(lesson)).body.completed_at,null);
   const retry = await start(randomUUID()); status(retry,200); const second = retry.body;
   assert.ok(second.questions.every(q => !first.questions.some(used => used.id === q.id)));
+  const tooEarly=await submit(second.id,choices(second,3),randomUUID()); status(tooEarly,409);
+  assert.equal(tooEarly.body.code,'EXAM_TOO_EARLY');
+  assert.equal(await db.examAttemptResult.count({where:{attempt_id:second.id}}),0);
+  await new Promise(r=>setTimeout(r,Number(tooEarly.body.details.retry_after_ms)+50));
   const pass = await submit(second.id,choices(second,3),randomUUID()); status(pass,200); assert.equal(pass.body.status,'passed');
   assert.deepEqual(pass.body.solutions.map(s => s.text), second.questions.map(q => q.text));
   assert.ok(pass.body.solutions.every(s => s.explanation.startsWith('Nur nach Bestehen')));
   assert.ok((await participant.get(lesson)).body.completed_at); assert.equal(await db.examAttempt.count({where:{access_id:access}}),2);
   assert.deepEqual((await start(firstKey)).body,{id:first.id,status:'failed'}); // replay does not reveal earlier solutions
   status(await start(randomUUID()),409);
+  // Eigenständiger Zugang: echte Fehlwertungen, danach auch parallele Starts gesperrt.
+  const testing=await db.courseAccess.create({data:{id:uuidv7(),user_id:adminUser.id,course_id:course.id,course_version_id:course.version_id,source:'manual',granted_by:adminUser.id}});
+  let retryPath=`/enrollments/${testing.id}/exams/${exam.body.id}/attempts`;
+  const tryStart=(key=randomUUID())=>admin.change('post',retryPath,{}, {key});
+  let repeatStart,repeatSubmit;
+  for(let n=0;n<3;n++) {
+    const key=randomUUID(), launched=await tryStart(key);status(launched,200);
+    const answer=choices(launched.body,0), submission=randomUUID();
+    repeatStart=()=>tryStart(key);
+    repeatSubmit=()=>admin.change('post',retryPath+'/'+launched.body.id+'/submit',{answers:answer},{key:submission});
+    await new Promise(r=>setTimeout(r,1050));status(await repeatSubmit(),200);
+  }
+  const denied=await Promise.all([tryStart(),tryStart()]);
+  for(const r of denied){status(r,429);assert.equal(r.body.code,'EXAM_COOLDOWN');assert.ok(Date.parse(r.body.details.retry_at)>Date.now());}
+  assert.equal(denied[0].body.details.retry_at,denied[1].body.details.retry_at);
+  const snapshot=(await admin.get(retryPath+'/current')).body;
+  assert.equal(snapshot.cooldown.retry_at,denied[0].body.details.retry_at);
+  assert.deepEqual((await repeatStart()).body,snapshot.attempt);assert.deepEqual((await repeatSubmit()).body,snapshot.attempt);
+  assert.equal(await db.examAttempt.count({where:{access_id:testing.id}}),3);
+  await db.courseAccess.update({where:{id:testing.id},data:{ends_at:new Date()}});
+  const renewed=await db.courseAccess.create({data:{id:uuidv7(),user_id:adminUser.id,course_id:course.id,course_version_id:course.version_id,source:'manual',granted_by:adminUser.id}});
+  retryPath=`/enrollments/${renewed.id}/exams/${exam.body.id}/attempts`;
+  const renewal=await tryStart();status(renewal,429);assert.equal(renewal.body.details.retry_at,snapshot.cooldown.retry_at);
+  await new Promise(r=>setTimeout(r,Math.max(0,Date.parse(snapshot.cooldown.retry_at)-Date.now())+50));
+  const fresh=await tryStart();status(fresh,200);
+  for(const action of ['start','submit']){
+    let limited;
+    for(let n=0;n<=20;n++){
+      limited=action==='start'?await tryStart():await admin.change('post',retryPath+'/'+fresh.body.id+'/submit',{answers:[]},{key:randomUUID()});
+      if(limited.status===429)break;
+    }
+    status(limited,429);assert.equal(limited.body.code,'RATE_LIMITED');
+  }
   const next = await write('post', `/admin/courses/${course.id}/versions`, {}); status(next,201);
   const copy = await db.exam.findFirstOrThrow({where:{course_version_id:next.body.version_id},include:{pool:{include:{questions:true}}}});
   assert.notEqual(copy.id,exam.body.id); assert.equal(copy.pool.questions.length,6);
@@ -1669,6 +1707,7 @@ test('qualification completion requires 84 different passes on this access, not 
     const base = `/enrollments/${access}/exams/${exam.id}/attempts`;
     const start = await client.change('post',base,{}, {key:randomUUID()}); status(start,200);
     const answers = start.body.questions.map(q=>({question_id:q.id, option_id:q.options.find(o=>o.text===(correct?'Option 1':'Option 2')).id}));
+    await new Promise(r=>setTimeout(r,1050));
     const key = randomUUID(), send = () => client.change('post',`${base}/${start.body.id}/submit`,{answers},{key});
     for (const res of await Promise.all(parallel ? [send(), send()] : [send()])) {status(res,200); if(correct)assert.equal(res.body.status,'passed'); else assert.deepEqual(res.body,{id:start.body.id,status:'failed'});}
   }

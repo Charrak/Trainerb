@@ -38,7 +38,8 @@ if (certificateRestore && (process.env.E2E_ALLOW_TEST_DATA !== 'yes' || process.
     !/^\/[a-z0-9_]+_drill_test$/.test(dbUrl.pathname))) {
   throw new Error('Restore drill requires E2E_ALLOW_TEST_DATA=yes, loopback test services without URI options, and a disposable *_drill_test database.');
 }
-const env = { ...process.env, APP_ENV: 'test', NODE_ENV: 'test', DATABASE_URL: database, REDIS_URL: redis,
+// Im isolierten Test bleiben alle drei Prüfungsregeln aktiv; nur die Uhrzeiten sind verkürzt.
+const env = { ...process.env, EXAM_MIN_WORK_SECONDS:'1', EXAM_FAILURE_WINDOW_SECONDS:'12', EXAM_MAX_FAILURES:'3', APP_ENV: 'test', NODE_ENV: 'test', DATABASE_URL: database, REDIS_URL: redis,
   PUBLIC_BASE_URL: 'https://academy.test', DATA_ENCRYPTION_KEY_ID: 'integration-ephemeral',
   MAIL_FROM: 'test@example.invalid', SMTP_HOST: '127.0.0.1', SMTP_PORT: '1025', SMTP_SECURE: 'false',
   TRAINERB_EMBEDDED_PREVIEW_COOKIES: 'false', TRAINERB_DESTRUCTIVE_TEST_DATABASE: 'confirmed' };

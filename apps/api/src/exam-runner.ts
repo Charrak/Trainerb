@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
+import { getConfig } from './config';
 import { Database } from './database';
 import { Sessions, type SessionContext } from './sessions';
 import { apiError, bodyObject, requireUuid } from './security';
@@ -32,10 +33,26 @@ function view(a: Attempt) {
   return { id: a.id, status: 'in_progress' as const, questions: a.questions.map(q => ({ id: q.question_id, text: q.prompt!,
     options: q.options.map(o => ({ id: o.option_id, text: o.label! })) })) };
 }
+// Der N-te jüngste Fehlversuch bestimmt die Freigabe, auch nach einer Regeländerung.
+async function cooldown(tx: Tx, userId: string, examId: string, now: Date) {
+  const { maxFailures, windowMs } = getConfig().examPolicy;
+  const failure = await tx.examAttempt.findFirst({
+    where: { exam_id: examId, access: { user_id: userId }, status: 'submitted', result: { passed: false },
+      submitted_at: { gt: new Date(now.getTime() - windowMs) } },
+    orderBy: [{ submitted_at: 'desc' }, { id: 'desc' }], skip: maxFailures - 1, select: { submitted_at: true },
+  });
+  return failure?.submitted_at ? new Date(failure.submitted_at.getTime() + windowMs) : null;
+}
+function waitDetails(until: Date, now: Date) {
+  return { retry_at: until.toISOString(), retry_after_ms: String(until.getTime() - now.getTime()) };
+}
+function locked(until: Date, now: Date) {
+  return apiError(429, 'EXAM_COOLDOWN', `Nächster Versuch ab ${until.toISOString()}.`, waitDetails(until, now));
+}
 @Injectable()
 export class ExamRunner {
   constructor(private readonly db: Database, private readonly sessions: Sessions) {}
-  private async scope(tx: Tx, ctx: SessionContext, accessId: string, examId: string) {
+  private async scope(tx: Tx, ctx: SessionContext, accessId: string, examId: string, writing = false) {
     requireUuid(accessId); requireUuid(examId);
     await this.sessions.assertCurrent(tx, ctx);
     // All starts/submissions for this grant serialize with each other and suspensions.
@@ -43,7 +60,9 @@ export class ExamRunner {
     const a = await tx.courseAccess.findFirst({ where: { id: accessId, user_id: ctx.user.id, revoked_at: null }, select: {
       course_version_id: true, suspended_at: true, starts_at: true, ends_at: true, version: { select: { chapter_completion_mode: true, completion_profile: true, state: true } } } });
     if (!a || a.version.state === 'draft') throw missing();
-    const checkedAt = new Date();
+    // Zwei Zugänge derselben Person dürfen nicht gleichzeitig am selben Limit vorbeischreiben.
+    if (writing) await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`exam:${ctx.user.id}:${examId.toLowerCase()}`}, 0))`;
+    const [{ checked_at: checkedAt }] = await tx.$queryRaw<{checked_at: Date}[]>`SELECT clock_timestamp() AS checked_at`;
     if (a.suspended_at || a.starts_at > checkedAt || (a.ends_at && a.ends_at <= checkedAt)) throw apiError(403, 'ACCESS_INACTIVE', 'Kein gültiger Kurszugang.');
     const exam = await tx.exam.findFirst({ where: { id: examId, course_version_id: a.course_version_id }, select: { chapter_id: true } });
     if (!exam) throw missing();
@@ -51,26 +70,29 @@ export class ExamRunner {
   }
   async current(ctx: SessionContext, accessId: string, examId: string) {
     return this.db.$transaction(async tx => {
-      await this.scope(tx, ctx, accessId, examId);
+      const { checkedAt } = await this.scope(tx, ctx, accessId, examId);
       const a = await tx.examAttempt.findFirst({ where: { access_id: accessId, exam_id: examId, status: { not: 'expired' } }, orderBy: { attempt_no: 'desc' }, include: paper });
-      return { attempt: a ? view(a) : null };
+      const until = a?.result?.passed ? null : await cooldown(tx, ctx.user.id, examId, checkedAt);
+      return { attempt: a ? view(a) : null, ...(until && { cooldown: waitDetails(until, checkedAt) }) };
     });
   }
   async start(ctx: SessionContext, accessId: string, examId: string, header?: string) {
     const startKey = key(header);
     return this.db.$transaction(async tx => {
-      const { versionId } = await this.scope(tx, ctx, accessId, examId);
+      const { versionId, checkedAt } = await this.scope(tx, ctx, accessId, examId, true);
       const replay = await tx.examAttempt.findUnique({ where: { access_id_start_idempotency_key: { access_id: accessId, start_idempotency_key: startKey } }, include: paper });
       if (replay) { if (replay.exam_id !== examId) throw conflict(); return view(replay); }
       const last = await tx.examAttempt.findFirst({ where: { access_id: accessId, exam_id: examId }, orderBy: { attempt_no: 'desc' }, include: paper });
       if (last && (last.status === 'in_progress' || last.result?.passed)) throw conflict();
+      const until = await cooldown(tx, ctx.user.id, examId, checkedAt);
+      if (until) throw locked(until, checkedAt);
       const pool = await tx.question.findMany({ where: { exam_id: examId, status: 'active' }, include: { options: true } });
       const eligible = shuffle(pool.filter(q => q.explanation.trim() && q.options.length === 4 && q.options.filter(o => o.is_correct).length === 1));
       if (eligible.length < 3) throw apiError(409, 'EXAM_NOT_READY', 'Für diese Prüfung fehlen freigegebene Fragen.');
       const used = new Set((await tx.examAttemptQuestion.findMany({ where: { exam_id: examId, attempt: { access_id: accessId } }, distinct: ['question_id'], select: { question_id: true } })).map(q => q.question_id));
       const selected = shuffle(eligible.sort((a,b) => Number(used.has(a.id)) - Number(used.has(b.id))).slice(0, 3));
       const id = uuidv7();
-      await tx.examAttempt.create({ data: { id, access_id: accessId, course_version_id: versionId, exam_id: examId, attempt_no: (last?.attempt_no ?? 0) + 1, start_idempotency_key: startKey } });
+      await tx.examAttempt.create({ data: { id, access_id: accessId, course_version_id: versionId, exam_id: examId, started_at: checkedAt, attempt_no: (last?.attempt_no ?? 0) + 1, start_idempotency_key: startKey } });
       for (const [i,q] of selected.entries()) {
         await tx.examAttemptQuestion.create({ data: { attempt_id: id, exam_id: examId, question_id: q.id, position: i+1, prompt: q.question_text, rationale: q.explanation } });
         await tx.examAttemptOption.createMany({ data: shuffle(q.options).map((o,j) => ({ attempt_id: id, question_id: q.id, option_id: o.id, position: j+1, label: o.option_text, correct: o.is_correct })) });
@@ -89,7 +111,7 @@ export class ExamRunner {
     }
     if (picks.size !== 3) throw invalid();
     return this.db.$transaction(async tx => {
-      const { checkedAt, versionId, mode, chapterId, profile } = await this.scope(tx, ctx, accessId, examId);
+      const { checkedAt, versionId, mode, chapterId, profile } = await this.scope(tx, ctx, accessId, examId, true);
       const a = await tx.examAttempt.findFirst({ where: { id: attemptId, access_id: accessId, exam_id: examId }, include: paper });
       if (!a) throw missing();
       if (a.result) {
@@ -104,6 +126,10 @@ export class ExamRunner {
         if (o.correct) ++correct;
         return { attempt_id: a.id, question_id: q.question_id, selected_option_id: o.option_id };
       });
+      const until = await cooldown(tx, ctx.user.id, examId, checkedAt);
+      if (until) throw locked(until, checkedAt);
+      const earliest = new Date(a.started_at.getTime() + getConfig().examPolicy.minWorkMs);
+      if (checkedAt < earliest) throw apiError(409, 'EXAM_TOO_EARLY', 'Die Mindestbearbeitungszeit ist noch nicht abgelaufen.', waitDetails(earliest, checkedAt));
       await tx.examAttemptAnswer.createMany({ data: answers });
       await tx.examAttemptResult.create({ data: { attempt_id: a.id, submit_key: submitKey, correct_count: correct, passed: correct === 3 } });
       const done = await tx.examAttempt.update({ where: { id: a.id }, data: { status: 'submitted', submitted_at: checkedAt }, include: paper });
