@@ -42,6 +42,8 @@ export const RETENTION_DAYS: RetentionPeriods = {
 export type RetentionReport = {
   ran_at: string;
   periods: RetentionPeriods;
+  newsletter_proofs_deleted: number;
+  newsletter_unconfirmed_deleted: number;
   account_tokens_deleted: number;
   sessions_deleted: number;
   withdrawal_addresses_scrubbed: number;
@@ -60,12 +62,28 @@ export async function runRetention(db: Prisma.TransactionClient, options: {
   const now = options.now ?? new Date();
   const periods = { ...RETENTION_DAYS, ...options.periods };
   const report: RetentionReport = { ran_at: now.toISOString(), periods,
-    account_tokens_deleted: 0, sessions_deleted: 0, withdrawal_addresses_scrubbed: 0, outbox_rows_deleted: 0 };
+    newsletter_proofs_deleted: 0, newsletter_unconfirmed_deleted: 0, account_tokens_deleted: 0, sessions_deleted: 0, withdrawal_addresses_scrubbed: 0, outbox_rows_deleted: 0 };
 
   // Expired tokens are dead weight; an unexpired one is never touched.
   const tokenWhere = { expires_at: { lte: daysAgo(now, periods.accountTokenDays) } };
   report.account_tokens_deleted = options.dryRun ? await db.accountToken.count({ where: tokenWhere })
     : (await db.accountToken.deleteMany({ where: tokenWhere })).count;
+
+  // Lock in the same order as subscribe/confirm/suppress. Recheck in a new statement
+  // after acquiring the lock so a freshly replaced proof cannot be deleted.
+  const batch = options.dryRun
+    ? await db.$queryRaw<{id:string}[]>`SELECT s.id FROM newsletter_subscribers s JOIN newsletter_proofs p ON p.subscriber_id=s.id WHERE p.expires_at<=${now} ORDER BY s.id LIMIT 500`
+    : await db.$queryRaw<{id:string}[]>`SELECT s.id FROM newsletter_subscribers s JOIN newsletter_proofs p ON p.subscriber_id=s.id WHERE p.expires_at<=${now} ORDER BY s.id LIMIT 500 FOR UPDATE OF s SKIP LOCKED`;
+  const ids = batch.map(r => r.id), proofWhere = { subscriber_id:{in:ids},expires_at:{lte:now} };
+  if(options.dryRun){
+    report.newsletter_proofs_deleted = await db.newsletterProof.count({where:proofWhere});
+    report.newsletter_unconfirmed_deleted = await db.newsletterSubscriber.count({where:{id:{in:ids},status:'pending'}});
+  } else if(ids.length){
+    const removed = await db.newsletterProof.findMany({where:proofWhere,select:{subscriber_id:true}});
+    await db.newsletterProof.deleteMany({where:proofWhere});
+    report.newsletter_proofs_deleted = removed.length;
+    report.newsletter_unconfirmed_deleted = (await db.newsletterSubscriber.deleteMany({where:{id:{in:removed.map(r=>r.subscriber_id)},status:'pending'}})).count;
+  }
 
   const sessionWhere = { OR: [{ expires_at: { lte: daysAgo(now, periods.sessionDays) } },
     { revoked_at: { lte: daysAgo(now, periods.sessionDays) } }] };

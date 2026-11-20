@@ -194,7 +194,13 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
     const leave=attempts.find(r=>r.status===200).body.unsubscribe_token;
     const token2=await code('zwei@example.invalid');status(await publicClient.change('post',verify,{token:token2}),200);
     const token3=await code('drei@example.invalid','akademie');status(await publicClient.change('post',verify,{token:token3}),200);
-    await code('pending@example.invalid');
+    const stale=await code('pending@example.invalid');
+    const pending=await db.newsletterSubscriber.findUniqueOrThrow({where:{email:'pending@example.invalid'}});
+    await db.newsletterProof.update({where:{subscriber_id:pending.id},data:{expires_at:new Date(Date.now()-1)}});
+    status(await publicClient.change('post',verify,{token:stale}),410);
+    const {runRetention}=require('../../apps/api/dist/retention');
+    for(const dryRun of [true,false]){const report=await db.$transaction(tx=>runRetention(tx,{dryRun}));assert.equal(report.newsletter_unconfirmed_deleted,1);assert.equal(await db.newsletterSubscriber.count({where:{id:pending.id}}),dryRun?1:0);}
+    await code('pending2@example.invalid');
     const plan=async()=>{const c=await admin.change('post',root,draft);status(c,201);const path=`${root}/${c.body.id}/schedule`,time={scheduled_at:new Date().toISOString()};
       status(await admin.change('post',path,time),200);status(await admin.change('post',path,time),409);await dispatchNewsletter(db,outbox);return c.body.id;};
     const first=await plan();let sends=await db.newsletterSend.findMany({where:{campaign_id:first}});assert.equal(sends.length,2);
@@ -1716,6 +1722,7 @@ test('expiry reminders merge touching periods, ignore gaps and recheck grant cha
   const person=await db.user.findUniqueOrThrow({where:{email_canonical:'catalog-participant@example.invalid'}}),cid=uuidv7(),vid=uuidv7();
   await db.course.create({data:{id:cid,slug:'ablauffixture',status:'published',visibility:'private'}});
   await db.courseVersion.create({data:{id:vid,course_id:cid,version:1,title:'Ablauftest',description:{schema_version:1,blocks:[]},state:'published',created_by:adminUser.id,published_by:adminUser.id,published_at:new Date()}});
+  await db.coursePublication.create({data:{id:uuidv7(),course_id:cid,course_version_id:vid,version:1,action:'published',actor_user_id:adminUser.id}});
   const now=Date.now(),d=86400000,end=new Date(now+4*d),edge=new Date(now+d/2);
   const grant=(a,b)=>db.courseAccess.create({data:{id:uuidv7(),course_id:cid,course_version_id:vid,user_id:person.id,source:'manual',granted_by:adminUser.id,starts_at:a,ends_at:b}});
   await grant(new Date(now-d),edge);await grant(edge,end);await grant(new Date(now+10*d),null);
