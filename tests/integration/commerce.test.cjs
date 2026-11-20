@@ -161,6 +161,13 @@ test('selling stays disabled until an operator enables it, and legal texts must 
   assert.equal(await db.order.count(), 0);
 
   await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: true } });
+  const cfg=require('../../apps/api/dist/config').getConfig(),saved=cfg.appEnv;
+  try {cfg.appEnv='production'; // isolated DB is intentionally enabled; no production sign-off is present
+    assert.equal((await anonymous.get('/shop/config')).body.sales_enabled,false);
+    assert.deepEqual((await anonymous.get('/shop/products')).body.data,[]);
+    status(await anonymous.get(`/shop/products/${product.id}`),404);
+    status(await buyer.change('post','/cart/items',{product_id:product.id}),409);
+  }finally{cfg.appEnv=saved;}
   const sellable = await anonymous.get('/shop/products'); status(sellable, 200);
   assert.equal(sellable.body.sales_enabled, true);
   assert.equal(sellable.body.data.length, 1);

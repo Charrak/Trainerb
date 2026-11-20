@@ -158,7 +158,7 @@ export function PageEditor() {
           <h1>Website-Seiten</h1>
           <p>Entwürfe sind nur im Backoffice sichtbar. Der öffentliche Pfad einer Seite bleibt bestehen.</p>
         </div>
-        <Link href="/konto">Zum Konto</Link>
+        <Link href="/admin/seitenbilder">Seitenbilder einreichen und freigeben</Link> <Link href="/konto">Zum Konto</Link>
       </header>
       <Notice message={error} />
       <Notice message={notice} kind="success" />

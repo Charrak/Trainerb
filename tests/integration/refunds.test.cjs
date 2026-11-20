@@ -289,6 +289,12 @@ test('a partial refund leaves the payment standing and issues one credit note', 
   assert.equal(report.body.environment,'test'); assert.equal(report.body.starts_at,null);
   assert.equal(report.body.payments_cents,'19900'); assert.equal(report.body.refunds_cents,'4900');
   assert.equal(report.body.balance_cents,'15000'); assert.equal(report.body.dispute_face_value_cents,'0');
+  assert.equal(report.body.sold_course_positions,1);assert.ok(report.body.orders_by_state.some(g=>g.payment_state==='paid'&&g.count===1));
+  const feeRollback=new Error('discard fee evidence');await assert.rejects(db.$transaction(async tx=>{
+    const id=uuidv7();await tx.paymentAttempt.create({data:{id,order_id:order.id,provider:'stripe',environment:'test',provider_idempotency_key:key(),provider_payment_id:'pi_fee_fixture',status:'succeeded',amount_cents:19900n,currency:'EUR',confirmed_at:new Date()}});
+    const report=()=>require('../../apps/api/dist/finance-report').financeReport(tx,'all');assert.equal((await report()).fees_cents,null);
+    await tx.stripeFeeEvidence.create({data:{balance_id:'txn_test',environment:'test',payment_id:id,amount_cents:19900n,currency:'EUR',fee_cents:190n,net_cents:19710n}});const reconciled=await report();assert.equal(reconciled.fees_cents,'190');assert.equal(reconciled.stripe_fees.verified,1);assert.equal(reconciled.sold_course_positions,1);throw feeRollback;
+  }),e=>e===feeRollback);
   // Fixed test clock: Berlin midnight on the autumn DST transition was still
   // UTC+2. A refund on that day does not move yesterday's receipt into today.
   const {financeReport} = require('../../apps/api/dist/finance-report');
@@ -305,6 +311,7 @@ test('a partial refund leaves the payment standing and issues one credit note', 
     const day=await financeReport(tx,'today',asOf), month=await financeReport(tx,'month',asOf);
     assert.equal(day.starts_at.toISOString(),'2025-10-25T22:00:00.000Z');assert.equal(day.balance_cents,'-4900');
     assert.equal(month.starts_at.toISOString(),'2025-09-30T22:00:00.000Z');assert.equal(month.balance_cents,String(large+15000n));
+    assert.equal(day.daily.length,7);assert.deepEqual(day.daily.at(-1),{day:'2025-10-26',payments:'0',refunds:'4900'});assert.equal(day.daily.at(-2).payments,'19900');
     throw rollback;
   }), err => err.message === rollback.message);
 

@@ -111,7 +111,7 @@ before(async () => {
   }
   if(process.env.TRAINERB_CERTIFICATE_BROWSER==='yes')Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_qualification_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_qualification_fixture',STRIPE_WEBHOOK_SECRET:'whsec_qualification_fixture'});
   app = await createApplication(); await app.listen(process.env.TRAINERB_CERTIFICATE_BROWSER === 'yes' ? 4000 : 0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
-  await db.$executeRawUnsafe('TRUNCATE TABLE newsletter_subscribers, pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
+  await db.$executeRawUnsafe('TRUNCATE TABLE newsletter_feedback, newsletter_subscribers, pages, legal_documents, courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db);
   redis = new Redis(process.env.REDIS_URL);
   const keys = await redis.keys('trainerb:rl:*'); if (keys.length) await redis.del(...keys);
@@ -164,6 +164,28 @@ test('drafts remain private; public routes and backoffice require correct permis
   assert.equal((await admin.get('/health')).body.exams_enabled, true);
   assert.equal((await new Browser().get('/shop/products')).body.sales_enabled, false);
   status(await new Browser().get('/cart'), 401);
+});
+
+test('website image needs a clean scan, matching rights evidence and a distinct reviewer; withdrawal stops fresh delivery', {skip:!process.env.TRAINERB_TEST_S3_ORIGIN,timeout:90000},async()=>{
+ const endpoint='/admin/site-image-uploads',cfg=require('../../apps/api/dist/config').getConfig(),old={mediaStore:cfg.mediaStore,quarantineStore:cfg.quarantineStore};
+ const sharp=require('sharp'),{AwsClient}=require('aws4fetch'),{scanNext,inspectUpload}=require('../../apps/api/dist/media-scan'),{withTestClamd}=require('../scanner/test-clamd.cjs'),{promoteNext}=require('../../apps/api/dist/media-promote');
+ const src={...old.mediaStore,bucket:'site-review-source'},dst={...old.mediaStore,bucket:'site-review-target'},aws=new AwsClient({...src,service:'s3'});
+ const img=await sharp({create:{width:3,height:2,channels:3,background:'red'}}).jpeg().withMetadata().toBuffer();const sha=require('crypto').createHash('sha256').update(img).digest('hex');
+ const post=async(who,bytes=img,name='Bild.jpg')=>request(server).post('/api/v1'+endpoint).set('Origin',origin).set('X-CSRF-Token',(await who.get('/auth/csrf')).body.csrf_token).set('Cookie',who.cookie()).set('Content-Type','application/octet-stream').set('X-Upload-Name',name).send(bytes);
+ try{Object.assign(cfg,{quarantineStore:src,mediaStore:dst});for(const store of [src,dst])assert.equal((await aws.fetch(`${store.origin}/${store.bucket}`,{method:'PUT'})).status,200);
+ status(await post(instructor),403);status(await post(admin,Buffer.from('%PDF-1.3 xxx %%EOF'),'a.pdf'),422);const sent=await post(admin);status(sent,201);const id=sent.body.id,path=endpoint+'/'+id+'/approve';
+ const proof={sha256:sha,rights_ref:'TEST-ONLY-34',public_use_confirmed:true};status(await releaseAdmin.change('post',path,proof),409);
+ await withTestClamd(async({socket})=>{assert.equal((await scanNext(db,r=>inspectUpload(r,src,socket))).id,id);});
+ status(await admin.change('post',path,proof),409);status(await releaseAdmin.change('post',path,{...proof,sha256:'0'.repeat(64)}),409);status(await releaseAdmin.change('post',path,proof,{noCsrf:true}),403);
+ status(await releaseAdmin.change('post',path,proof),200);const p=await promoteNext(db,{source:src,destination:dst});assert.equal(p.upload_id,id);assert.equal(p.error,null);
+ const asset=await db.mediaAsset.findUniqueOrThrow({where:{id:p.asset_id}});assert.equal(asset.visibility,'public');const url=`${dst.origin}/${dst.bucket}/${asset.storage_key}`;assert.equal((await fetch(url)).status,403);
+ const bytes=Buffer.from(await(await aws.fetch(url)).arrayBuffer());assert.equal((await sharp(bytes).metadata()).exif,undefined);assert.ok(!bytes.equals(img));
+ status(await admin.get('/admin/page-images/'+asset.id),302);status(await releaseAdmin.change('post',endpoint+'/'+id+'/withdraw',{}),200);status(await admin.get('/admin/page-images/'+asset.id),404);
+ await assert.rejects(db.courseMediaUpload.update({where:{id},data:{rights_ref:'OTHER'}}),/UPLOAD_ORIGIN_IMMUTABLE/);
+ const queued=await post(admin);status(queued,201);const q=queued.body.id;await withTestClamd(async({socket})=>{assert.equal((await scanNext(db,r=>inspectUpload(r,src,socket))).id,q);});
+ status(await releaseAdmin.change('post',endpoint+'/'+q+'/approve',proof),200);status(await admin.change('post',endpoint+'/'+q+'/withdraw',{}),200);
+ assert.equal(await promoteNext(db,{source:src,destination:dst}),null);await assert.rejects(db.courseMediaUpload.update({where:{id:q},data:{rights_withdrawn_at:null}}),/RIGHTS_WITHDRAWAL_FINAL/);
+ }finally{Object.assign(cfg,old);}
 });
 
 test('mail library pins versions, checks supported variables and keeps actionable secrets only in the body',async()=>{
@@ -224,6 +246,7 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
   for(const caller of [participant,manager,support]){status(await caller.get(root),403);status(await caller.change('post',root,draft),403);}
   status(await publicClient.get(root),401);status(await admin.change('post',root,draft,{noCsrf:true}),403);
   process.env.NEWSLETTER_CONSENT_WORDING='Synthetischer Einwilligungstext.';process.env.NEWSLETTER_DELIVERY_ENABLED='true';
+  Object.assign(process.env,{POSTMARK_FEEDBACK_PASSWORD:'synthetic-only-'.repeat(4),POSTMARK_SERVER_ID:'42',POSTMARK_BROADCAST_STREAM:'fixture'});
   try {
     const doc=await admin.change('post','/admin/commerce/legal',{kind:'privacy',wording:'Datenschutz im Test.'});status(doc,201);
     status(await admin.change('post',`/admin/commerce/legal/${doc.body.id}/activate`,{}),200);
@@ -263,13 +286,23 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
     status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200); // prior epoch cannot revoke new consent
     const repeat=await plan();sends=await db.newsletterSend.findMany({where:{campaign_id:repeat}});assert.equal(sends.length,1);
     status(await admin.change('post',root+'/'+repeat+'/cancel',{}),200);assert.equal(await runMail(sends[0].outbox_id),'suppressed');
-    const blocked=await plan();status(await admin.change('post','/admin/newsletter/suppress',{email:'eins@example.invalid',reason:'complained'}),200);
+    const outbound=await plan();const campaignMail=await db.newsletterSend.findFirstOrThrow({where:{campaign_id:outbound}});assert.equal(await runMail(campaignMail.outbox_id),'accepted');
+    const hdr=messages.at(-1).headers;assert.equal(hdr['X-PM-Metadata-trainerb_outbox'],campaignMail.outbox_id);
+    const feedback={RecordType:'Bounce',Type:'HardBounce',ID:731,ServerID:42,MessageStream:hdr['X-PM-Message-Stream'],Metadata:{trainerb_outbox:campaignMail.outbox_id},Email:'eins@example.invalid'};
+    const notify=(p,pass=process.env.POSTMARK_FEEDBACK_PASSWORD)=>request(server).post('/api/v1/newsletter/feedback/postmark').auth('trainerb',pass).send(p);
+    status(await notify(feedback,'wrong'),401);
+    for(const override of [{ServerID:43},{MessageStream:'other'},{Type:'SoftBounce'},{Metadata:{}},{Email:'other@example.invalid'}])status(await notify({...feedback,...override}),200);
+    assert.equal(await db.newsletterFeedback.count(),0);
+    const blocked=await plan();for(const r of await Promise.all([notify(feedback),notify(feedback)]))status(r,200);
+    assert.equal(await db.newsletterFeedback.count(),1);assert.equal((await db.newsletterSubscriber.findUnique({where:{email:feedback.Email}})).status,'bounced');
+    status(await notify({...feedback,ID:732,RecordType:'SpamComplaint'}),200);assert.equal((await db.newsletterSubscriber.findUnique({where:{email:feedback.Email}})).status,'complained');
+    status(await admin.change('post','/admin/newsletter/suppress',{email:'eins@example.invalid',reason:'complained'}),200);
     assert.equal(await runMail((await db.newsletterSend.findFirstOrThrow({where:{campaign_id:blocked}})).outbox_id),'suppressed');
     const n=await db.newsletterProof.count();status(await publicClient.change('post',signup,form('eins@example.invalid')),202);assert.equal(await db.newsletterProof.count(),n);
     const evidence=await db.newsletterConsentEvent.findFirstOrThrow({where:{action:'grant'}});assert.equal(evidence.privacy_id,doc.body.id);assert.equal(evidence.wording,p.wording);
     await assert.rejects(db.newsletterConsentEvent.update({where:{id:evidence.id},data:{action:'withdraw'}}),/NEWSLETTER_EVIDENCE_IMMUTABLE/);
     assert.equal((await admin.get(root)).body.data.find(c=>c.id===first).accepted,1);
-  }finally{delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
+  }finally{for(const k of ['POSTMARK_FEEDBACK_PASSWORD','POSTMARK_SERVER_ID','POSTMARK_BROADCAST_STREAM'])delete process.env[k];delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
 });
 
 test('verified deletion erases only a matched participant profile, withdraws marketing and invalidates access atomically',async()=>{

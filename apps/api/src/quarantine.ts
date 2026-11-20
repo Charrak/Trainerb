@@ -17,7 +17,7 @@ function detect(bytes: Buffer) {
   throw invalid();
 }
 
-export async function quarantineFile(req: ApiRequest, res: Response) {
+export async function quarantineFile(req: ApiRequest, res: Response, imagesOnly=false) {
   const store = getConfig().quarantineStore;
   if (!store) throw apiError(503, 'QUARANTINE_DISABLED', 'Der Quarantänespeicher ist nicht eingerichtet.');
   if (!req.is('application/octet-stream') || req.get('content-encoding')) throw apiError(415, 'UPLOAD_FORMAT', 'Binärdatei ohne Kompression erwartet.');
@@ -31,6 +31,7 @@ export async function quarantineFile(req: ApiRequest, res: Response) {
   const bytes: Buffer = req.body;
   if (!Buffer.isBuffer(bytes) || !bytes.length) throw invalid();
   const mime = detect(bytes);
+  if(imagesOnly && mime==='application/pdf')throw apiError(422,'IMAGE_REQUIRED','Für die Website sind nur PNG- oder JPEG-Bilder erlaubt.');
   if (!(mime === 'image/png' ? /\.png$/i : mime === 'image/jpeg' ? /\.jpe?g$/i : /\.pdf$/i).test(name)) throw invalid();
   const objectKey = randomUUID();
   const metadata = { object_key: objectKey, original_name: name, mime_detected: mime, size_bytes: bytes.length,

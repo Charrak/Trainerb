@@ -1,3 +1,4 @@
+import {approvedForNewSales} from './release-approval';
 import { lockProvider, reviewRequired } from './provider-profile';
 import { assertBackofficeWrite } from './backoffice-write';
 import { Injectable } from '@nestjs/common';
@@ -124,7 +125,7 @@ export class Commerce {
     const legal = await this.db.legalDocumentVersion.findMany({ where: { status: 'active' },
       include: { document: { select: { kind: true } } } });
     return {
-      sales_enabled: settings?.sales_enabled ?? false,
+      sales_enabled: !!settings?.sales_enabled && await approvedForNewSales(),
       payment_term_days: settings?.payment_term_days ?? null,
       stripe_enabled: !!getConfig().stripePublishableKey,
       legal: Object.fromEntries(legal.map(version => [version.document.kind, {
@@ -181,6 +182,7 @@ export class Commerce {
     return this.db.$transaction(async tx => {
       await this.staffActor(tx, ctx, 'settings.manage');
       if(values.sales_enabled){
+        if(!await approvedForNewSales())throw apiError(409,'RELEASE_APPROVAL_REQUIRED','Für neue Verkäufe fehlt die gültige Betriebsfreigabe.');
         const profile=await lockProvider(tx);
         if(!profile.revision || !await tx.legalDocumentVersion.count({where:{document:{kind:'imprint'},status:'active',provider_revision:profile.revision}})) throw reviewRequired();
       }

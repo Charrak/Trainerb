@@ -30,6 +30,7 @@
     "setup:env": "node scripts/init-env.mjs",
     "media:promote": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-promote.ts",
     "media:scan": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-scan.ts",
+    "finance:fees": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/stripe-fees.ts",
     "retention:run": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/retention.ts"
   },
   "dependencies": {
