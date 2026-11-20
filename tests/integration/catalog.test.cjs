@@ -1713,8 +1713,12 @@ test('certificate queue: retry, private immutable PDF after expiry, public verif
   const job=await db.certificate.findUniqueOrThrow({where:{id:cert.id}});
   const record=await db.completionRecord.findUniqueOrThrow({where:{id:job.completion_id}});
   await db.courseAccess.update({where:{id:record.access_id}, data:{starts_at:new Date(Date.now()-86400000),ends_at:new Date(Date.now()-1000),suspended_at:new Date(),suspend_reason:'review'}});
+  const stalled=async()=>(await db.$queryRaw`SELECT certificate_stalled FROM public.operations_probe_v1`)[0].certificate_stalled;
+  await db.certificate.update({where:{id:cert.id},data:{retry_at:new Date(0)}});assert.equal(await stalled(),false);
   assert.equal(await worker(),false); await db.courseAccess.update({where:{id:record.access_id},data:{suspended_at:null,suspend_reason:null}});
+  assert.equal(await stalled(),true);
   await assert.rejects(issueNextCertificate(db,outbox,async()=>{throw new Error('synthetic render failure');}));
+  assert.equal(await stalled(),false);
   assert.equal(await noticeCount(),0);
   assert.equal((await db.certificate.findUniqueOrThrow({where:{id:cert.id}})).last_error,'ISSUANCE_FAILED');
   await db.certificate.update({where:{id:cert.id},data:{retry_at:new Date(0)}});

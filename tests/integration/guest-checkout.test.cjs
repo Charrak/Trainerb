@@ -390,12 +390,17 @@ test('a paid guest order with a blocked address can be resolved explicitly', asy
   const filter = await admin.get('/admin/orders?state=unlinked'); status(filter, 200);
   assert.ok(filter.body.data.some(row => row.id === order.id && row.buyer.has_account === false));
 
+  const stalled=async()=>(await db.$queryRaw`SELECT paid_unfulfilled FROM public.operations_probe_v1`)[0].paid_unfulfilled;
+  assert.equal(await stalled(),false);
+  await db.order.update({where:{id:order.id},data:{paid_at:new Date(Date.now()-16*60000)}});
+  assert.equal(await stalled(),true);
   // The explicit decision cancels, keeps the payment evidence and releases the coupon.
   await freshReauth(admin, adminUser.id);
   const cancelled = await admin.change('post', `/admin/orders/${order.id}/resolve-link`,
     { decision: 'cancel', note: 'Konto gesperrt, Betrag erstattet' });
   status(cancelled, 200);
   assert.equal(cancelled.body.payment_state, 'cancelled');
+  assert.equal(await stalled(),false);
   const kept = await db.order.findUniqueOrThrow({ where: { id: order.id } });
   assert.equal(kept.paid_via, 'admin', 'the payment evidence survives the refund');
   assert.ok(kept.paid_at);
