@@ -1435,6 +1435,8 @@ model AccessExpiryNotice {
   @@map("access_expiry_notices")
 }
 model DataRequest {
+  erased_user_id String? @db.Uuid
+  profile_erased_at DateTime? @db.Timestamptz(6)
   id String @id @db.Uuid
   type String @db.Text
   contact_cipher Bytes?

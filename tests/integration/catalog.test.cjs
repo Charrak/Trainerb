@@ -262,6 +262,24 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
   }finally{delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
 });
 
+test('verified deletion erases only a matched participant profile, withdraws marketing and invalidates access atomically',async()=>{
+ const fixture=await register('erase-fixture');status(await login(fixture.browser,fixture.email),200);
+ const intake=await new Browser().change('post','/privacy/requests',{type:'deletion',email:fixture.email});status(intake,202);
+ const record=await db.dataRequest.findFirstOrThrow({where:{type:'deletion',status:'open'},orderBy:{id:'desc'}}),root='/admin/data-requests/'+record.id;
+ const perform=(user_id=fixture.user.id,reviewed=true)=>admin.change('post',root+'/erase-profile',{user_id,reviewed});
+ status(await perform(),409);status(await admin.change('post',root+'/advance',{action:'begin_identification'}),200);status(await perform(),409);
+ status(await admin.change('post',root+'/advance',{action:'identity_verified'}),200);status(await perform(managerUser.id),409);status(await perform(fixture.user.id,false),422);
+ const doc=await admin.change('post','/admin/commerce/legal',{kind:'privacy',wording:'Nur Fixture für Löschprüfung.'});status(doc,201);
+ const sid=uuidv7(),epoch=uuidv7();await db.newsletterSubscriber.create({data:{id:sid,email:fixture.email,status:'confirmed',epoch,topic:'kurse',policy:'test'}});
+ await db.newsletterConsentEvent.create({data:{id:uuidv7(),subscriber_id:sid,epoch,action:'grant',policy:'test',wording:'Test',topic:'kurse',privacy_id:doc.body.id}});
+ await db.billingProfile.create({data:{id:uuidv7(),user_id:fixture.user.id,first_name:'Test',last_name:'Kopie',street:'Teststraße',postal_code:'10115',city:'Berlin',country:'DE'}});
+ status(await perform(),200);status(await perform(),409);status(await fixture.browser.get('/me'),401);status(await login(new Browser(),fixture.email),401);
+ const user=await db.user.findUniqueOrThrow({where:{id:fixture.user.id}});assert.equal(user.status,'deleted');for(const field of ['first_name','last_name','password_hash','email_original','email_canonical'])assert.equal(user[field],null);
+ assert.equal(await db.billingProfile.count({where:{user_id:user.id}}),0);assert.equal(await db.newsletterConsentEvent.count({where:{epoch,action:'withdraw'}}),1);
+ const linked=await db.dataRequest.findUniqueOrThrow({where:{id:record.id}});assert.equal(linked.status,'in_progress');assert.equal(linked.erased_user_id,user.id);assert.ok(linked.profile_erased_at);
+ status(await admin.change('post',root+'/advance',{action:'not_applicable'}),409);status(await admin.change('post',root+'/advance',{action:'partially_retained'}),200);
+});
+
 test('editorial pages remain private until release; drafts, release and withdrawal use revisions',async()=>{
   const visitor=new Browser(), path='/admin/pages', publicPath='/pages/redaktionstest';
   const content={title:'Testseite',body:'Absatz eins.',description:'Testbeschreibung'};

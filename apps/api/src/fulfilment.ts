@@ -70,7 +70,7 @@ export async function fulfilPaidOrder(tx: Prisma.TransactionClient, orderId: str
   if (!userId) return park('ACCOUNT_BLOCKED');
   await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
   const buyer = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { status: true } });
-  if (buyer.status === 'deleted' || (buyer.status === 'blocked' && !options?.staffApprovedBlockedBuyer)) return park('ACCOUNT_BLOCKED');
+  if (buyer.status === 'deletion_requested' || buyer.status === 'deleted' || (buyer.status === 'blocked' && !options?.staffApprovedBlockedBuyer)) return park('ACCOUNT_BLOCKED');
   const now = new Date();
   // Check the complete bundle before writing any grants. An unrelated active grant
   // cannot count as fulfilment of this payment (including concurrent checkouts).
@@ -103,7 +103,7 @@ async function linkGuestAccount(tx: Prisma.TransactionClient, order: Prisma.Orde
     userId = existing.id;
     await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
     const current = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-    if (current.status === 'blocked' || current.status === 'deleted' || current.email_canonical !== order.buyer_email_canonical) return null;
+    if (current.status === 'blocked' || current.status === 'deletion_requested' || current.status === 'deleted' || current.email_canonical !== order.buyer_email_canonical) return null;
   } else {
     const role = await tx.role.findUnique({ where: { key: 'participant' } });
     if (!role) throw new Error('Role catalog is not initialized.');

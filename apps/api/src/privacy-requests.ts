@@ -5,6 +5,7 @@ import { Sessions, type ApiRequest } from './sessions';
 import { RateLimiter } from './limiter';
 import { backofficeWrite } from './backoffice-write';
 import { apiError, bodyObject, normalizeEmail, requireUuid, seal, unseal } from './security';
+import { endGrant } from './newsletter';
 import { getConfig } from './config';
 const invalid = () => apiError(422, 'INVALID_REQUEST', 'Bitte die Angaben prüfen.');
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
@@ -16,6 +17,7 @@ const fields = {
   requested_at: true,
   identity_verified_at: true,
   processed_at: true,
+  profile_erased_at: true,
   decision: true,
 } as const;
 @Controller()
@@ -83,6 +85,97 @@ export class PrivacyRequests {
       return result;
     });
   }
+  @Post('admin/data-requests/:id/erase-profile') @HttpCode(200) erase(
+    @Req() req: ApiRequest,
+    @Param('id') id: string,
+    @Body() input: unknown,
+  ) {
+    return backofficeWrite(this.db, this.sessions, req, permission, async (tx, actor) => {
+      requireUuid(id);
+      const b = bodyObject(input, ['user_id', 'reviewed']);
+      if (typeof b.user_id !== 'string' || b.reviewed !== true) throw invalid();
+      const userId = requireUuid(b.user_id);
+      await tx.$queryRaw`SELECT id FROM data_requests WHERE id=${id}::uuid FOR UPDATE`;
+      const r = await tx.dataRequest.findUnique({ where: { id } });
+      const denied = () =>
+        apiError(409, 'ERASURE_NOT_ELIGIBLE', 'Fall, Identität, Konto und Aufbewahrungsprüfung abgleichen.');
+      if (
+        !r ||
+        r.type !== 'deletion' ||
+        r.status !== 'in_progress' ||
+        !r.identity_verified_at ||
+        r.profile_erased_at ||
+        !r.contact_cipher ||
+        !r.contact_key_id ||
+        userId === actor
+      )
+        throw denied();
+      const { canonical } = normalizeEmail(
+        unseal<{ email: string }>(r.contact_cipher, `privacy:${id}`, r.contact_key_id).email,
+      );
+      await tx.$queryRaw`SELECT id FROM users WHERE id=${userId}::uuid FOR UPDATE`;
+      const user = await tx.user.findUnique({ where: { id: userId }, include: { roles: { include: { role: true } } } });
+      if (
+        !user ||
+        !user.email_verified_at ||
+        user.email_canonical !== canonical ||
+        !['active', 'blocked', 'deletion_requested'].includes(user.status) ||
+        user.roles.length !== 1 ||
+        user.roles[0].role.key !== 'participant'
+      )
+        throw denied();
+      const now = new Date();
+      await tx.authSession.updateMany({ where: { user_id: userId, revoked_at: null }, data: { revoked_at: now } });
+      await tx.accountToken.deleteMany({ where: { user_id: userId } });
+      await tx.mfaRecoveryCode.deleteMany({ where: { factor: { user_id: userId } } });
+      await tx.userMfaFactor.deleteMany({ where: { user_id: userId } });
+      await tx.billingProfile.deleteMany({ where: { user_id: userId } });
+      const [subscriber] = await tx.$queryRaw<
+        { id: string; epoch: string | null; status: string }[]
+      >`SELECT id,epoch,status FROM newsletter_subscribers WHERE email=${canonical} FOR UPDATE`;
+      if (subscriber) {
+        await tx.newsletterProof.deleteMany({ where: { subscriber_id: subscriber.id } });
+        if (subscriber.epoch) {
+          await endGrant(tx, subscriber.epoch, 'withdraw');
+          await tx.newsletterSubscriber.update({
+            where: { id: subscriber.id },
+            data: { status: 'unsubscribed', epoch: null, topic: null, policy: null },
+          });
+        } else if (subscriber.status === 'pending')
+          await tx.newsletterSubscriber.delete({ where: { id: subscriber.id } });
+      }
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          status: 'deleted',
+          email_original: null,
+          email_canonical: null,
+          email_verified_at: null,
+          password_hash: null,
+          first_name: null,
+          last_name: null,
+          last_login_at: null,
+          deleted_at: now,
+        },
+      });
+      await tx.dataRequest.update({
+        where: { id },
+        data: { erased_user_id: userId, profile_erased_at: now, processed_by: actor },
+      });
+      await tx.auditEvent.create({
+        data: {
+          id: uuidv7(),
+          actor_user_id: actor,
+          origin: 'user',
+          action: 'privacy.profile_erased',
+          target_type: 'data_request',
+          target_ref: id,
+          after_safe: { user_id: userId },
+        },
+      });
+      return { erased: true };
+    });
+  }
   @Post('admin/data-requests/:id/advance') @HttpCode(200) advance(
     @Req() req: ApiRequest,
     @Param('id') id: string,
@@ -104,7 +197,7 @@ export class PrivacyRequests {
         decision = a;
       } else if (
         r.status === 'in_progress' &&
-        (a === 'fulfilled' || a === 'partially_retained' || a === 'not_applicable')
+        (a === 'fulfilled' || a === 'partially_retained' || (a === 'not_applicable' && !r.profile_erased_at))
       ) {
         status = a === 'not_applicable' ? 'rejected' : 'completed';
         decision = a;

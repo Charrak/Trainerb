@@ -85,7 +85,14 @@ export function PrivacyIntake() {
     </section>
   );
 }
-type Row = { id: string; type: string; status: string; requested_at: string; decision: string | null };
+type Row = {
+  profile_erased_at: string | null;
+  id: string;
+  type: string;
+  status: string;
+  requested_at: string;
+  decision: string | null;
+};
 type Results = { data: Row[]; next_cursor: string | null };
 const actions: Record<string, string> = {
   begin_identification: 'Identitätsprüfung beginnen',
@@ -95,6 +102,53 @@ const actions: Record<string, string> = {
   partially_retained: 'Teilweise erfüllt: Aufbewahrung erforderlich',
   not_applicable: 'Begründet abgelehnt',
 };
+function EraseProfile({ id, reload }: { id: string; reload: () => Promise<void> }) {
+  const [uid, U] = useState(''),
+    [reviewed, V] = useState(false),
+    [busy, B] = useState(false),
+    [error, E] = useState('');
+  async function erase() {
+    B(true);
+    E('');
+    try {
+      await api(`/admin/data-requests/${id}/erase-profile`, 'POST', { user_id: uid, reviewed });
+      await reload();
+    } catch (e) {
+      E(errorMessage(e));
+    } finally {
+      B(false);
+    }
+  }
+  return (
+    <fieldset disabled={busy} className="stack-form">
+      <legend>Teilnehmerprofil endgültig löschen</legend>
+      <p>
+        Nur für das persönlich identifizierte Konto. Profilnamen, Anmeldung und gespeicherte Rechnungsprofile werden
+        entfernt, Newsletter-Einwilligungen beendet. Bestell-, Rechnungs-, Prüfungs- und Urkundennachweise werden hier
+        nicht gelöscht.
+      </p>
+      <label>
+        Extern abgeglichene Teilnehmer-ID
+        <input
+          value={uid}
+          autoComplete="off"
+          onChange={(e) => {
+            U(e.target.value);
+            V(false);
+          }}
+        />
+      </label>
+      <label>
+        <input type="checkbox" checked={reviewed} onChange={(e) => V(e.target.checked)} /> Identität, Kontozuordnung,
+        Umfang und Aufbewahrungsgründe sind geprüft. Das Teilnehmerprofil soll unwiderruflich gelöscht werden.
+      </label>
+      <Notice message={error} />
+      <button disabled={!reviewed || !uid} onClick={erase}>
+        Teilnehmerprofil jetzt endgültig löschen
+      </button>
+    </fieldset>
+  );
+}
 export function PrivacyDesk() {
   const [state, S] = useState('open'),
     [rows, R] = useState<Results>(),
@@ -190,6 +244,13 @@ export function PrivacyDesk() {
               {contact ? 'Kontakt ausblenden' : 'Kontaktadresse protokolliert anzeigen'}
             </button>
             {contact && <p>{contact}</p>}
+            {state === 'in_progress' &&
+              rows?.data.find((r) => r.id === id)?.type === 'deletion' &&
+              (rows.data.find((r) => r.id === id)?.profile_erased_at ? (
+                <p>Teilnehmerprofil bereits gelöscht. Weitere Systeme gesondert prüfen.</p>
+              ) : (
+                <EraseProfile key={id} id={id} reload={() => load(state)} />
+              ))}
             <p>
               Ein Fallabschluss dokumentiert das Ergebnis. Er erstellt keinen Export und löscht kein Konto. Vor
               Abschluss alle betroffenen Systeme, Aufbewahrungsgründe und Dienstleister prüfen und das Ergebnis sicher
