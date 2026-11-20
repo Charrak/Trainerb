@@ -45,3 +45,6 @@ export const providerFields = {
 } as const;
 export type ProviderField = keyof typeof providerFields;
 export type ProviderDetails = Record<ProviderField,string>;
+
+/** Obergrenze für den Seiteninhalt und den Wortlaut einer Rechtsfassung. */
+export const EDITORIAL_TEXT_LIMIT = 100_000;

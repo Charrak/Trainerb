@@ -1,3 +1,4 @@
+import { EDITORIAL_TEXT_LIMIT } from '@trainerb/contracts';
 import {approvedForNewSales} from './release-approval';
 import { lockProvider, reviewRequired } from './provider-profile';
 import { assertBackofficeWrite } from './backoffice-write';
@@ -209,7 +210,7 @@ export class Commerce {
     if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy' && kind !== 'imprint' && kind !== 'payment_info') {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { kind: 'Unbekanntes Dokument.' });
     }
-    const wording = plainText(body.wording, 'wording', 20_000, false, true);
+    const wording = plainText(body.wording, 'wording', EDITORIAL_TEXT_LIMIT, false, true);
     if (!wording) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { wording: 'Pflichtfeld.' });
     return this.db.$transaction(async tx => {
       await assertBackofficeWrite(tx,this.sessions,ctx,'legal.manage');

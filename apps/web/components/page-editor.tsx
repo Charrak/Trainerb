@@ -1,4 +1,5 @@
 'use client';
+import { EDITORIAL_TEXT_LIMIT } from '@trainerb/contracts';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
@@ -251,7 +252,7 @@ export function PageEditor() {
                     <textarea
                       rows={10}
                       value={fields.body}
-                      maxLength={20000}
+                      maxLength={EDITORIAL_TEXT_LIMIT}
                       onChange={(e) => setFields({ ...fields, body: e.target.value })}
                     />
                   </label>
