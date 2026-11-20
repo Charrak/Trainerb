@@ -101,6 +101,8 @@ async function proofFromOutbox() {
 before(async () => {
   assert.equal(process.env.TRAINERB_DESTRUCTIVE_TEST_DATABASE, 'confirmed');
   assert.match(new URL(process.env.DATABASE_URL).pathname, /_test$/);
+  // The card acceptance case uses the real signature verifier, an in-process session provider and no network.
+  Object.assign(process.env,{STRIPE_SECRET_KEY:'sk_test_guest_fixture',STRIPE_PUBLISHABLE_KEY:'pk_test_guest_fixture',STRIPE_WEBHOOK_SECRET:'whsec_guest_fixture'});
   app = await createApplication(); await app.listen(0, '127.0.0.1'); server = app.getHttpServer(); db = app.get(Database);
   await db.$executeRawUnsafe('TRUNCATE TABLE courses, users, roles, permissions, email_templates, email_template_versions, email_outbox, automation_jobs, automation_job_attempts RESTART IDENTITY CASCADE');
   await seedCatalog(db); await seedCommerce(db);
@@ -594,4 +596,45 @@ test('the identity guard refuses contradictions the API would never produce', as
     buyer_email_canonical: 'x@example.invalid', currency: 'EUR', payment_method: 'invoice',
     payment_state: 'awaiting', fulfillment_state: 'waiting', subtotal_gross_cents: 100n, discount_cents: 0n,
     total_gross_cents: 100n, billing_snapshot: {}, due_at: new Date(), created_by: null } }));
+});
+
+
+test('verified guest card order: cookie-bound session, payment replay, invoice PDF and read-only provider reconciliation',async()=>{
+  const {StripePayments}=require('../../apps/api/dist/stripe');const service=app.get(StripePayments);
+  const real=service.client, sessions=new Map(), guest=new Browser(),visitor=new Browser();
+  const dbReader=new (require('pg').Client)({connectionString:process.env.DATABASE_URL});
+  const {inspectPurchase,verifyRemote}=await import('../../scripts/check-staging-purchase.mjs');
+  let session;
+  service.client={webhooks:real.webhooks,checkout:{sessions:{create:async payload=>{
+    assert.match(payload.success_url,/\?gast=1&status=pruefung$/);assert.match(payload.cancel_url,/\?gast=1&status=abgebrochen$/);
+    const id='cs_test_'+uuidv7();session={id,object:'checkout.session',livemode:false,mode:'payment',payment_status:'unpaid',status:'open',
+      currency:'eur',amount_total:payload.line_items[0].price_data.unit_amount,payment_intent:'pi_'+uuidv7(),client_reference_id:payload.client_reference_id,
+      metadata:payload.metadata,url:'https://example.invalid/hosted-checkout'};sessions.set(id,session);return session;
+  },retrieve:async id=>sessions.get(id)}}};
+  try{
+    await dbReader.connect();const keys=await redis.keys('trainerb:rl:guest-checkout-ip:*');if(keys.length)await redis.del(...keys);
+    status(await guest.change('post','/guest/cart/items',{product_id:product.id}),200);
+    await proofRequest(guest,'karte@example.invalid');status(await guest.change('post','/guest/email/verify/confirm',{token:(await proofFromOutbox()).token}),200);
+    const reqBody=await guestBody({payment_method:'stripe'}),placed=await guest.change('post','/guest/orders',reqBody);status(placed,201);
+    const id=placed.body.id,pay='/guest/orders/'+id+'/pay',invoice=placed.body.invoice;
+    assert.equal(invoice.seller.bank,null);assert.equal(invoice.payment_reference,null);assert.equal(invoice.pdf_href,null);
+    const mail=await db.emailOutbox.findFirstOrThrow({where:{to_email:'karte@example.invalid',template_version:{template:{key:'card_order_placed'}}}});
+    const messages=[],job=await db.automationJob.findFirstOrThrow({where:{ref_id:mail.id,kind:'email.send'}});
+    const worker=new MailWorker(db,{sendMail:async m=>{messages.push(m);return {accepted:[m.to],messageId:m.messageId};}});
+    assert.equal(await worker.runOne(job.id),true);assert.equal(messages.length,1);assert.match(messages[0].text,/Kartenzahlung/);
+    status(await visitor.change('post',pay,{}),404);assert.equal(sessions.size,0);
+    status(await request(server).post('/api/v1'+pay).set('Cookie',guest.cookie()).set('Origin',origin).send({}),403);
+    const opened=await guest.change('post',pay,{});status(opened,200);assert.equal(opened.body.url,session.url);
+    status(await guest.change('post',pay,{}),200);assert.equal(sessions.size,1);
+    assert.equal(await inspectPurchase(dbReader,id),undefined);assert.equal(await db.courseAccess.count({where:{order_id:id}}),0);
+    Object.assign(session,{status:'complete',payment_status:'paid',url:null});
+    const event={id:'evt_'+uuidv7(),livemode:false,type:'checkout.session.completed',data:{object:session}};
+    const payload=JSON.stringify(event),sig=real.webhooks.generateTestHeaderString({payload,secret:process.env.STRIPE_WEBHOOK_SECRET});
+    for(let n=0;n<2;n++)status(await request(server).post('/api/v1/payments/stripe/webhook').set('Content-Type','application/json').set('Stripe-Signature',sig).send(payload),200);
+    verifyRemote(await inspectPurchase(dbReader,id),event,session);
+    assert.equal(await db.paymentEvent.count({where:{order_id:id}}),1);assert.equal(await db.invoice.count({where:{order_id:id}}),1);
+    const paid=(await guest.get('/guest/orders/'+id)).body;assert.equal(paid.fulfillment_state,'fulfilled');
+    status(await guest.get(paid.invoice.pdf_href),200);status(await visitor.get(paid.invoice.pdf_href),404);
+    status(await guest.change('post',pay,{}),409);
+  }finally{service.client=real;await dbReader.end();}
 });

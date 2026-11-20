@@ -8,7 +8,7 @@ import { Sessions, type ApiRequest, type SessionContext } from './sessions';
 import { Outbox } from './outbox';
 import { Invoices } from './invoices';
 import { requireRates, splitGross } from './tax';
-import { apiError, bodyObject, keyedHash, normalizeEmail, randomToken, requireName, requireString, seal } from './security';
+import { apiError, bodyObject, keyedHash, normalizeEmail, randomToken, requireName, requireString, requireUuid, seal } from './security';
 import { billingAddress, idempotencyKey, optionalCouponCode, paymentMethod, type BillingAddress } from './commerce-validation';
 import { getConfig } from './config';
 import { fulfilPaidOrder } from './fulfilment';
@@ -288,6 +288,7 @@ export class GuestCheckout {
     const key = idempotencyKey(body.idempotency_key);
     const address = billingAddress(body.billing_address);
     const method = paymentMethod(body.payment_method);
+    if(method==='stripe' && !getConfig().stripeSecretKey)throw apiError(409,'STRIPE_UNAVAILABLE','Kartenzahlung ist derzeit nicht eingerichtet.');
     const code = optionalCouponCode(body.coupon_code);
     const participantFirst = requireName(body.participant_first_name, 'first_name');
     const participantLast = requireName(body.participant_last_name, 'last_name');
@@ -435,14 +436,14 @@ export class GuestCheckout {
         await tx.paymentAttempt.create({ data: { id: uuidv7(), order_id: orderId, provider: 'invoice',
           environment: getConfig().appEnv === 'production' ? 'live' : 'test',
           provider_idempotency_key: `invoice-${orderId}`, status: 'pending', amount_cents: total, currency: 'EUR' } });
-        await this.invoices.issue(tx, orderId, settings, proof.email_original);
       }
+      await this.invoices.issue(tx, orderId, settings, proof.email_original);
       await tx.checkoutEmailVerification.update({ where: { id: proof.id }, data: { consumed_at: now } });
       await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
       await tx.cart.update({ where: { id: cart.id }, data: { status: 'converted' } });
       await tx.auditEvent.create({ data: { id: uuidv7(), origin: 'user', action: 'order.placed_guest', target_type: 'order',
         target_ref: orderId, after_safe: { order_number: orderNumber, total_gross_cents: String(total) } } });
-      await this.outbox.notifyGuest(tx, proof.email_original, participantFirst, 'order_placed',
+      await this.outbox.notifyGuest(tx, proof.email_original, participantFirst, method==='stripe'?'card_order_placed':'order_placed',
         { order_number: orderNumber, total: centsToTextGuest(total), payment_reference: paymentReference });
       // The cookie stays: it is the buyer's only proof for *this* order. It no
       // longer points at an open cart (the cart is `converted`), so nothing can
@@ -498,7 +499,7 @@ export class GuestCheckout {
    * refund outside the system. Never automatic, always audited.
    */
   async resolveUnlinked(ctx: SessionContext, orderIdInput: string, input: unknown) {
-    const orderId = requireString(orderIdInput, 'order_id', 36);
+    const orderId = requireUuid(orderIdInput);
     const body = bodyObject(input, ['decision', 'note']);
     const decision = body.decision === 'grant' || body.decision === 'cancel' ? body.decision : null;
     if (!decision) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { decision: 'Bitte entscheiden.' });
@@ -546,7 +547,7 @@ export class GuestCheckout {
    * the order — otherwise the buyer would lose their own receipt.
    */
   async myOrder(req: ApiRequest, res: Response, orderIdInput: string) {
-    const orderId = requireString(orderIdInput, 'order_id', 36);
+    const orderId = requireUuid(orderIdInput);
     const cart = await this.cartFor(req, res, false);
     const cartId = cart?.id ?? await this.settledCartId(req);
     if (!cartId) throw missing();

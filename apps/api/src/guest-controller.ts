@@ -1,3 +1,4 @@
+import { StripePayments } from './stripe';
 import { Body, Controller, Delete, Get, Header, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { GuestCheckout } from './guest';
@@ -23,7 +24,7 @@ export class GuestController {
   constructor(private readonly guest: GuestCheckout, private readonly shop: Shop, private readonly sessions: Sessions,
               private readonly limiter: RateLimiter, private readonly outbox: Outbox,
               private readonly db: Database, private readonly invoices: Invoices,
-              private readonly withdrawals: Withdrawals) {}
+              private readonly withdrawals: Withdrawals, private readonly stripe:StripePayments) {}
   private ip(req: ApiRequest): string { return req.ip || req.socket.remoteAddress || 'unknown'; }
 
   @Get('guest/cart') @Header('Cache-Control', 'no-store')
@@ -91,6 +92,13 @@ export class GuestController {
     await this.sessions.verifyCsrf(req);
     await this.limiter.hit('guest-checkout-ip', this.ip(req), 10, 60 * 60_000);
     return this.guest.checkout(req, res, body, { ip: this.ip(req), userAgent: req.get('user-agent') || 'unknown' });
+  }
+
+  @Post('guest/orders/:id/pay') @HttpCode(200) @Header('Cache-Control','no-store')
+  async pay(@Req() req:ApiRequest,@Res({passthrough:true}) res:Response,@Param('id') id:string){
+    await this.sessions.verifyCsrf(req);await this.limiter.hit('guest-pay-ip',this.ip(req),30,60*60_000);
+    const order=await this.guest.myOrder(req,res,id);
+    return this.stripe.startSession(order.id,order.buyer_email);
   }
 
   @Get('guest/orders/:id') @Header('Cache-Control', 'no-store')

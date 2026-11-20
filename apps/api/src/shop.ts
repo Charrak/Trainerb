@@ -223,6 +223,7 @@ export class Shop {
     const key = idempotencyKey(body.idempotency_key);
     const address = billingAddress(body.billing_address);
     const method = paymentMethod(body.payment_method);
+    if(method==='stripe' && !getConfig().stripeSecretKey)throw apiError(409,'STRIPE_UNAVAILABLE','Kartenzahlung ist derzeit nicht eingerichtet.');
     const code = optionalCouponCode(body.coupon_code);
     const accepted = body.legal_versions;
     if (!accepted || typeof accepted !== 'object' || Array.isArray(accepted)) {
@@ -360,15 +361,15 @@ export class Shop {
           environment: getConfig().appEnv === 'production' ? 'live' : 'test',
           provider_idempotency_key: `invoice-${orderId}`, status: 'pending', amount_cents: total,
           currency: 'EUR' } });
-        await this.invoices.issue(tx, orderId, settings);
       }
+      await this.invoices.issue(tx, orderId, settings);
       await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
       await tx.cart.update({ where: { id: cart.id }, data: { status: 'converted' } });
       await this.audit(tx, ctx.user.id, 'order.placed', 'order', orderId,
         { order_number: orderNumber, total_gross_cents: String(total), payment_method: method,
           coupon: couponId ? code : null });
       if (ctx.user.first_name && ctx.user.email_original) {
-        await this.outbox.notify(tx, ctx.user.id, ctx.user.email_original, ctx.user.first_name, 'order_placed',
+        await this.outbox.notify(tx, ctx.user.id, ctx.user.email_original, ctx.user.first_name, method==='stripe'?'card_order_placed':'order_placed',
           { order_number: orderNumber, total: centsToText(total), payment_reference: paymentReference });
       }
       return this.orderView(tx, ctx, orderId);

@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, errorMessage } from '../lib/api';
+import { api, errorMessage } from '../lib/api';
 import { checkoutKey, dateOnly, euro, type Cart, type GuestOrder, type ProofStatus, type ShopConfig } from '../lib/shop';
 import { Arrow, Field, Notice } from './site';
 import { InvoiceDownload } from './invoices';
@@ -286,12 +286,9 @@ export function GuestOrderPage({ orderId }: { orderId: string }) {
   async function payWithCard() {
     setBusy(true); setError('');
     try {
-      const session = await api<{ url: string }>(`/orders/${encodeURIComponent(orderId)}/pay`, 'POST', {});
+      const session = await api<{ url: string }>(`/guest/orders/${encodeURIComponent(orderId)}/pay`, 'POST', {});
       window.location.assign(session.url);
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        setError('Bitte melde dich an, um mit Karte zu bezahlen.'); setBusy(false); return;
-      }
       setError(errorMessage(e)); setBusy(false);
     }
   }

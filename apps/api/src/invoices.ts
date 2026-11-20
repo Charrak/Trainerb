@@ -119,8 +119,8 @@ export class Invoices {
         vat_id: settings.invoice_seller_vat_id,
         // The bank details belong on the document; freezing them here keeps the
         // payment instruction valid even after an account change later.
-        bank: { holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
-          name: settings.bank_name } } as Prisma.InputJsonValue,
+        bank: order.payment_method === 'invoice' ? { holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
+          name: settings.bank_name } : null } as Prisma.InputJsonValue,
       buyer_snapshot: order.billing_snapshot as Prisma.InputJsonValue,
       lines_snapshot: order.items.map(item => ({ position: item.position, title: item.title_snapshot,
         variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
@@ -131,7 +131,7 @@ export class Invoices {
         tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
         net_cents: String(item.net_cents), tax_cents: String(item.tax_cents) })) as Prisma.InputJsonValue,
       total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
-      payment_reference: order.payment_reference, recipient_email: recipientEmail ?? null } });
+      payment_reference: order.payment_method === 'invoice' ? order.payment_reference : null, recipient_email: recipientEmail ?? null } });
   }
 
   /**

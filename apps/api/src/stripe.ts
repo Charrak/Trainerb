@@ -61,6 +61,7 @@ export class StripePayments {
       reservation = await reserve(reservation.attempt.id);
     }
     const { order, attempt } = reservation, attemptId = attempt.id;
+    const returnPath = `${getConfig().publicBaseUrl}/bestellung/${orderId}?${order.identity_kind === 'guest' ? 'gast=1&' : ''}`;
     const session = await this.client.checkout.sessions.create({
       mode: 'payment',
       customer_email: order.buyer_email_original ?? userEmail,
@@ -72,8 +73,8 @@ export class StripePayments {
         product_data: { name: item.title_snapshot } } })),
       metadata: { order_id: orderId, order_number: order.order_number, attempt_id: attemptId },
       payment_intent_data: { metadata: { order_id: orderId, attempt_id: attemptId } },
-      success_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=pruefung`,
-      cancel_url: `${getConfig().publicBaseUrl}/bestellung/${orderId}?status=abgebrochen`,
+      success_url: `${returnPath}status=pruefung`,
+      cancel_url: `${returnPath}status=abgebrochen`,
     }, { idempotencyKey: attempt.provider_idempotency_key });
     const saved = await this.db.paymentAttempt.updateMany({ where: { id: attemptId, status: { in: ['created','pending'] }, order: { payment_state: 'awaiting' } },
       data: { status: 'pending', provider_session_id: session.id } });

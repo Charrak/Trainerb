@@ -25,6 +25,7 @@
     "test:certificates:restore": "npm run build:contracts && npm run db:generate && npm run build --workspace @trainerb/api && node scripts/run-integration.mjs --certificate-restore",
     "test:certificates:browser": "API_INTERNAL_ORIGIN=http://127.0.0.1:4000 npm run build && node scripts/run-integration.mjs --certificate-browser",
     "test:e2e": "node --test tests/e2e/*.smoke.cjs",
+    "staging:check-purchase": "node scripts/check-staging-purchase.mjs",
     "setup:env": "node scripts/init-env.mjs",
     "media:promote": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-promote.ts",
     "media:scan": "ts-node --project apps/api/tsconfig.json apps/api/src/cli/media-scan.ts",

@@ -225,3 +225,5 @@ Die ältere Phasentabelle ist ein Zielplan. Folgende Nachweise haben bewusst unt
 | 9 / 10 | Automatisierte Rechteprüfungen, logischer Restore-Drill und CI | Vollständige Auskunft/Löschung, Datenschutz, Steuer-/Rechts- und ggf. ZFU-Prüfung, Barrierefreiheit, Monitoring, externe Staging-Gesamtabnahme, Rückfallprobe und dokumentierte Betreiberfreigabe |
 
 **Keine Verkaufsfreigabe durch CI.** Staging-Nachweise gemäß 5.5/5.6 mit Release-Commit, Umgebung, Datum, Soll/Ist, freigebender Rolle und nachvollziehbarem Beleg separat dokumentieren; keine Schlüssel, Mailadressen, PDFs oder Prüfcodes in öffentliche Protokolle aufnehmen.
+
+Für den externen Teil der Phasen 3/4 gibt es eine [Anleitung mit lesendem Stripe-/Datenbankabgleich](09-staging-kaufabnahme.md). Ohne Staging und tatsächlich durchgeführten Testkauf entsteht kein Abnahmebeleg.
