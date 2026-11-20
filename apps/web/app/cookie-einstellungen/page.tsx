@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Shell } from '../../components/site';
+export const metadata = {title: 'Cookie-Einstellungen · Trainer B Akademie'};
 export default function Page() {
   return (
     <Shell>

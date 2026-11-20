@@ -1,6 +1,6 @@
 # Online-Akademie – Konzept und Entwicklungsstand
 
-**Entwicklungsstand:** Identität, Kauf, Lernen, Prüfungen, Urkunden und Teile des Backoffice sind implementiert. **Keine Betriebs- oder Verkaufsfreigabe.** [Aktueller Abnahmestand nach Phasen](docs/05-phasen-und-tests.md#aktueller-abnahmestand-nach-der-menüverwaltung).
+**Entwicklungsstand:** Identität, Kauf, Lernen, Prüfungen, Urkunden, Newsletter, Datenschutz-Fallbearbeitung und Teile des Backoffice sind implementiert. **Keine Betriebs- oder Verkaufsfreigabe.** [Aktueller Abnahmestand nach Phasen](docs/05-phasen-und-tests.md#aktueller-abnahmestand).
 
 Verantwortlich: Soufian Charrak
 

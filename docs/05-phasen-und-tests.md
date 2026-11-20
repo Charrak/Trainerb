@@ -211,7 +211,7 @@ Die Integrationstests in `tests/integration/catalog.test.cjs` prüfen Auditproje
 
 **Ergänzung – Textredaktion (Migration 025):** Eigene versionierte Website-Seiten und ein separater Editor für die fünf Rechtsdokumentarten sind umgesetzt. Abnahme: Konflikte bei konkurrierendem Speichern, Rechte und CSRF, unsichtbare Entwürfe, Ersetzen und Zurücknehmen öffentlicher Fassungen, unveränderlicher Seiteninhalt, unabhängige Rechtsfassungen und öffentlicher Abruf im Chromium-Test. Vor Migration auf einem Altbestand `SELECT kind,count(*) FROM legal_documents GROUP BY kind HAVING count(*)>1` prüfen: Bei Duplikaten stoppt die Eindeutigkeitsprüfung absichtlich. Fachlich klären; keine referenzierten Fassungen oder Bestellnachweise automatisch zusammenführen oder löschen.
 
-### Aktueller Abnahmestand (bis Migration 031)
+### Aktueller Abnahmestand
 
 Die ältere Phasentabelle ist ein Zielplan. Folgende Nachweise haben bewusst unterschiedliche Reichweite:
 
@@ -239,3 +239,5 @@ Für den externen Teil der Phasen 3/4 gibt es eine [Anleitung mit lesendem Strip
 **Cookie-Transparenz:** `/cookie-einstellungen` beschreibt die tatsächlich vorgesehenen technischen Cookies und ihre Entfernung. Keine vorangekreuzte Analyse-/Marketingfreigabe und kein zusätzlicher Cookie für eine nicht existente Wahl. Der Chromium-Test prüft auf diesen öffentlichen Seiten Drittanfragen, Cookie-Namen und lokalen Speicher. Ein neuer optionaler Dienst erfordert vor Aktivierung eine eigene Einwilligungssteuerung und erneute Abnahme.
 
 **Migration 032 – abgegrenzter Löschvollzug:** Ausschließlich nach bestätigter Identität im Löschfall, abgeglichener Teilnehmer-ID und separater Bestätigung kann das Backoffice das Kontoprofil und die Rechnungsprofile entfernen, Sitzungen und Newsletter-Einwilligung widerrufen. Das ersetzt keine vollständige fallbezogene Prüfung der übrigen Nachweise, Dienstleister oder Sicherungen. Der Fall wird nicht automatisch abgeschlossen.
+
+**Automatisierte Barrierefreiheitsprobe und Restore:** Der Chromium-Lauf prüft Cookie-Übersicht, Datenschutzformular und Newsletter-Verwaltung mit axe-core (WCAG-A/AA-Regeln bis 2.2). Fehler brechen die CI ab. Das ist keine vollständige Konformitätsfeststellung und ersetzt keine manuelle Tastatur-, Screenreader- oder Mobilabnahme. Der Restore-Drill prüft zusätzlich Profillöschung, Einwilligung und Sperrstand; eine Kopie vor einer neueren Testsperre besteht den Abgleich nicht. [Betriebsverfahren](04-sicherheit-und-betrieb.md#datenschutzstand-vor-wiederanlauf-abgleichen).

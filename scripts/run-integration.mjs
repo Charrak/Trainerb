@@ -63,7 +63,7 @@ run(['scripts/migrate.mjs']);
 run(['scripts/check-schema-drift.mjs']);
 if (certificateBrowser) run(['--test', '--test-name-pattern=^qualification completion|^browser certificate acceptance', 'tests/integration/catalog.test.cjs']);
 else if (certificateRestore) {
-  run(['--test', '--test-name-pattern=^qualification completion|^certificate queue:', 'tests/integration/catalog.test.cjs']);
+  run(['--test', '--test-name-pattern=^newsletter consent|^verified deletion|^qualification completion|^certificate queue:', 'tests/integration/catalog.test.cjs']);
   run(['tests/restore/certificate-drill.cjs']);
 } else run(['--test', '--test-concurrency=1', 'tests/integration/runtime-role.test.cjs', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
   'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs',
