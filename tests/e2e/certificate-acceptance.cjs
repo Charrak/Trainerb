@@ -231,6 +231,23 @@ async function exercise({ admin, participant, ownerEmail }) {
     await staff.getByRole('status').filter({hasText:'Gespeicherte Fassung aktiviert'}).waitFor();
     await visitor.goto(`${origin}/zahlungsinformationen`);
     await visitor.getByText('Synthetischer Browser-Wortlaut.',{exact:true}).waitFor();
+    await staff.getByRole('link',{name:'Anbieterprofil bearbeiten'}).click();
+    const providerName=`Testanbieter ${Date.now()}`;
+    for(const [label,value] of [['Rechtliche Anbieterbezeichnung',providerName],['Verantwortliche Person','Synthetische Redaktion'],['Straße und Hausnummer','Testweg 1'],['Postleitzahl','12345'],['Ort *','Teststadt'],['Land (zweistelliger Code)','DE'],['Kontakt-E-Mail','redaktion@example.invalid']]) {
+      await staff.getByLabel(label).fill(value);
+    }
+    await staff.getByRole('button',{name:'Anbieterprofil speichern'}).click();
+    await staff.getByRole('status').filter({hasText:'Profil gespeichert'}).waitFor();
+    await staff.getByRole('link',{name:'Zum Rechtstexteditor'}).click();
+    await staff.getByLabel('Rechtsdokument').selectOption('imprint');
+    await staff.getByLabel('Wortlaut',{exact:true}).fill('Synthetischer Impressumstest.');
+    await staff.getByRole('button',{name:'Neue Fassung als Entwurf speichern'}).click();
+    await staff.getByRole('checkbox').check();
+    await staff.getByRole('button',{name:'Geprüfte Fassung aktivieren'}).click();
+    await staff.getByRole('status').filter({hasText:'Gespeicherte Fassung aktiviert'}).waitFor();
+    await visitor.goto(`${origin}/impressum`);
+    await visitor.getByText(providerName,{exact:true}).waitFor();
+    await visitor.getByText('Synthetische Redaktion',{exact:true}).waitFor();
     await owner.goto(`${origin}/admin/urkundenmail`);
     await owner.getByRole('alert').filter({hasText:'Kein Zugriff'}).waitFor();
     assert.equal(await owner.getByLabel('Betreff').count(), 0);

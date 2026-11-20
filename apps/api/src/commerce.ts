@@ -1,3 +1,4 @@
+import { lockProvider, reviewRequired } from './provider-profile';
 import { assertBackofficeWrite } from './backoffice-write';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -127,7 +128,7 @@ export class Commerce {
       payment_term_days: settings?.payment_term_days ?? null,
       stripe_enabled: !!getConfig().stripePublishableKey,
       legal: Object.fromEntries(legal.map(version => [version.document.kind, {
-        id: version.id, version: version.version, wording: version.wording }])),
+        id: version.id, version: version.version, wording: version.wording, ...(version.document.kind === 'imprint' && version.provider_snapshot ? { provider_snapshot:version.provider_snapshot } : {}) }])),
     };
   }
 
@@ -179,6 +180,10 @@ export class Commerce {
     };
     return this.db.$transaction(async tx => {
       await this.staffActor(tx, ctx, 'settings.manage');
+      if(values.sales_enabled){
+        const profile=await lockProvider(tx);
+        if(!profile.revision || !await tx.legalDocumentVersion.count({where:{document:{kind:'imprint'},status:'active',provider_revision:profile.revision}})) throw reviewRequired();
+      }
       const { id: _ignored, ...update } = values;
       const saved = await tx.commerceSettings.upsert({ where: { id: 1 }, create: { id: 1, ...values }, update });
       await this.audit(tx, ctx, 'commerce.settings_updated', 'commerce_settings', '1',
@@ -190,14 +195,14 @@ export class Commerce {
   async editorialLegal(kind:string) {
     if(!['terms','privacy','withdrawal','imprint','payment_info'].includes(kind)) throw apiError(404,'NOT_FOUND','Dokument nicht gefunden.');
     const versions=await this.db.legalDocumentVersion.findMany({where:{document:{kind}},orderBy:{version:'desc'},take:20,
-      select:{id:true,version:true,wording:true,status:true,activated_at:true}});
+      select:{id:true,version:true,wording:true,status:true,activated_at:true,provider_revision:true,provider_snapshot:true}});
     const active=await this.db.legalDocumentVersion.findFirst({where:{document:{kind},status:'active'},select:{version:true}});
     return {versions,active_version:active?.version ?? null};
   }
 
   /** A new legal version starts as a draft; only activation makes it binding. */
   async createLegalVersion(ctx: SessionContext, input: unknown) {
-    const body = bodyObject(input, ['kind', 'wording', 'base_id']);
+    const body = bodyObject(input, ['kind', 'wording', 'base_id', 'provider_revision']);
     const kind = body.kind;
     if (kind !== 'terms' && kind !== 'withdrawal' && kind !== 'privacy' && kind !== 'imprint' && kind !== 'payment_info') {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { kind: 'Unbekanntes Dokument.' });
@@ -210,8 +215,11 @@ export class Commerce {
       const [document]=await tx.$queryRaw<{id:string}[]>`SELECT id FROM legal_documents WHERE kind=${kind} FOR UPDATE`;
       const last = await tx.legalDocumentVersion.findFirst({ where: { document_id: document.id }, orderBy:{version:'desc'} });
       if ('base_id' in body && body.base_id !== (last?.id ?? null)) throw apiError(409,'LEGAL_VERSION_CHANGED','Es gibt eine neuere Fassung. Bitte neu laden.');
+      const profile=kind==='imprint'?await lockProvider(tx):null;
+      if(profile && (!profile.details || body.provider_revision!==profile.revision))throw reviewRequired();
+      if(!profile && 'provider_revision' in body)throw apiError(422,'INVALID_FIELD','Anbieterprofil nur für das Impressum angeben.');
       const version = await tx.legalDocumentVersion.create({ data: { id: uuidv7(), document_id: document.id,
-        version: (last?.version ?? 0) + 1, wording, status: 'draft' } });
+        version: (last?.version ?? 0) + 1, wording, status: 'draft', ...(profile ? {provider_revision:profile.revision,provider_snapshot:profile.details as Prisma.JsonObject} : {}) } });
       await this.audit(tx, ctx, 'legal.version_created', 'legal_document_version', version.id, { kind, version: version.version });
       return { id: version.id, kind, version: version.version, status: version.status, wording: version.wording };
     });
@@ -226,8 +234,9 @@ export class Commerce {
     return this.db.$transaction(async tx => {
       await assertBackofficeWrite(tx,this.sessions,ctx,'legal.manage');
       await tx.$queryRaw`SELECT d.id FROM legal_documents d JOIN legal_document_versions v ON v.document_id=d.id WHERE v.id=${versionId}::uuid FOR UPDATE OF d`;
-      const version = await tx.legalDocumentVersion.findUnique({ where: { id: versionId } });
+      const version = await tx.legalDocumentVersion.findUnique({ where: { id: versionId },include:{document:{select:{kind:true}}} });
       if (!version) throw apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
+      if(version.document.kind==='imprint' && (!version.provider_revision || (await lockProvider(tx)).revision!==version.provider_revision))throw reviewRequired();
       if (version.status === 'active') return { id: version.id, status: version.status };
       if (version.status === 'retired') throw apiError(409, 'LEGAL_VERSION_RETIRED', 'Diese Fassung ist bereits abgelöst.');
       if (await tx.legalDocumentVersion.count({where:{document_id:version.document_id,version:{gt:version.version}}})) {

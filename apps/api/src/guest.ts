@@ -320,6 +320,8 @@ export class GuestCheckout {
       const previous = await tx.order.findFirst({ where: { checkout_email_verification_id: proof.id,
         checkout_idempotency_key: key }, select: { id: true } });
       if (previous) return this.orderView(tx, previous.id, cart.id);
+      // Serialize new orders with withdrawal of the sales approval. Prior orders remain payable.
+      await tx.$queryRaw`SELECT id FROM commerce_settings WHERE id=1 FOR SHARE`;
       const settings = await tx.commerceSettings.findUnique({ where: { id: 1 } });
       if (!settings?.sales_enabled) throw apiError(409, 'SALES_DISABLED', 'Der Verkauf ist derzeit nicht freigeschaltet.');
       const now = new Date();

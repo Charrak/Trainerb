@@ -34,3 +34,14 @@ export function normalizePersonName(input: unknown): NameResult {
 export const BACKOFFICE_ROLES = ['superadmin', 'admin', 'course_manager', 'instructor', 'support'] as const;
 export const ALL_ROLES = ['participant', ...BACKOFFICE_ROLES] as const;
 export type RoleKey = (typeof ALL_ROLES)[number];
+
+/** Every field in this allowlist is intended to be public once an imprint is released. */
+export const providerFields = {
+  legal_provider_name: ['Rechtliche Anbieterbezeichnung',160,true], responsible_name: ['Verantwortliche Person',120,true],
+  legal_form: ['Rechtsform',100,false], street: ['Straße und Hausnummer',160,true], street_extra: ['Adresszusatz',160,false],
+  postal_code: ['Postleitzahl',16,true], city: ['Ort',120,true], country: ['Land (zweistelliger Code)',2,true],
+  contact_email: ['Kontakt-E-Mail',254,true], phone: ['Telefon',60,false], registration_details: ['Registerangaben',300,false],
+  vat_id: ['USt-IdNr.',30,false], additional_legal_info: ['Weitere Anbieterangaben',1000,false],
+} as const;
+export type ProviderField = keyof typeof providerFields;
+export type ProviderDetails = Record<ProviderField,string>;

@@ -450,17 +450,42 @@ test('manual access grants are audited and never create an order or invoice', as
   status(await fixture.browser.get('/me/courses/commerce-kurs'), 404);
 });
 
-test('public imprint only exposes activated wording, including before sales open', async () => {
-  const audience = new Browser();
-  await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: false } });
-  const wording = 'Synthetischer Anbieter\nAusschließlich Testdaten';
-  const draft = await admin.change('post', '/admin/commerce/legal', { kind: 'imprint', wording });
-  status(draft, 201);
-  assert.equal((await audience.get('/shop/config')).body.legal.imprint, undefined);
-  status(await admin.change('post', `/admin/commerce/legal/${draft.body.id}/activate`, {}), 200);
-  const config = await audience.get('/shop/config'); status(config, 200);
-  assert.equal(config.body.sales_enabled, false);
-  assert.equal(config.body.legal.imprint.wording, wording);
+test('imprint review pins provider data; changing identity pauses new sales without modifying historical wording', async () => {
+  const audience = new Browser(), path='/admin/provider-profile', legal='/admin/commerce/legal';
+  const state=async()=>(await admin.get(path)).body;
+  const edit=(revision,details,who=admin,opts)=>who.change('patch',path,{revision,details},opts);
+  const draft=(revision,wording)=>admin.change('post',legal,{kind:'imprint',wording,provider_revision:revision});
+  const activate=id=>admin.change('post',`${legal}/${id}/activate`,{});
+  const config=async()=>(await audience.get('/shop/config')).body;
+  const settings=await db.commerceSettings.findUniqueOrThrow({where:{id:1}});
+  const {id,updated_at,updated_by,currency,...operatorFields}=settings;
+  const enable=()=>admin.change('post','/admin/commerce/settings',{...operatorFields,sales_enabled:true});
+  const current=await state();
+  const details={responsible_name:'Test Redaktion',legal_provider_name:'Synthetischer Anbieter '+uuidv7(),street:'Testweg 1',postal_code:'12345',city:'Teststadt',country:'de',contact_email:'kontakt@example.invalid'};
+  status(await audience.get(path),401); status(await buyer.get(path),403);status(await edit(current.revision,details,buyer),403);
+  status(await edit(current.revision,details,admin,{noCsrf:true}),403);
+  status(await edit(current.revision,{...details,legal_provider_name:''}),422);
+  status(await edit(current.revision,{...details,private_bank_key:'NO'}),400);
+  const firstEdit=await Promise.all([edit(current.revision,details),edit(current.revision,details)]);
+  assert.deepEqual(firstEdit.map(r=>r.status).sort(),[200,409]);const first=firstEdit.find(r=>r.status===200).body;
+  assert.equal((await config()).sales_enabled,false);assert.equal((await config()).legal.imprint,undefined);
+  status(await enable(),409);status(await draft(current.revision,'Synthetische Angaben'),409);
+  const v1=await draft(first.revision,'Synthetische Angaben'); status(v1,201);status(await activate(v1.body.id),200);
+  const snapshot=(await config()).legal.imprint.provider_snapshot;
+  assert.equal(snapshot.country,'DE');assert.equal(snapshot.responsible_name,details.responsible_name);
+  assert.equal((await config()).sales_enabled,false);status(await enable(),200);
+  status(await edit(first.revision,details),200);assert.equal((await config()).sales_enabled,true);
+  const stale=await draft(first.revision,'Synthetische Nachfolgefassung');status(stale,201);
+  const next=await edit(first.revision,{...details,city:'Anderer Testort'});status(next,200);
+  const paused=await config();assert.equal(paused.sales_enabled,false);assert.deepEqual(paused.legal.imprint.provider_snapshot,snapshot);
+  status(await activate(stale.body.id),409);status(await enable(),409);
+  await assert.rejects(db.legalDocumentVersion.update({where:{id:v1.body.id},data:{provider_snapshot:{city:'overwrite'}}}),/PROVIDER_SNAPSHOT_IMMUTABLE/);
+  const v2=await draft(next.body.revision,'Synthetische Nachfolgefassung');status(v2,201);status(await activate(v2.body.id),200);
+  assert.equal((await config()).legal.imprint.provider_snapshot.city,'Anderer Testort');assert.equal((await config()).sales_enabled,false);
+  const history=(await admin.get('/admin/legal-documents/imprint')).body.versions;
+  assert.deepEqual(history.find(v=>v.id===v1.body.id).provider_snapshot,snapshot);
+  const audit=await db.auditEvent.findFirstOrThrow({where:{action:'provider_profile.updated'},orderBy:{id:'desc'}});
+  assert.deepEqual(audit.after_safe,{revision:next.body.revision,sales_paused:true});
 });
 
 test('expired purchase can be bought again without overwriting its grant or learning history', async () => {
