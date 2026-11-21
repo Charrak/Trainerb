@@ -244,7 +244,7 @@ Unter **Konto → Kurskennzahlen → Finanzbericht** wählen Admins **Heute**, *
 
 ### Menüverwaltung für Website-Seiten
 
-Unter **Konto → Menüverwaltung** (`/admin/navigation`, `cms.edit`) Kopf- oder Fußzeile wählen. Eine CMS-Seite auswählen, **Link hinzufügen**, Linktext eingeben und mit **Nach oben / Nach unten** einordnen. Nicht benötigte Einträge ausblenden oder entfernen. Je Bereich sind höchstens zwölf unterschiedliche Seiten möglich. Feste Links zu Konto, Shop, Katalog, Rechtstexten und Widerruf werden nicht verändert. Es gibt keine frei eingebbaren URLs oder Untermenüs.
+Unter **Konto → Menüverwaltung** (`/admin/navigation`, `cms.edit`) Kopf- oder Fußzeile wählen. Eine CMS-Seite auswählen, **Link hinzufügen**, Linktext eingeben und mit **Nach oben / Nach unten** einordnen. Nicht benötigte Einträge ausblenden oder entfernen. Zusätzliche Links der Fußzeile erscheinen unter **Akademie**. Die Spalten **Rechtliches** und **Konto** bleiben auch bei leerem oder nicht erreichbarem CMS-Menü verfügbar. Je Bereich sind höchstens zwölf unterschiedliche Seiten möglich. Feste Links zu Konto, Shop, Katalog, Rechtstexten und Widerruf werden nicht verändert. Es gibt keine frei eingebbaren URLs oder Untermenüs.
 
 Nach frischer Identitätsbestätigung **Menü speichern**. Erst dann gilt die gesamte neue Reihenfolge. Bei einem Versionskonflikt eigene Eingaben sichern und den gespeicherten Stand neu laden. Links auf Entwürfe können vorbereitet werden: Sichtbar markierte Einträge erscheinen erst mit der Seitenveröffentlichung und verschwinden nach Rücknahme beim nächsten Seitenaufruf. Die Seite selbst wird durch Entfernen eines Links weder gelöscht noch zurückgenommen. Bei Ausfall der Menü-API bleiben die festen Links nutzbar.
 

@@ -182,6 +182,10 @@ Zusätzlich zur S3-Lesekonfiguration alle drei `MEDIA_QUARANTINE_*`-Variablen se
 
 Nur für die ausdrücklich freigegebene Live-Website beim **Web-Build** `NEXT_PUBLIC_SITE_STAGE=live` setzen. Staging behält auch bei `next build` den Testdatenhinweis, `Disallow: /`, eine leere Sitemap und `noindex, nofollow`. Ein Live-Build aktiviert **keinen Verkauf**. Für die Indexierung zusätzlich dem Webprozess `PUBLIC_BASE_URL` als reine HTTPS-Origin geben; ohne gültige Origin bleibt die Indexierung gesperrt. Live sind nur die öffentlichen Übersichten `/kurse` und `/seiten` und deren veröffentlichte Inhalte zur Indexierung vorgesehen. Die derzeitige Login-Startseite, Konto, Bestellungen, Checkout und Bestätigungslinks gehören nicht in die Sitemap.
 
+### Kontozugang und Fußnavigation
+
+Anmeldung (`/anmelden`, derzeit auch `/`) und Registrierung (`/registrieren`) zeigen direkt das jeweilige Formular. Passwort-Hilfe, erneute Aktivierung und die neutrale Registrierungsantwort bleiben erhalten. Die Fußzeile gliedert ihre festen Links in **Akademie**, **Rechtliches** und **Konto**. Veröffentlichte CMS-Menülinks ergänzen nur den Bereich Akademie. Der Testhinweis im Footer richtet sich nach der Build-Stufe, nicht nach Sitzung oder Verkaufsschalter.
+
 ### Systemseiten und Markenbilder
 
 Fehlende Seiten, Ladezustände und Renderfehler haben deutsche Ansichten. Der Link zur Startseite funktioniert auch ohne Client-Router; „Seite neu laden“ lädt das Dokument neu. Die Fehleransichten benötigen weder API noch Anmeldung und zeigen keine technischen Fehlerdetails an.
