@@ -182,6 +182,12 @@ Zusätzlich zur S3-Lesekonfiguration alle drei `MEDIA_QUARANTINE_*`-Variablen se
 
 Nur für die ausdrücklich freigegebene Live-Website beim **Web-Build** `NEXT_PUBLIC_SITE_STAGE=live` setzen. Staging behält auch bei `next build` den Testdatenhinweis, `Disallow: /`, eine leere Sitemap und `noindex, nofollow`. Ein Live-Build aktiviert **keinen Verkauf**. Für die Indexierung zusätzlich dem Webprozess `PUBLIC_BASE_URL` als reine HTTPS-Origin geben; ohne gültige Origin bleibt die Indexierung gesperrt. Live sind nur die öffentlichen Übersichten `/kurse` und `/seiten` und deren veröffentlichte Inhalte zur Indexierung vorgesehen. Die derzeitige Login-Startseite, Konto, Bestellungen, Checkout und Bestätigungslinks gehören nicht in die Sitemap.
 
+### Systemseiten und Markenbilder
+
+Fehlende Seiten, Ladezustände und Renderfehler haben deutsche Ansichten. Der Link zur Startseite funktioniert auch ohne Client-Router; „Seite neu laden“ lädt das Dokument neu. Die Fehleransichten benötigen weder API noch Anmeldung und zeigen keine technischen Fehlerdetails an.
+
+Logoquelle für Kopf-/Fußzeile und Icons: `apps/web/public/marke/zeichen.svg`. Favicon, App-Icons und das Open-Graph-Bild werden lokal ausgeliefert. `og:image` verwendet nur eine ausdrücklich konfigurierte HTTPS-Origin in `PUBLIC_BASE_URL`, nicht den Host-Header. Wenn du die Bildmarke änderst, erzeuge die Ableitungen mit `sh scripts/markenbilder.sh` (Node 24 nach `npm ci`, ImageMagick 6, DejaVu Sans) und prüfe sie zusammen ein. Die Werkzeuge werden im Betrieb nicht benötigt.
+
 ### Malware-Prüfung der Quarantäne
 
 `npm run media:scan` als separaten geplanten Job ausführen (bis zu 25 ausstehende Belege pro Lauf). Ohne eingerichteten Job warten Uploads in Quarantäne. Der Scheduler übergibt `DATABASE_URL` (Scanner-Rolle), `MEDIA_S3_ENDPOINT`, `MEDIA_S3_REGION`, `MEDIA_QUARANTINE_BUCKET` und die drei `MEDIA_SCAN_*`-Werte direkt an den Job. Beim Update bestehende Jobs von der API-`.env` auf eine eigene Umgebung umstellen. Ablauf und Abnahme: [Staging-Prüfplan](docs/08-staging-medienscan.md). Die Scanner-Identität erhält **nur GetObject im Quarantäne-Bucket**, keine Schreib- oder Freigaberechte. Zugangsdaten und Socket nur dem Scanprozess bereitstellen.

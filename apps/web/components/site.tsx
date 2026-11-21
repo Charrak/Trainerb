@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 
 export function Brand() {
   return <Link href="/" className="brand" aria-label="Trainer B Akademie – zur Startseite">
-    <span className="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+    <img className="brand-mark" src="/marke/zeichen.svg" width="34" height="34" alt=""/>
     <span className="brand-word">trainer<span>b</span><small>AKADEMIE</small></span>
   </Link>;
 }

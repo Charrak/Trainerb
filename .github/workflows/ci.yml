@@ -144,6 +144,11 @@ jobs:
           npm ci --ignore-scripts
           node --input-type=module -e "import chromium from '@sparticuz/chromium';import {appendFileSync} from 'node:fs';appendFileSync(process.env.GITHUB_ENV,'E2E_CHROMIUM_PATH='+(await chromium.executablePath())+'\n');"
 
+      - name: Deutsche Systemseiten, Markenbilder und Barrierefreiheit prüfen
+        env:
+          E2E_SINGLE_PROCESS: 'yes'
+        run: node --test tests/e2e/systemseiten.cjs
+
       - name: Install the PDF verifier
         run: |
           python3 -m venv "$RUNNER_TEMP/pdf-check"
