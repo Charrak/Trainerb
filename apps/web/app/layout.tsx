@@ -2,6 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { liveSite } from '../lib/site-stage';
 
+// HTML und seine Skript-Nonces müssen in derselben Anfrage entstehen.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: liveSite ? 'Trainer B Akademie' : 'Trainer B Akademie – Entwicklungsversion',
   description: 'Online-Akademie mit Kurskatalog und persönlichem Lernbereich.',
