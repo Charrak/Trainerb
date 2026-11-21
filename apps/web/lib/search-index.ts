@@ -29,9 +29,9 @@ export function validSlug(value: unknown, maxLength: number): value is string {
 type PublicList = { data: { slug: string }[]; next_cursor: string | null };
 export async function publishedUrls(origin: string | null, list: (path: string) => Promise<PublicList>): Promise<MetadataRoute.Sitemap> {
   if (!origin) return [];
-  const urls = new Set<string>();
+  // Beide Übersichtseinträge zählen ebenfalls zur Protokollgrenze von 50.000 URLs.
+  const urls = new Set(sections.map(s => origin + s.path));
   for (const s of sections) {
-    urls.add(origin + s.path);
     let cursor: string | null = null;
     do {
       const query: string = cursor ? `${s.api.includes('?') ? '&' : '?'}${s.cursor}=${cursor}` : '';
