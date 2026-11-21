@@ -1,3 +1,4 @@
+import { publicMetadata } from '../../../lib/public-index';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import { Shell } from '../../../components/site';
@@ -15,8 +16,9 @@ const read = cache(async (slug: string) => {
 });
 type Props = { params: Promise<{ slug: string }> };
 export async function generateMetadata({ params }: Props) {
-  const p = await read((await params).slug);
-  return { title: p.title, description: p.description };
+  const { slug } = await params;
+  const p = await read(slug);
+  return { ...publicMetadata('/seiten/' + slug), title: p.title, description: p.description };
 }
 export default async function Page({ params }: Props) {
   const p = await read((await params).slug);

@@ -1,10 +1,10 @@
 'use client';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { api, ApiError, errorMessage } from '../lib/api';
+import { api, errorMessage } from '../lib/api';
 import { Arrow, Notice } from './site';
 
-type PublicCourse = { slug: string; title: string; subtitle: string | null; description: string; duration_minutes: number | null };
+export type PublicCourse = { slug: string; title: string; subtitle: string | null; description: string; duration_minutes: number | null };
 type CoursePage = { data: PublicCourse[]; next_cursor: string | null };
 
 export function PublicCourses() {
@@ -40,23 +40,12 @@ export function PublicCourses() {
   </div>;
 }
 
-export function PublicCourseDetail({ slug }: { slug: string }) {
-  const [course, setCourse] = useState<PublicCourse>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    api<PublicCourse>(`/courses/${encodeURIComponent(slug)}`).then(value => { if (active) setCourse(value); })
-      .catch(e => { if (active) setError(e instanceof ApiError && e.status === 404 ? 'Diese Ausbildung ist nicht verfügbar.' : errorMessage(e)); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [slug]);
+export function PublicCourseDetail({ course }: { course: PublicCourse }) {
   return <div className="catalog-page content-width"><Link className="back-link" href="/kurse">← Alle Ausbildungen</Link>
-    {loading ? <p className="muted catalog-detail-loading">Ausbildung wird geladen …</p> : error ? <Notice message={error}/> : course &&
-      <article className="public-detail"><span className="eyebrow"><span className="eyebrow-line"/> AUSBILDUNG</span><h1>{course.title}<span className="accent-dot">.</span></h1>
+    <article className="public-detail"><span className="eyebrow"><span className="eyebrow-line"/> AUSBILDUNG</span><h1>{course.title}<span className="accent-dot">.</span></h1>
         {course.subtitle && <p className="public-subtitle">{course.subtitle}</p>}
         {course.duration_minutes !== null && <p className="course-duration">Umfang: {course.duration_minutes} Minuten</p>}
         {course.description && <div className="public-description">{course.description}</div>}
-        <p className="muted">Ob eine Buchung möglich ist, steht im Bereich <Link className="text-link" href="/buchen">Buchen</Link>.</p></article>}
+        <p className="muted">Ob eine Buchung möglich ist, steht im Bereich <Link className="text-link" href="/buchen">Buchen</Link>.</p></article>
   </div>;
 }

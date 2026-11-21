@@ -180,7 +180,7 @@ Zusätzlich zur S3-Lesekonfiguration alle drei `MEDIA_QUARANTINE_*`-Variablen se
 
 `/impressum`, `/datenschutz` und `/agb` sind ohne Konto über den Footer erreichbar, auch bei ausgeschaltetem Verkauf. Unter **Zahlung & Recht → Fassungen** die tatsächlichen Anbieterangaben und die geprüften Wortlaute als Entwurf anlegen und nach Prüfung aktivieren. Ohne aktive Fassung erscheint ein Hinweis, kein Mustertext. Das Impressum wird nicht aus Rechnungsdaten abgeleitet und ist keine zusätzliche Checkbox im Checkout. Die technische Seite ersetzt weder vollständige Angaben noch die rechtliche Freigabe.
 
-Nur für die ausdrücklich freigegebene Live-Website beim **Web-Build** `NEXT_PUBLIC_SITE_STAGE=live` setzen. Staging behält auch bei `next build` den Testdatenhinweis; der Schalter aktiviert weder Verkauf noch Suchmaschinenindexierung.
+Nur für die ausdrücklich freigegebene Live-Website beim **Web-Build** `NEXT_PUBLIC_SITE_STAGE=live` setzen. Staging behält auch bei `next build` den Testdatenhinweis, `Disallow: /`, eine leere Sitemap und `noindex, nofollow`. Ein Live-Build aktiviert **keinen Verkauf**. Für die Indexierung zusätzlich dem Webprozess `PUBLIC_BASE_URL` als reine HTTPS-Origin geben; ohne gültige Origin bleibt die Indexierung gesperrt. Live sind nur die öffentlichen Übersichten `/kurse` und `/seiten` und deren veröffentlichte Inhalte zur Indexierung vorgesehen. Die derzeitige Login-Startseite, Konto, Bestellungen, Checkout und Bestätigungslinks gehören nicht in die Sitemap.
 
 ### Malware-Prüfung der Quarantäne
 

@@ -1,7 +1,11 @@
+import { publicMetadata } from '../../lib/public-index';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Shell } from '../../components/site';
 export const dynamic = 'force-dynamic';
+export async function generateMetadata({ searchParams }: { searchParams: Promise<{ after?: string }> }) {
+  return (await searchParams).after === undefined ? publicMetadata('/seiten') : { robots: { index: false, follow: false } };
+}
 export default async function Page({ searchParams }: { searchParams: Promise<{ after?: string }> }) {
   const { after } = await searchParams;
   if (
