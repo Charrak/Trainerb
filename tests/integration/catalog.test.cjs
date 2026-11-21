@@ -325,6 +325,12 @@ test('verified deletion erases only a matched participant profile, withdraws mar
 
 test('editorial pages remain private until release; drafts, release and withdrawal use revisions',async()=>{
   const visitor=new Browser(), path='/admin/pages', publicPath='/pages/redaktionstest';
+  // Positiven Live-Zweig isoliert mit echten anonymen API-Listen prüfen, ohne Live-Build oder Verkaufsschalter.
+  require('ts-node').register({transpileOnly:true,compilerOptions:{module:'CommonJS',moduleResolution:'Node'}});
+  const {publishedUrls}=require('../../apps/web/lib/search-index.ts');
+  const inSitemap=async()=> (await publishedUrls('https://web.example.invalid',async path=>{
+    const response=await visitor.get('/'+path);status(response,200);return response.body;
+  })).some(entry=>entry.url==='https://web.example.invalid/seiten/redaktionstest');
   const content={title:'Testseite',body:'Absatz eins.',description:'Testbeschreibung'};
   const create={slug:'redaktionstest',...content};
   status(await visitor.get(path),401);
@@ -337,9 +343,11 @@ test('editorial pages remain private until release; drafts, release and withdraw
   const created=await admin.change('post',path,create);status(created,201);
   status(await admin.change('post',path,create),409);const id=created.body.id,edit=path+'/'+id;
   status(await visitor.get(publicPath),404);assert.equal((await visitor.get('/pages')).body.data.length,0);
+  assert.equal(await inSitemap(),false);
   const info=async()=>(await admin.get(edit)).body;
   const draft=await info();const publish=d=>admin.change('post',edit+'/publish',{revision:d.revision,version_id:d.latest.id});
   status(await publish(draft),200);assert.deepEqual((await visitor.get(publicPath)).body,{version:1,...content});
+  assert.equal(await inSitemap(),true);
   const published=await info(),save=()=>admin.change('post',edit+'/drafts',{...content,title:'Neue Fassung',revision:published.revision});
   assert.deepEqual((await Promise.all([save(),save()])).map(x=>x.status).sort(),[201,409]);
   assert.equal((await visitor.get(publicPath)).body.title,content.title);status(await publish(draft),409);
@@ -348,6 +356,7 @@ test('editorial pages remain private until release; drafts, release and withdraw
   await assert.rejects(db.pageVersion.update({where:{id:updated.latest.id},data:{body:'overwrite'}}),/PAGE_VERSION_IMMUTABLE/);
   const live=await info();status(await admin.change('post',edit+'/withdraw',{revision:live.revision,version_id:live.published.id}),200);
   status(await visitor.get(publicPath),404);assert.deepEqual((await visitor.get('/pages')).body.data,[]);
+  assert.equal(await inSitemap(),false);
   assert.equal(await db.auditEvent.count({where:{target_ref:id,action:'page.published'}}),2);
 });
 

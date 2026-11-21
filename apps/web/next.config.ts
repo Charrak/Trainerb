@@ -9,7 +9,10 @@ const internalApi = process.env.API_INTERNAL_ORIGIN || 'http://127.0.0.1:4000';
 const devOrigins = (process.env.ALLOWED_DEV_ORIGINS ?? '')
   .split(',').map(entry => entry.trim()).filter(Boolean);
 
+const indexBuild = process.env.NODE_ENV === 'production' && process.env.NEXT_PUBLIC_SITE_STAGE === 'live';
 const config: NextConfig = {
+  // Auch bei fehlender Build-Variable den sicheren Standard im Artefakt festschreiben.
+  env: { NEXT_PUBLIC_SITE_STAGE: indexBuild ? 'live' : 'staging' },
   ...(process.env.NODE_ENV !== 'production' && devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   devIndicators: false,
   // The optional React debug stream otherwise makes development-page
@@ -20,7 +23,10 @@ const config: NextConfig = {
     return [{ source: '/api/v1/:path*', destination: `${internalApi}/api/v1/:path*` }];
   },
   async headers() {
-    return [{ source: '/:path*', headers: [
+    return [{
+      source: indexBuild ? '/((?!kurse(?:/|$)|seiten(?:/|$)|robots\\.txt$|sitemap\\.xml$).*)' : '/:path*',
+      headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+    }, { source: '/:path*', headers: [
       { key: 'Referrer-Policy', value: 'no-referrer' },
       { key: 'X-Content-Type-Options', value: 'nosniff' },
       { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },

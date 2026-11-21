@@ -179,6 +179,13 @@ async function exercise({ admin, participant, ownerEmail }) {
     assert.deepEqual(outside,[]);assert.ok((await visitor.context().cookies()).every(c=>c.name==='__Host-csrf'&&c.secure));
     assert.equal(await visitor.evaluate(()=>localStorage.length),0);visitor.off('request',monitor);
     const productId=await visitor.evaluate(async()=> (await (await fetch('/api/v1/shop/products')).json()).data[0].id);
+    // Nur Chromium kennt die isolierte HTTPS-Testorigin (host-resolver-rules).
+    const [robots, sitemap] = await visitor.evaluate(() => Promise.all(['/robots.txt', '/sitemap.xml'].map(async path => {
+      const response = await fetch(path, { credentials: 'omit', cache: 'no-store' });
+      return { status: response.status, text: await response.text() };
+    })));
+    assert.equal(robots.status, 200); assert.match(robots.text, /^Disallow: \/$/m); assert.doesNotMatch(robots.text, /Sitemap:|^Allow:/m);
+    assert.equal(sitemap.status, 200); assert.match(sitemap.text, /<urlset /); assert.doesNotMatch(sitemap.text, /<loc>/);
     const usedNonces=new Set();
     for (const path of ['/','/anmelden','/registrieren','/passwort-vergessen','/aktivierung-erneut','/konto/aktivieren',
       '/konto/email-bestaetigen','/konto/passwort-zuruecksetzen','/mfa','/mfa/einrichten','/kurse','/kurse/abschluss-fixture',
@@ -187,6 +194,9 @@ async function exercise({ admin, participant, ownerEmail }) {
       const res=await visitor.goto(origin+path);
       assert.equal(res.status(),200,`Dokument: ${path}`);
       const h=res.headers(), nonce=h['content-security-policy']?.match(/'nonce-([^']+)'/)?.[1];
+      assert.equal(h['x-robots-tag'],'noindex, nofollow');
+      assert.match(await visitor.locator('meta[name=robots]').getAttribute('content'),/noindex, nofollow/);
+      if(path==='/kurse/abschluss-fixture') await checkAccessibility(visitor,'Kursdetail');
       assert.ok(nonce && !usedNonces.has(nonce),'Neue Dokument-Nonce fehlt');usedNonces.add(nonce);
       assert.match(h['cache-control'],/no-store/);assert.match(h['content-security-policy'],/frame-ancestors 'none'/);
       assert.equal(h['cross-origin-opener-policy'],'same-origin');assert.match(h['permissions-policy'],/camera=\(\)/);
