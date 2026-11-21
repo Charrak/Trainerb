@@ -2,7 +2,11 @@ import type { MetadataRoute } from 'next';
 
 // Ausschließlich die konfigurierte öffentliche Origin verwenden, niemals Host-/Forwarded-Header.
 export function indexOrigin(live: boolean, base: string | undefined): string | null {
-  if (!live || !base) return null;
+  return live ? configuredHttpsOrigin(base) : null;
+}
+
+export function configuredHttpsOrigin(base: string | undefined): string | null {
+  if (!base) return null;
   try {
     const url = new URL(base);
     return url.protocol === 'https:' && /^[a-z0-9.-]+$/i.test(url.hostname) && url.href === `${url.origin}/`
@@ -18,7 +22,7 @@ const sections = [
 export function crawlerRules(origin: string | null): MetadataRoute.Robots {
   if (!origin) return { rules: { userAgent: '*', disallow: '/' } };
   return { rules: { userAgent: '*', disallow: '/', allow: [
-    ...sections.flatMap(s => [s.path + '$', s.path + '/']), '/_next/static/', '/sitemap.xml$',
+    ...sections.flatMap(s => [s.path + '$', s.path + '/']), '/_next/static/', '/sitemap.xml$', '/marke/', '/favicon.ico$',
   ] }, sitemap: `${origin}/sitemap.xml` };
 }
 
