@@ -182,6 +182,12 @@ Zusätzlich zur S3-Lesekonfiguration alle drei `MEDIA_QUARANTINE_*`-Variablen se
 
 Nur für die ausdrücklich freigegebene Live-Website beim **Web-Build** `NEXT_PUBLIC_SITE_STAGE=live` setzen. Staging behält auch bei `next build` den Testdatenhinweis, `Disallow: /`, eine leere Sitemap und `noindex, nofollow`. Ein Live-Build aktiviert **keinen Verkauf**. Für die Indexierung zusätzlich dem Webprozess `PUBLIC_BASE_URL` als reine HTTPS-Origin geben; ohne gültige Origin bleibt die Indexierung gesperrt. Live sind nur die öffentlichen Übersichten `/kurse` und `/seiten` und deren veröffentlichte Inhalte zur Indexierung vorgesehen. Die derzeitige Login-Startseite, Konto, Bestellungen, Checkout und Bestätigungslinks gehören nicht in die Sitemap.
 
+### Startseite, E-Mail-Fassungen und Backoffice-Lücken
+
+Die öffentliche Startseite zeigt Angebot, Ablauf und Rechtswege; Anmeldung und Registrierung bleiben über Navigation und Fußzeile erreichbar. In Live-Builds gehört sie zusammen mit Katalog und Seiten zur Sitemap; ohne Live-Stufe bleibt alles `noindex`.
+
+Jede Transaktions- und Newsletter-Mail wird mit Text- und HTML-Teil aus derselben freigegebenen Version erzeugt. Der HTML-Rahmen ist fest, ohne Bilder, Schriften, Skripte oder Tracking; Links entstehen nur aus echten Webadressen an einer vorgesehenen Position. Die Redaktionsvorschau nutzt ausschließlich synthetische Werte. Unter **Konto → Gutscheine** lassen sich Codes anlegen, aktivieren und deaktivieren; der Finanzbericht weist zusätzlich Zahlungen nach Weg, Erstattungen im Sieben-Tage-Fenster und die ehrliche Null bei wiederkehrenden Zahlungen aus. Neue Newsletter-Segmente und das Anhalten geplanter Versände sind im [Admin-Handbuch](docs/06-admin-handbuch.md#newsletter-segmente-anhalten-und-empfängerzahl-migration-040041) beschrieben.
+
 ### Kontozugang und Fußnavigation
 
 Anmeldung (`/anmelden`, derzeit auch `/`) und Registrierung (`/registrieren`) zeigen direkt das jeweilige Formular. Passwort-Hilfe, erneute Aktivierung und die neutrale Registrierungsantwort bleiben erhalten. Die Fußzeile gliedert ihre festen Links in **Akademie**, **Rechtliches** und **Konto**. Veröffentlichte CMS-Menülinks ergänzen nur den Bereich Akademie. Der Testhinweis im Footer richtet sich nach der Build-Stufe, nicht nach Sitzung oder Verkaufsschalter.

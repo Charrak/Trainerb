@@ -48,3 +48,13 @@ export type ProviderDetails = Record<ProviderField,string>;
 
 /** Obergrenze für den Seiteninhalt und den Wortlaut einer Rechtsfassung. */
 export const EDITORIAL_TEXT_LIMIT = 100_000;
+
+/** Nur echte Webadressen werden als Link ausgegeben; alles andere bleibt Text. */
+export const httpUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+};

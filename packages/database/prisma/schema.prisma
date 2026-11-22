@@ -1415,6 +1415,7 @@ model NewsletterCampaign {
   approved_by String? @db.Uuid
   policy String? @db.Text
   frozen_at DateTime? @db.Timestamptz(6)
+  audience_size Int?
   @@index([status,scheduled_at])
   @@map("newsletter_campaigns")
 }

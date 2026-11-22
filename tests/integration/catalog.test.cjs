@@ -188,6 +188,37 @@ test('website image needs a clean scan, matching rights evidence and a distinct 
  }finally{Object.assign(cfg,old);}
 });
 
+test('mail forms: both parts come from one version, HTML is never typed by the editor and the preview stays synthetic',async()=>{
+ const base='/admin/mail-templates';
+ // Jede Vorlage liefert beide Fassungen aus derselben gespeicherten Version.
+ for(const k of ['activation','checkout_email_verify','newsletter_campaign','withdrawal_decided']){
+   const preview=await admin.get(base+'/'+k+'/preview');status(preview,200);
+   assert.equal(typeof preview.body.subject,'string'); assert.equal(typeof preview.body.text,'string');
+   assert.ok(preview.body.html.startsWith('<!doctype html>'),k);
+   assert.match(preview.body.html,/lang="de"/);
+   assert.doesNotMatch(preview.body.html,/<script|<img|@import|url\(/i,k);
+   assert.doesNotMatch(preview.body.html,/\{\{|\}\}/,k);
+   // Nur freigegebene Ziele: die Vorschau verlinkt ausschließlich example.invalid.
+   for(const href of preview.body.html.matchAll(/href="([^"]+)"/g)) assert.match(href[1],/^https:\/\/example\.invalid\//);
+ }
+ status(await support.get(base+'/activation/preview'),403);
+ status(await admin.get(base+'/not_a_template/preview'),404);
+ const preview=await admin.get(base+'/activation/preview');
+ // Die Anrede ist freiwillig: eine Vorlage, die nur die Anrede nutzt, darf sie
+ // weglassen. Pflicht-Platzhalter wie ein Aktivierungslink bleiben es nicht.
+ const path=base+'/password_changed',current=(await admin.get(path)).body,published=current.published;
+ assert.deepEqual(current.variables,['first_name']);
+ const freeText=published.body_text_template.replace('Hallo {{first_name}},','Hallo,');
+ const draft=await admin.change('post',path+'/drafts',{base_id:published.id,subject:published.subject_template,text:freeText});
+ status(draft,201);
+ const version=await db.emailTemplateVersion.findFirstOrThrow({where:{id:draft.body.id}});
+ assert.equal(version.body_html_template,freeText,'HTML wird nicht getrennt als Freitext gepflegt.');
+ status(await admin.change('post',path+'/publish',{draft_id:draft.body.id}),200);
+ const after=await admin.get(path+'/preview');status(after,200);
+ assert.doesNotMatch(after.body.text,/Mila/,'ohne Anrede erscheint kein erfundener Name');
+ assert.equal((after.body.html.match(/<a /g)||[]).length,0,'Vorlage ohne Link erzeugt keinen Link');
+ assert.match(preview.body.html,/<a href="https:\/\/example\.invalid\/konto\/aktivieren#token=BEISPIEL"/);
+});
 test('mail library pins versions, checks supported variables and keeps actionable secrets only in the body',async()=>{
  const base='/admin/mail-templates',keys=await admin.get(base);status(keys,200);assert.ok(keys.body.keys.includes('activation'));status(await support.get(base),403);status(await admin.get(base+'/not_a_template'),404);
  for(const k of keys.body.keys){const current=await admin.get(base+'/'+k);status(current,200);assert.ok(current.body.published.id);}
@@ -195,6 +226,19 @@ test('mail library pins versions, checks supported variables and keeps actionabl
  for(const patch of [{subject:'{{activation_url}}'},{text:'Ohne Aktivierungslink.'},{text:'https://invalid.example/?q={{activation_url}}'},{text:'Weiter: X{{activation_url}}'},{text:'{{token}}\n{{activation_url}}'}])status(await admin.change('post',path+'/drafts',{...payload,...patch}),422);
  status(await admin.change('post',path+'/drafts',payload,{noCsrf:true}),403);const draft=await admin.change('post',path+'/drafts',payload);status(draft,201);status(await admin.change('post',path+'/publish',{draft_id:draft.body.id}),200);
  const queued=await db.emailOutbox.findFirstOrThrow({where:{template_version_id:v.id}});assert.equal(queued.template_version_id,v.id);
+ // Die HTML-Fassung entsteht beim Zustellen aus derselben Version; sie wird
+ // nicht als Freitext in der Datenbank gepflegt.
+ // Der Testtransport hält die erzeugte Fassung fest, ohne extern zu senden.
+ const fassungen=[];const {MailWorker:PreviewWorker}=require('../../apps/api/dist/mail-worker');
+ const previewWorker=new PreviewWorker(db,{sendMail:async m=>{fassungen.push(m);return{accepted:[m.to],messageId:m.messageId}}});await previewWorker.runOne();
+ const zustellung=fassungen.at(-1);
+ if(zustellung){assert.equal(typeof zustellung.html,'string');assert.ok(zustellung.html.startsWith('<!doctype html>'));assert.ok(zustellung.text.length>0);}
+ const preview=await admin.get(path+'/preview');status(preview,200);
+ assert.ok(preview.body.html.startsWith('<!doctype html>'));assert.match(preview.body.html,/<h1>/);
+ assert.ok(preview.body.text.includes('Mila'),'synthetische Anrede bleibt im Textteil');
+ assert.doesNotMatch(preview.body.html,/\{\{|\}\}/);
+ const version=await db.emailTemplateVersion.findFirstOrThrow({where:{id:draft.body.id}});
+ assert.equal(version.body_html_template,payload.text,'HTML wird nicht als Freitext gespeichert.');
  await assert.rejects(db.emailTemplateVersion.update({where:{id:v.id},data:{body_text_template:'Ersatz'}}),/MAIL_TEMPLATE_VERSION_IMMUTABLE/);
 });
 
@@ -274,9 +318,18 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
     await code('pending2@example.invalid');
     const plan=async()=>{const c=await admin.change('post',root,draft);status(c,201);const path=`${root}/${c.body.id}/schedule`,time={scheduled_at:new Date().toISOString()};
       status(await admin.change('post',path,time),200);status(await admin.change('post',path,time),409);await dispatchNewsletter(db,outbox);return c.body.id;};
+    // Reichweite je Segment ohne Adressen; "aktive Lernende" ist hier leer.
+    const reach=await admin.get('/admin/newsletter/audiences');status(reach,200);
+    assert.deepEqual(reach.body.data.map(a=>a.key).sort(),['akademie','all','kurse','kurse_aktiv']);
+    assert.equal(reach.body.data.find(a=>a.key==='all').size,3,'drei bestätigte Einwilligungen');
+    assert.equal(reach.body.data.find(a=>a.key==='kurse').size,2);
+    assert.equal(reach.body.data.find(a=>a.key==='akademie').size,1);
+    assert.equal(reach.body.data.find(a=>a.key==='kurse_aktiv').size,0);
+    status(await support.get('/admin/newsletter/audiences'),403);
     const first=await plan();let sends=await db.newsletterSend.findMany({where:{campaign_id:first}});assert.equal(sends.length,2);
     status(await publicClient.change('post','/newsletter/unsubscribe',{token:leave}),200);
-    const delivered=await Promise.all(sends.map(s=>runMail(s.outbox_id)));assert.deepEqual(delivered.sort(),['accepted','suppressed']);
+    const delivered=await Promise.all(sends.map(s=>runMail(s.outbox_id)));
+    assert.deepEqual(delivered.sort(),['accepted','suppressed']);
     const campaign=messages.find(m=>m.subject===draft.subject);assert.equal(campaign.to,'zwei@example.invalid');assert.ok(campaign.text.includes('/newsletter/abmelden#token='));
     const link=new URL(campaign.headers['List-Unsubscribe'].slice(1,-1)).pathname;
     status(await request(server).get(link),404);assert.equal((await db.newsletterSubscriber.findUnique({where:{email:'zwei@example.invalid'}})).status,'confirmed');
@@ -302,6 +355,24 @@ test('newsletter consent, audience freeze, unsubscribe, cancellation and complai
     const evidence=await db.newsletterConsentEvent.findFirstOrThrow({where:{action:'grant'}});assert.equal(evidence.privacy_id,doc.body.id);assert.equal(evidence.wording,p.wording);
     await assert.rejects(db.newsletterConsentEvent.update({where:{id:evidence.id},data:{action:'withdraw'}}),/NEWSLETTER_EVIDENCE_IMMUTABLE/);
     assert.equal((await admin.get(root)).body.data.find(c=>c.id===first).accepted,1);
+    // Segmentregeln: "Kurse" ist die Themenwahl, das gespeicherte Segment
+    // "Lernende mit aktiven Zugängen" verlangt zusätzlich einen bestehenden Zugang.
+    const draft2={...draft,audience:'kurse_aktiv'};const aktiv=await admin.change('post',root,draft2);status(aktiv,201);
+    status(await admin.change('post',root+'/'+aktiv.body.id+'/pause',{}),409,'ein Entwurf lässt sich nicht anhalten');
+    status(await admin.change('post',root+'/'+aktiv.body.id+'/schedule',{scheduled_at:new Date().toISOString()}),200);
+    status(await admin.change('post',root+'/'+aktiv.body.id+'/pause',{}),200);
+    status(await admin.change('post',root+'/'+aktiv.body.id+'/cancel',{}),200);
+    status(await admin.change('post',root+'/'+aktiv.body.id+'/resume',{}),409,'ein gestoppter Lauf wird nicht wiederbelebt');
+    const wieder=await admin.change('post',root,draft2);status(wieder,201);
+    status(await admin.change('post',root+'/'+wieder.body.id+'/schedule',{scheduled_at:new Date().toISOString()}),200);
+    status(await admin.change('post',root+'/'+wieder.body.id+'/pause',{}),200);
+    status(await admin.change('post',root+'/'+wieder.body.id+'/resume',{}),200);
+    await dispatchNewsletter(db,outbox);
+    assert.equal(await db.newsletterSend.count({where:{campaign_id:wieder.body.id}}),0,'ohne aktiven Zugang keine Empfänger');
+    const frozen=await db.newsletterCampaign.findUniqueOrThrow({where:{id:wieder.body.id}});
+    assert.equal(frozen.audience_size,0);assert.equal(frozen.status,'frozen');
+    status(await admin.change('post',root+'/'+wieder.body.id+'/pause',{}),409,'festgelegter Empfängerkreis wird nicht wieder angehalten');
+    status(await admin.change('post',root,{...draft,audience:'unbekannt'}),422);
   }finally{for(const k of ['POSTMARK_FEEDBACK_PASSWORD','POSTMARK_SERVER_ID','POSTMARK_BROADCAST_STREAM'])delete process.env[k];delete process.env.NEWSLETTER_CONSENT_WORDING;delete process.env.NEWSLETTER_DELIVERY_ENABLED;}
 });
 
@@ -477,6 +548,10 @@ test('dashboard scopes are derived from roles and current course assignments, no
   for(const viewer of [support,manager,instructor,participant]) status(await viewer.get(finance+'?period=all'),403);
   status(await admin.get(finance+'?period=last_hour'),422);status(await admin.get(finance+'?environment=live'),400);
   const empty=await admin.get(finance);status(empty,200);assert.equal(empty.body.payments_cents,'0');assert.equal(empty.body.fees_cents,null);
+  // Der Bericht nennt Zahlungen nach Weg und Erstattungen im Sieben-Tage-Fenster.
+  assert.deepEqual(empty.body.payments_by_method,[]);
+  assert.deepEqual(empty.body.refund_window,{window_days:7,refunded_cents:'0',paid_cents:'0'});
+  assert.equal(empty.body.subscription_income_cents,'0','wiederkehrende Zahlungen werden nicht erfunden');
   const scoped=await db.courseStaff.create({data:{course_id:courseB.id,user_id:managerUser.id,assigned_by:adminUser.id,scope_role:'manager'}});
   try {assert.deepEqual((await manager.get(path)).body,{scope:'assigned',courses:1,completions:0});}
   finally {await db.courseStaff.deleteMany({where:{course_id:scoped.course_id,user_id:managerUser.id}});}
@@ -1915,4 +1990,36 @@ test('expiry reminders merge touching periods, ignore gaps and recheck grant cha
     const adjacent=await db.courseAccess.findFirstOrThrow({where:{course_id:cid,starts_at:edge}});await db.courseAccess.update({where:{id:adjacent.id},data:{suspended_at:new Date(),suspend_reason:'review'}});
     await queueExpiryNotices(db,outbox);notices=await own();assert.equal(notices.length,2);const soon=notices.find(n=>n.window_days===1);assert.equal(await deliver(soon),'accepted');assert.equal(messages.length,1);assert.match(messages[0].text,/Ablauftest/);
   }finally{delete process.env.ACCESS_EXPIRY_NOTICES_ENABLED;}
+});
+
+test('coupon management needs the permission, fresh identity and enforces activation, window and redemption limits',async()=>{
+ const root='/admin/coupons';
+ status(await new Browser().get(root),401,'ohne Sitzung kein Zugriff');
+ // Eine Identitätsbestätigung genügt für alle Änderungen dieses kurzen Laufs.
+ const payload={code:'willkommen10',type:'percent',value:1000,active:true};
+ // Eine ältere Bestätigung ist keine frische: die Sitzung wird künstlich gealtert.
+ const ctx=await contextFor(admin);
+ await db.authSession.update({where:{id:ctx.session.id},data:{reauthenticated_at:new Date(Date.now()-360000)}});
+ status(await admin.change('post',root,payload),403,'ohne frische Bestätigung wird nichts angelegt');
+ status(await admin.change('post','/auth/reauth',{password,recovery_code:adminRecovery[9]}),204);
+ status(await admin.change('post',root,payload,{noCsrf:true}),403);
+ const created=await admin.change('post',root,payload);status(created,201);
+ assert.equal(created.body.code,'WILLKOMMEN10');
+ for(const patch of [{code:'abc'},{code:'mit leer'},{type:'gratis'},{value:0},{value:10_001},{value:1.5},
+   {type:'fixed',value:1_000_001},{valid_from:'kein-datum'},{max_redemptions:0},{max_redemptions:1_000_001},{product_ids:['nicht-uuid']}])
+   status(await admin.change('post',root,{...payload,...patch}),422);
+ // Ein bereits aktiver Code lässt sich deaktivieren und wieder aktivieren.
+ status(await admin.change('post',`${root}/${created.body.id}/active`,{active:false}),200);
+ let list=(await admin.get(root)).body.data.find(c=>c.id===created.body.id);
+ assert.equal(list.active,false);assert.equal(list.redeemed,0);assert.deepEqual(list.product_ids,[]);
+ status(await admin.change('post',`${root}/${created.body.id}/active`,{active:true}),200);
+ list=(await admin.get(root)).body.data.find(c=>c.id===created.body.id);
+ assert.equal(list.active,true);
+ const fixed=await admin.change('post',root,{code:'start-25',type:'fixed',value:2500,max_redemptions:5});
+ status(fixed,201);
+ const fixedRow=(await admin.get(root)).body.data.find(c=>c.id===fixed.body.id);
+ assert.equal(fixedRow.value,'2500');assert.equal(fixedRow.currency,'EUR');assert.equal(fixedRow.max_redemptions,5);assert.equal(fixedRow.active,false);
+ // Datenbankseitig bleibt der Rabatt im gültigen Bereich.
+ await assert.rejects(db.$executeRawUnsafe(`UPDATE coupons SET value=-1 WHERE id='${fixed.body.id}'`));
+ await assert.rejects(db.$executeRawUnsafe(`UPDATE coupons SET code_canonical='ZU LANG MIT LEERZEICHEN' WHERE id='${fixed.body.id}'`));
 });

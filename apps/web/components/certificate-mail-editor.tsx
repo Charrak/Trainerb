@@ -6,7 +6,8 @@ import { Notice } from './site';
 import { Reauth } from './reauth';
 
 type Version = { id: string; version: number; subject_template: string; body_text_template: string };
-type State = { published: Version | null; draft: Version | null };
+type Fassungen = { subject: string; text: string; html: string };
+type State = { published: Version | null; draft: Version | null; variables: string[] };
 const titles: Record<string, string> = {
   certificate_ready: 'Urkundenbenachrichtigung',
   activation: 'Kontoaktivierung',
@@ -70,7 +71,8 @@ export function CertificateMailEditor({ templateKey }: { templateKey?: string })
   const [state, setState] = useState<State>(),
     [subject, setSubject] = useState(''),
     [text, setText] = useState('');
-  const [error, setError] = useState(''),
+  const [fassungen, setFassungen] = useState<Fassungen>(),
+    [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
     [revision, reload] = useState(0);
@@ -93,6 +95,21 @@ export function CertificateMailEditor({ templateKey }: { templateKey?: string })
       active = false;
     };
   }, [revision, path]);
+  useEffect(() => {
+    let active = true;
+    setFassungen(undefined);
+    api<Fassungen>(path + '/preview')
+      .then((value) => {
+        if (active) setFassungen(value);
+      })
+      .catch(() => {
+        // Die gespeicherte Vorschau ist eine Zusatzhilfe; Speichern und
+        // Freigeben bleiben unabhängig davon möglich.
+      });
+    return () => {
+      active = false;
+    };
+  }, [path, revision]);
   const base = state?.draft ?? state?.published;
   const changed = base && (subject !== base.subject_template || text !== base.body_text_template);
   async function change(publish: boolean) {
@@ -106,7 +123,7 @@ export function CertificateMailEditor({ templateKey }: { templateKey?: string })
         'POST',
         publish ? { draft_id: base.id } : { base_id: base.id, subject, text },
       );
-      setState(publish ? { published: v, draft: null } : { ...state, draft: v });
+      setState(publish ? { published: v, draft: null, variables: state.variables } : { ...state, draft: v });
       setSubject(v.subject_template);
       setText(v.body_text_template);
       setNotice(
@@ -152,7 +169,9 @@ export function CertificateMailEditor({ templateKey }: { templateKey?: string })
             </p>
             <p>
               Nur Klartext ohne eingegebene Webadressen. Vorhandene fachliche Platzhalter im jeweiligen Feld
-              beibehalten. Links und Codes nicht an andere Wörter anhängen.
+              beibehalten. Links und Codes nicht an andere Wörter anhängen. Pflicht-Platzhalter dieser Vorlage:{' '}
+              {state.variables.filter((name) => name !== 'first_name').join(', ') || 'keine'}. Die Anrede
+              <code>{'{{first_name}}'}</code> ist freiwillig.
             </p>
             <div className="stack-form">
               <label>
@@ -175,9 +194,24 @@ export function CertificateMailEditor({ templateKey }: { templateKey?: string })
             </div>
           </section>
           <section className="dashboard-card">
-            <h2>Vorschau mit Beispieldaten</h2>
+            <h2>Textfassung mit Beispieldaten</h2>
             <strong>{preview(subject)}</strong>
             <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{preview(text)}</p>
+            <h2>HTML-Fassung der freigegebenen Version</h2>
+            <p>
+              Wird beim Zustellen aus demselben Klartext erzeugt: fester Rahmen, keine Bilder, Schriften oder Skripte.
+              Platzhalter für Links stehen allein auf ihrer Zeile und werden nur als Webadresse verlinkt.
+            </p>
+            {fassungen ? (
+              <details>
+                <summary>HTML-Quelltext anzeigen</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '20rem' }}>
+                  {fassungen.html}
+                </pre>
+              </details>
+            ) : (
+              <p role="status">HTML-Fassung wird geladen …</p>
+            )}
             <button disabled={busy || !!changed || !state.draft} onClick={() => change(true)}>
               Gespeicherten Entwurf für den Versand freigeben
             </button>

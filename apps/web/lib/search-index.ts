@@ -14,6 +14,8 @@ export function configuredHttpsOrigin(base: string | undefined): string | null {
   } catch { return null; }
 }
 
+/** Die Startseite ist öffentlich und gehört unabhängig von veröffentlichten Unterseiten dazu. */
+const home = '/';
 const sections = [
   { path: '/seiten', api: 'pages', cursor: 'after', maxSlug: 80 },
   { path: '/kurse', api: 'courses?limit=100', cursor: 'cursor', maxSlug: 100 },
@@ -22,7 +24,7 @@ const sections = [
 export function crawlerRules(origin: string | null): MetadataRoute.Robots {
   if (!origin) return { rules: { userAgent: '*', disallow: '/' } };
   return { rules: { userAgent: '*', disallow: '/', allow: [
-    ...sections.flatMap(s => [s.path + '$', s.path + '/']), '/_next/static/', '/sitemap.xml$', '/marke/', '/favicon.ico$',
+    home + '$', ...sections.flatMap(s => [s.path + '$', s.path + '/']), '/_next/static/', '/sitemap.xml$', '/marke/', '/favicon.ico$',
   ] }, sitemap: `${origin}/sitemap.xml` };
 }
 
@@ -34,7 +36,7 @@ type PublicList = { data: { slug: string }[]; next_cursor: string | null };
 export async function publishedUrls(origin: string | null, list: (path: string) => Promise<PublicList>): Promise<MetadataRoute.Sitemap> {
   if (!origin) return [];
   // Beide Übersichtseinträge zählen ebenfalls zur Protokollgrenze von 50.000 URLs.
-  const urls = new Set(sections.map(s => origin + s.path));
+  const urls = new Set([origin + home, ...sections.map(s => origin + s.path)]);
   for (const s of sections) {
     let cursor: string | null = null;
     do {

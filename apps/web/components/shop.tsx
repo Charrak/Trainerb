@@ -25,7 +25,7 @@ export function Shop() {
     <div className="catalog-hero"><div><span className="eyebrow"><span className="eyebrow-line"/> BUCHEN</span>
       <h1>Ausbildungen buchen<span className="accent-dot">.</span></h1>
       <p>Bezahlung per Rechnung/Überweisung, auf Wunsch mit Karte. Der Zugang wird nach bestätigtem Zahlungseingang freigeschaltet.</p></div>
-      <span className="draft-badge">Sichere Bestellung</span></div>
+      <span className="draft-badge">Kauf auf Rechnung oder Karte</span></div>
     <Notice message={error}/>
     {!catalog ? <p className="muted">Angebot wird geladen …</p> : !catalog.sales_enabled ? <section className="catalog-empty">
       <span className="section-kicker">BUCHUNG DERZEIT NICHT GEÖFFNET</span><h2>Der Verkauf ist noch nicht freigeschaltet.</h2>

@@ -187,6 +187,11 @@ async function exercise({ admin, participant, ownerEmail }) {
     assert.equal(robots.status, 200); assert.match(robots.text, /^Disallow: \/$/m); assert.doesNotMatch(robots.text, /Sitemap:|^Allow:/m);
     assert.equal(sitemap.status, 200); assert.match(sitemap.text, /<urlset /); assert.doesNotMatch(sitemap.text, /<loc>/);
     const usedNonces=new Set();
+    await visitor.goto(origin+'/');
+    await visitor.getByRole('heading',{level:1,name:/Wissen, das weiterbringt/}).waitFor();
+    await checkAccessibility(visitor,'start page');
+    assert.equal(await visitor.getByRole('contentinfo').getByText(/Nur Testdaten verwenden/).count(),1,'Testhinweis außerhalb des Live-Betriebs');
+    assert.equal(await visitor.getByRole('link',{name:/Anmelden/}).first().isVisible(),true);
     for (const path of ['/','/anmelden','/registrieren','/passwort-vergessen','/aktivierung-erneut','/konto/aktivieren',
       '/konto/email-bestaetigen','/konto/passwort-zuruecksetzen','/mfa','/mfa/einrichten','/kurse','/kurse/abschluss-fixture',
       '/buchen','/buchen/'+productId,'/warenkorb','/kasse/gast','/kasse/bestaetigen','/newsletter','/newsletter/bestaetigen',

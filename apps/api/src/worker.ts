@@ -20,7 +20,11 @@ async function main() {
   const transport = nodemailer.createTransport({ host: config.smtpHost, port: config.smtpPort, secure: config.smtpSecure,
     connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000,
     ...(config.smtpUser ? { auth: { user: config.smtpUser, pass: config.smtpPassword || '' } } : {}) });
-  const mailer = new MailWorker(db, { sendMail: message => transport.sendMail(message) });
+  const mailer = new MailWorker(db, {
+    // Text und HTML gehen gemeinsam an den Anbieter; der Textteil bleibt für
+    // Clients ohne HTML maßgeblich.
+    sendMail: message => transport.sendMail(message),
+  });
   const queueConnection = new Redis(config.redisUrl, { maxRetriesPerRequest: 1 });
   const workerConnection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   queueConnection.on('error', () => {}); workerConnection.on('error', () => {});

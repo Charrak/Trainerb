@@ -1,6 +1,7 @@
 import {postmarkSettings} from './postmark-feedback';
 import {expiryMessage} from './expiry-notices';
 import {campaignMessage,policy,tokenHash} from './newsletter';
+import {renderMailParts} from './mail-fassung';
 import type { Prisma } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import { Database } from './database';
@@ -10,7 +11,7 @@ import { keyedHash, normalizeEmail, unseal } from './security';
 /** SMTP may accept a message before a process dies. A stable Message-ID helps
  * reconciliation, but SMTP itself does not guarantee exactly-once delivery. */
 export interface MailMessage {
-  from: string; to: string; subject: string; text: string; messageId: string; headers?: Record<string,string>;
+  from: string; to: string; subject: string; text: string; html: string; messageId: string; headers?: Record<string,string>;
 }
 export interface MailTransport {
   sendMail(message: MailMessage): Promise<{ accepted?: unknown[]; messageId?: string }>;
@@ -79,14 +80,6 @@ export class MailWorker {
             : { status: exhausted ? 'failed' : 'queued', last_error_safe: safeError };
         await tx.emailOutbox.updateMany({ where: { id: claim.outboxId, status: 'sending' }, data });
       }
-    });
-  }
-
-  private render(template: string, variables: Record<string, string>): string {
-    if (/[{}]/.test(template.replace(/\{\{\s*[a-z_]+\s*\}\}/g,''))) throw new Error('Invalid template.');
-    return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_whole, key: string) => {
-      if (!Object.hasOwn(variables, key)) throw new Error('Unknown template variable.');
-      return variables[key];
     });
   }
 
@@ -198,11 +191,11 @@ export class MailWorker {
     } else if (!['password_changed', 'email_changed_old','certificate_ready'].includes(key)) {
       throw new Error('Unsupported mail template.');
     }
-    const subject = this.render(item.template_version.subject_template, variables);
-    if (/[\r\n]/.test(subject)) throw new Error('Invalid subject.');
-    return { headers, from: getConfig().mailFrom, to: item.to_email, subject,
-      text: this.render(item.template_version.body_text_template, variables),
-      messageId: `<trainerb-${item.id}@mail.invalid>` };
+    // Beide Fassungen entstehen aus derselben freigegebenen Version. Das HTML
+    // wird nicht in der Datenbank gespeichert, sondern beim Zustellen erzeugt.
+    const parts = renderMailParts(item.template_version.subject_template, item.template_version.body_text_template, variables);
+    return { headers, from: getConfig().mailFrom, to: item.to_email, subject: parts.subject,
+      text: parts.text, html: parts.html, messageId: `<trainerb-${item.id}@mail.invalid>` };
   }
 
   /** Purge expired encrypted tokens even when their jobs previously failed. */
