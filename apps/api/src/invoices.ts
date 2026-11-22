@@ -7,6 +7,7 @@ import { Sessions, type SessionContext } from './sessions';
 import { apiError, keyedHash, requireUuid } from './security';
 import { getConfig } from './config';
 import { invoiceFileName, renderInvoicePdf } from './invoice-pdf';
+import { chainHead, documentHash, isoDate, serviceDateValue } from './document-seal';
 
 type Settings = NonNullable<Awaited<ReturnType<Database['commerceSettings']['findUnique']>>>;
 
@@ -19,6 +20,8 @@ export type InvoiceSummary = { id: string; invoice_number: string; issued_at: Da
 const GUEST_CART_COOKIE = '__Host-guest-cart';
 
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
+
+const asDate = serviceDateValue;
 
 /**
  * Invoices: issuing and downloading.
@@ -94,44 +97,82 @@ export class Invoices {
     invoice_number: string; issued_at: Date; seller_snapshot: unknown; buyer_snapshot: unknown;
     lines_snapshot: unknown; total_gross_cents: bigint; currency: string; due_at: Date | null;
     payment_reference: string | null; recipient_email: string | null;
+    service_date?: Date | string | null; service_end_date?: Date | string | null;
+    content_hash?: Uint8Array | null; previous_hash?: Uint8Array | null;
   }): Buffer {
     return renderInvoicePdf({ invoice_number: invoice.invoice_number, issued_at: invoice.issued_at,
       seller_snapshot: invoice.seller_snapshot, buyer_snapshot: invoice.buyer_snapshot,
       lines_snapshot: invoice.lines_snapshot, total_gross_cents: invoice.total_gross_cents,
       currency: invoice.currency, due_at: invoice.due_at, payment_reference: invoice.payment_reference,
-      recipient_email: invoice.recipient_email });
+      recipient_email: invoice.recipient_email,
+      service_date: asDate(invoice.service_date), service_end_date: asDate(invoice.service_end_date),
+      content_hash: invoice.content_hash ?? null, previous_hash: invoice.previous_hash ?? null });
   }
 
   /**
    * Freeze the invoice for an order. Called only where money becomes real (an
    * invoice/transfer order) — never for a card payment, which gets its receipt
    * from the provider instead.
+   *
+   * Der Beleg entsteht in einem Schritt vollständig: Nummer, Pflichtangaben,
+   * Prüfsumme und Kettenglied. `issuedAt` ist der Zeitpunkt, aus dem sowohl das
+   * Rechnungsdatum im Dokument als auch das Jahr im Nummernkreis stammen — sonst
+   * könnte eine Nummer aus 2026 auf einem Beleg mit Datum 2027 stehen.
    */
   async issue(tx: Prisma.TransactionClient, orderId: string, settings: Settings,
-              recipientEmail?: string | null): Promise<void> {
+              recipientEmail?: string | null, issuedAt: Date = new Date()): Promise<void> {
     const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: {
-      items: { orderBy: { position: 'asc' }, include: { price: { select: { tax_category: true } } } } } });
-    const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-RE-', 'invoice_number_seq') AS number`;
-    await tx.invoice.create({ data: { id: uuidv7(), order_id: orderId, invoice_number: numberRow[0].number,
-      seller_snapshot: { name: settings.invoice_seller_name, street: settings.invoice_seller_street,
-        postal_code: settings.invoice_seller_postal, city: settings.invoice_seller_city,
-        country: settings.invoice_seller_country, email: settings.invoice_seller_email,
-        vat_id: settings.invoice_seller_vat_id,
-        // The bank details belong on the document; freezing them here keeps the
-        // payment instruction valid even after an account change later.
-        bank: order.payment_method === 'invoice' ? { holder: settings.bank_account_holder, iban: settings.bank_iban, bic: settings.bank_bic,
-          name: settings.bank_name } : null } as Prisma.InputJsonValue,
-      buyer_snapshot: order.billing_snapshot as Prisma.InputJsonValue,
-      lines_snapshot: order.items.map(item => ({ position: item.position, title: item.title_snapshot,
-        variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
-        discount_cents: String(item.discount_cents), total_gross_cents: String(item.total_gross_cents),
-        tax_category: item.price.tax_category,
-        // The split was computed at checkout and is frozen here: a document
-        // never recomputes tax from a rate that may have changed since.
-        tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
-        net_cents: String(item.net_cents), tax_cents: String(item.tax_cents) })) as Prisma.InputJsonValue,
+      items: { orderBy: { position: 'asc' }, include: { price: { select: { tax_category: true } },
+        courses: { select: { access_days: true } } } } } });
+    const numberRow = await tx.$queryRaw<{ number: string }[]>`
+      SELECT trainerb_next_document_number('TB-RE-', 'invoice', ${issuedAt}::timestamptz) AS number`;
+    const invoiceNumber = numberRow[0].number;
+    // § 14 Abs. 4 Nr. 6 UStG: Der Zeitpunkt der Leistung. Ein Kurszugang mit
+    // Laufzeit ist eine Leistung über einen Zeitraum — dann steht das Ende dabei,
+    // sonst der Tag der Ausstellung. Erfunden wird kein Zeitraum: fehlt eine
+    // Laufzeit, bleibt es beim einzelnen Tag.
+    const accessDays = order.items.flatMap(item => item.courses)
+      .map(course => course.access_days).filter((days): days is number => typeof days === 'number' && days > 0);
+    // Der Tag in der Zeitzone, in der Belege nummeriert und angezeigt werden.
+    const serviceDate = serviceDateValue(isoDate(issuedAt));
+    const serviceEnd = accessDays.length
+      ? serviceDateValue(isoDate(new Date(issuedAt.getTime() + Math.max(...accessDays) * 24 * 60 * 60_000)))
+      : null;
+    const lines = order.items.map(item => ({ position: item.position, title: item.title_snapshot,
+      variant: item.variant_snapshot, quantity: item.quantity, unit_gross_cents: String(item.unit_gross_cents),
+      discount_cents: String(item.discount_cents), total_gross_cents: String(item.total_gross_cents),
+      tax_category: item.price.tax_category,
+      // The split was computed at checkout and is frozen here: a document
+      // never recomputes tax from a rate that may have changed since.
+      tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
+      net_cents: String(item.net_cents), tax_cents: String(item.tax_cents) }));
+    const seller = { name: settings.invoice_seller_name, street: settings.invoice_seller_street,
+      postal_code: settings.invoice_seller_postal, city: settings.invoice_seller_city,
+      country: settings.invoice_seller_country, email: settings.invoice_seller_email,
+      // § 14 Abs. 4 Nr. 2 UStG verlangt Steuernummer oder USt-IdNr. Beides wird
+      // eingefroren, damit ein späterer Wechsel den Beleg nicht verändert.
+      vat_id: settings.invoice_seller_vat_id, tax_number: settings.invoice_seller_tax_number,
+      small_business: settings.small_business,
+      // The bank details belong on the document; freezing them here keeps the
+      // payment instruction valid even after an account change later.
+      bank: order.payment_method === 'invoice' ? { holder: settings.bank_account_holder,
+        iban: settings.bank_iban, bic: settings.bank_bic, name: settings.bank_name } : null };
+    const content = { kind: 'invoice' as const, number: invoiceNumber, issued_at: issuedAt,
+      service_date: serviceDate, service_end_date: serviceEnd, seller_snapshot: seller,
+      buyer_snapshot: order.billing_snapshot, lines_snapshot: lines,
       total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
-      payment_reference: order.payment_method === 'invoice' ? order.payment_reference : null, recipient_email: recipientEmail ?? null } });
+      payment_reference: order.payment_method === 'invoice' ? order.payment_reference : null };
+    const previousHash = await chainHead(tx, 'invoice');
+    const contentHash = documentHash({ ...content, due_at: content.due_at,
+      payment_reference: content.payment_reference }, previousHash);
+    await tx.invoice.create({ data: { id: uuidv7(), order_id: orderId, invoice_number: invoiceNumber,
+      issued_at: issuedAt, service_date: serviceDate, service_end_date: serviceEnd,
+      seller_snapshot: seller as Prisma.InputJsonValue,
+      buyer_snapshot: order.billing_snapshot as Prisma.InputJsonValue,
+      lines_snapshot: lines as Prisma.InputJsonValue,
+      total_gross_cents: order.total_gross_cents, currency: order.currency, due_at: order.due_at,
+      payment_reference: content.payment_reference, recipient_email: recipientEmail ?? null,
+      content_hash: contentHash as Uint8Array<ArrayBuffer>, previous_hash: previousHash as Uint8Array<ArrayBuffer> | null } });
   }
 
   /**

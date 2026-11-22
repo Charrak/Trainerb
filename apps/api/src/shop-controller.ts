@@ -10,7 +10,11 @@ import { Invoices } from './invoices';
 import { Refunds } from './refunds';
 import { Disputes } from './disputes';
 import { Withdrawals, DECISION_REASONS } from './withdrawals';
-import { pdfResponse } from './invoice-response';
+import { fileResponse, pdfResponse } from './invoice-response';
+import { documentsBundle, documentsBundleName, documentsCsv, documentsCsvName, listDocuments,
+  verifyChain } from './document-export';
+import { Database } from './database';
+import { bodyObject } from './security';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError, requireUuid } from './security';
 import { getConfig } from './config';
@@ -144,7 +148,85 @@ export class CommerceAdminController {
   constructor(private readonly shop: Shop, private readonly commerce: Commerce, private readonly accesses: Accesses,
               private readonly sessions: Sessions, private readonly guest: GuestCheckout,
               private readonly invoices: Invoices, private readonly refunds: Refunds,
-              private readonly disputes: Disputes, private readonly withdrawals: Withdrawals) {}
+              private readonly disputes: Disputes, private readonly withdrawals: Withdrawals,
+              private readonly db: Database) {}
+
+  /**
+   * Belegausgabe für die Buchhaltung.
+   *
+   * Getrennte Routen statt einer mit Format-Parameter: die Liste ist Daten
+   * (JSON/CSV), das Sammel-PDF ist ein Dokument, und die Kettenprüfung ist eine
+   * Aussage über die Datenbank. Drei Antworten, drei Formate, keine Vermischung.
+   *
+   * Der Zeitraum wird als Kalendertag verstanden: `from` ist inklusive, `to`
+   * einschließlich des ganzen Tages. Die Abfrage bekommt die exklusive Grenze,
+   * der Dateiname den Tag, den der Operator eingegeben hat — beides aus derselben
+   * Eingabe, damit „bis 31.12.“ auch den 31.12. enthält.
+   */
+  private documentPeriod(query: unknown): { from?: Date; to?: Date;
+    fromDay: string | null; toDay: string } {
+    const { from, to } = bodyObject(query, ['from', 'to']);
+    const valid = (value: unknown, field: string): string | undefined => {
+      if (value === undefined || value === '') return undefined;
+      // Auch ein Kalenderfehler (31.02.) ist ein Fehler und keine leere Antwort.
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+          new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) !== value) {
+        throw apiError(422, 'INVALID_PERIOD', `Bitte ${field} als JJJJ-MM-TT angeben.`);
+      }
+      return value;
+    };
+    const fromDay = valid(from, 'Beginn') ?? null;
+    const toDay = valid(to, 'Ende') ?? null;
+    if (fromDay && toDay && fromDay > toDay) {
+      throw apiError(422, 'INVALID_PERIOD', 'Der Zeitraum ist verdreht.');
+    }
+    // Tagesgrenzen in der Zone, in der Belege geführt werden; die exklusive
+    // Obergrenze ist der Beginn des Folgetags.
+    const parse = (day: string, days: number) => new Date(`${day}T00:00:00.000+01:00`).getTime() + days;
+    return {
+      from: fromDay ? new Date(parse(fromDay, 0)) : undefined,
+      to: toDay ? new Date(parse(toDay, 86_400_000)) : undefined,
+      fromDay, toDay: toDay ?? new Date().toISOString().slice(0, 10),
+    };
+  }
+  /** Nur die Grenzen, wie die Abfrage sie braucht. */
+  private documentRange(query: unknown): { from?: Date; to?: Date } {
+    const { from, to } = this.documentPeriod(query);
+    return { from, to };
+  }
+
+  @Get('admin/documents') async documents(@Req() req: ApiRequest, @Query() query: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'reports.read_all' });
+    if (!ctx.roleKeys.some(role => role === 'admin' || role === 'superadmin')) throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    return listDocuments(this.db, this.documentPeriod(query));
+  }
+
+  @Get('admin/documents.csv') @Header('Cache-Control', 'no-store')
+  async documentsCsv(@Req() req: ApiRequest, @Query() query: unknown, @Res({ passthrough: true }) res: Response) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'reports.read_all' });
+    if (!ctx.roleKeys.some(role => role === 'admin' || role === 'superadmin')) throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    const period = this.documentPeriod(query);
+    const list = await listDocuments(this.db, this.documentRange(query));
+    return fileResponse(res, { fileName: documentsCsvName({ fromDay: period.fromDay, toDay: period.toDay }),
+      content: documentsCsv(list) }, 'text/csv; charset=utf-8');
+  }
+
+  @Get('admin/documents.pdf') @Header('Cache-Control', 'no-store')
+  async documentsPdf(@Req() req: ApiRequest, @Query() query: unknown, @Res({ passthrough: true }) res: Response) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'reports.read_all' });
+    if (!ctx.roleKeys.some(role => role === 'admin' || role === 'superadmin')) throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    const period = this.documentPeriod(query);
+    return fileResponse(res, { fileName: documentsBundleName({ fromDay: period.fromDay, toDay: period.toDay }),
+      content: await documentsBundle(this.db, this.documentRange(query)) }, 'application/pdf');
+  }
+
+  /** Prüft die Prüfsummen und die Verkettung aller Belege. */
+  @Get('admin/documents/verify')
+  async documentsVerify(@Req() req: ApiRequest) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'reports.read_all' });
+    if (!ctx.roleKeys.some(role => role === 'admin' || role === 'superadmin')) throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    return verifyChain(this.db);
+  }
 
   @Get('admin/orders') async orders(@Req() req: ApiRequest, @Query('state') state: unknown,
     @Query('limit') limit: unknown, @Query('cursor') cursor: unknown) {

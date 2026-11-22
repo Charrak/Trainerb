@@ -150,7 +150,8 @@ export class Commerce {
   async updateSettings(ctx: SessionContext, input: unknown) {
     const body = bodyObject(input, ['sales_enabled', 'invoice_seller_name', 'invoice_seller_street',
       'invoice_seller_postal', 'invoice_seller_city', 'invoice_seller_country', 'invoice_seller_email',
-      'invoice_seller_vat_id', 'bank_account_holder', 'bank_iban', 'bank_bic', 'bank_name', 'payment_term_days']);
+      'invoice_seller_vat_id', 'invoice_seller_tax_number', 'small_business',
+      'bank_account_holder', 'bank_iban', 'bank_bic', 'bank_name', 'payment_term_days']);
     if (typeof body.sales_enabled !== 'boolean') throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { sales_enabled: 'Pflichtfeld.' });
     const term = body.payment_term_days === undefined ? 14 : Number(body.payment_term_days);
     if (!Number.isInteger(term) || term < 1 || term > 90) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { payment_term_days: '1 bis 90 Tage.' });
@@ -159,6 +160,19 @@ export class Commerce {
     const ibanRaw = typeof body.bank_iban === 'string' ? body.bank_iban.replace(/\s+/g, '').toUpperCase() : '';
     if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}$/.test(ibanRaw)) {
       throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { bank_iban: 'Ungültige IBAN.' });
+    }
+    // § 14 Abs. 4 Nr. 2 UStG: Steuernummer oder USt-IdNr. mindestens eine davon.
+    // Beides ist optional einzeln, aber nicht beides zusammen.
+    const taxNumber = plainText(body.invoice_seller_tax_number, 'invoice_seller_tax_number', 30, true);
+    const vatId = plainText(body.invoice_seller_vat_id, 'invoice_seller_vat_id', 20, true);
+    const smallBusiness = body.small_business === true;
+    if (!taxNumber && !vatId && !smallBusiness) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+        { invoice_seller_tax_number: 'Steuernummer oder USt-IdNr. ist Pflichtangabe auf jeder Rechnung.' });
+    }
+    if (taxNumber && !/^[0-9A-Za-z\/-]{4,30}$/.test(taxNumber)) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+        { invoice_seller_tax_number: 'Steuernummer mit Ziffern, Buchstaben, / oder - angeben.' });
     }
     const email = plainText(body.invoice_seller_email, 'invoice_seller_email', 254);
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -172,7 +186,9 @@ export class Commerce {
       invoice_seller_city: plainText(body.invoice_seller_city, 'invoice_seller_city', 120)!,
       invoice_seller_country: country,
       invoice_seller_email: email,
-      invoice_seller_vat_id: plainText(body.invoice_seller_vat_id, 'invoice_seller_vat_id', 20, true),
+      invoice_seller_vat_id: vatId,
+      invoice_seller_tax_number: taxNumber,
+      small_business: smallBusiness,
       bank_account_holder: plainText(body.bank_account_holder, 'bank_account_holder', 160)!,
       bank_iban: ibanRaw,
       bank_bic: plainText(body.bank_bic, 'bank_bic', 11, true),
@@ -190,7 +206,12 @@ export class Commerce {
       const { id: _ignored, ...update } = values;
       const saved = await tx.commerceSettings.upsert({ where: { id: 1 }, create: { id: 1, ...values }, update });
       await this.audit(tx, ctx, 'commerce.settings_updated', 'commerce_settings', '1',
-        { sales_enabled: saved.sales_enabled, payment_term_days: saved.payment_term_days });
+        { sales_enabled: saved.sales_enabled, payment_term_days: saved.payment_term_days,
+          // Der Steuerstatus ist der Teil der Einstellungen, der auf jedem Beleg
+          // landet; er gehört deshalb ins Protokoll.
+          small_business: saved.small_business,
+          tax_identity: saved.invoice_seller_tax_number ? 'tax_number'
+            : saved.invoice_seller_vat_id ? 'vat_id' : 'none' });
       return saved;
     });
   }

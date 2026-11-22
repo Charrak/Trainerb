@@ -9,8 +9,11 @@ import { apiError, bodyObject, requireUuid } from './security';
 import { getConfig } from './config';
 import { centsToText } from './shop';
 import { creditNoteFileName, renderInvoicePdf } from './invoice-pdf';
+import { chainHead, documentHash, serviceDateValue } from './document-seal';
 
 const missing = () => apiError(404, 'NOT_FOUND', 'Nicht gefunden.');
+
+const asDate = serviceDateValue;
 
 /**
  * Refunds.
@@ -545,7 +548,12 @@ export class Refunds {
       allocations: true, order: { include: { invoice: true, items: { orderBy: { position: 'asc' } } } } } });
     const invoice = refund.order.invoice;
     if (!invoice) return;
-    const numberRow = await tx.$queryRaw<{ number: string }[]>`SELECT trainerb_next_order_number('TB-GS-', 'credit_note_number_seq') AS number`;
+    // Nummer, Datum und Prüfsumme entstehen aus demselben Zeitpunkt: der Beleg
+    // trägt das Jahr, in dem er ausgestellt wurde, nicht das der Systemuhr beim
+    // Aufruf.
+    const issuedAt = new Date();
+    const numberRow = await tx.$queryRaw<{ number: string }[]>`
+      SELECT trainerb_next_document_number('TB-GS-', 'credit_note', ${issuedAt}::timestamptz) AS number`;
     const allocated = new Map(refund.allocations.map(row => [row.order_item_product, row.gross_cents]));
     const items = refund.order.items.filter(item => allocated.size === 0 || allocated.has(item.product_id));
     // A credit note carries the same split as the position it corrects: the tax
@@ -561,12 +569,23 @@ export class Refunds {
         tax_category: null, tax_rate_bp: item.tax_rate_bp, tax_label: item.tax_label,
         net_cents: String(split.net_cents), tax_cents: String(split.tax_cents) };
     });
+    // Eine Gutschrift korrigiert eine Leistung; ihr Leistungszeitpunkt ist der
+    // der korrigierten Rechnung, nicht der Tag der Erstattung.
+    const content = { kind: 'credit_note' as const, number: numberRow[0].number, issued_at: issuedAt,
+      service_date: invoice.service_date, service_end_date: invoice.service_end_date,
+      seller_snapshot: invoice.seller_snapshot, buyer_snapshot: invoice.buyer_snapshot,
+      lines_snapshot: lines, total_gross_cents: refund.amount_cents, currency: refund.currency,
+      due_at: null, payment_reference: null };
+    const previousHash = await chainHead(tx, 'credit_note');
+    const contentHash = documentHash(content, previousHash);
     await tx.creditNote.create({ data: { id: uuidv7(), order_id: refund.order_id, refund_id: refund.id,
-      original_invoice_id: invoice.id, document_number: numberRow[0].number,
+      original_invoice_id: invoice.id, document_number: numberRow[0].number, issued_at: issuedAt,
+      service_date: invoice.service_date, service_end_date: invoice.service_end_date,
       issuer_snapshot: invoice.seller_snapshot as Prisma.InputJsonValue,
       buyer_snapshot: invoice.buyer_snapshot as Prisma.InputJsonValue,
       lines_snapshot: lines as Prisma.InputJsonValue,
       total_gross_cents: refund.amount_cents, currency: refund.currency,
+      content_hash: contentHash as Uint8Array<ArrayBuffer>, previous_hash: previousHash as Uint8Array<ArrayBuffer> | null,
       reason_code: refund.reason_code, note: refund.note,
       recipient_email: invoice.recipient_email } });
   }
@@ -574,6 +593,8 @@ export class Refunds {
   private render(creditNote: { document_number: string; issued_at: Date; issuer_snapshot: unknown;
     buyer_snapshot: unknown; lines_snapshot: unknown; total_gross_cents: bigint; currency: string;
     reason_code: string; note: string | null; recipient_email: string | null;
+    service_date?: Date | string | null; service_end_date?: Date | string | null;
+    content_hash?: Uint8Array | null; previous_hash?: Uint8Array | null;
     original_invoice?: { invoice_number: string } | null }) {
     return renderInvoicePdf({
       invoice_number: creditNote.document_number, issued_at: creditNote.issued_at,
@@ -581,6 +602,8 @@ export class Refunds {
       lines_snapshot: creditNote.lines_snapshot, total_gross_cents: creditNote.total_gross_cents,
       currency: creditNote.currency, due_at: null, payment_reference: null,
       recipient_email: creditNote.recipient_email,
+      service_date: asDate(creditNote.service_date), service_end_date: asDate(creditNote.service_end_date),
+      content_hash: creditNote.content_hash ?? null, previous_hash: creditNote.previous_hash ?? null,
       document: { kind: 'credit_note', title: 'Gutschrift',
         references: creditNote.original_invoice
           ? [{ label: 'Ursprungsrechnung', value: creditNote.original_invoice.invoice_number }] : [],
