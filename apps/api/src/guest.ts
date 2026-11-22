@@ -11,6 +11,7 @@ import { Invoices } from './invoices';
 import { requireRates, splitGross } from './tax';
 import { apiError, bodyObject, keyedHash, normalizeEmail, randomToken, requireName, requireString, requireUuid, seal } from './security';
 import { billingAddress, idempotencyKey, optionalCouponCode, paymentMethod, type BillingAddress } from './commerce-validation';
+import { couponScopeMessage, couponScopeMismatch } from './coupon-scope';
 import { getConfig } from './config';
 import { fulfilPaidOrder } from './fulfilment';
 
@@ -376,8 +377,13 @@ export class GuestCheckout {
         if (coupon.max_redemptions !== null && used >= coupon.max_redemptions) {
           throw apiError(422, 'COUPON_EXHAUSTED', 'Dieser Gutscheincode wurde bereits vollständig eingelöst.');
         }
-        if (coupon.products.length && !lines.every(line => coupon.products.some(link => link.product_id === line.productId))) {
-          throw apiError(422, 'COUPON_NOT_APPLICABLE', 'Dieser Gutscheincode gilt nicht für alle Produkte im Warenkorb.');
+        if (coupon.products.length) {
+          const mismatch = couponScopeMismatch(coupon.products.map(link => link.product_id),
+            lines.map(line => ({ product_id: line.productId, title: line.title })));
+          if (mismatch.length) {
+            throw apiError(422, 'COUPON_NOT_APPLICABLE', couponScopeMessage(mismatch),
+              { coupon_code: 'Nicht auf alle Artikel im Warenkorb anwendbar.' });
+          }
         }
         const own = await tx.couponReservation.findFirst({ where: { coupon_id: coupon.id,
           OR: [{ identity_hmac: identityHmac }, { user: { email_canonical: proof.email_canonical } }],

@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useState, useEffect } from 'react';
 import { api, errorMessage } from '../lib/api';
 import { FinanceReport } from './finance-report';
+import { LedgerReport } from './ledger-report';
 import { Notice } from './site';
 
 type Counts =
@@ -65,6 +66,7 @@ export function DashboardCounts() {
         </button>
       </section>
       {data?.scope === 'global' && <FinanceReport/>}
+      {data?.scope === 'global' && <LedgerReport/>}
     </div>
   );
 }

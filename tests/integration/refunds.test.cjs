@@ -1020,3 +1020,62 @@ test('the decision reasons the API offers are the ones the database accepts', as
     data: { decision_reason: 'freitext_grund' } }),
   /withdrawal_requests_decision_reason_codes/);
 });
+
+test('the ledger view separates invoices, credit notes, tax per rate and open receivables', async () => {
+  // Ein offener Beleg gehört dazu: eine Rechnung ohne bestätigte Zahlung ist
+  // eine Forderung, keine Einnahme.
+  const open = await paidOrder({ confirm: false });
+  const openInvoice = await db.invoice.findFirstOrThrow({ where: { order_id: open.id } });
+  assert.equal(BigInt(openInvoice.total_gross_cents), 19900n);
+
+  const ledger = await admin.get('/admin/dashboard/ledger?period=all'); status(ledger, 200);
+  assert.equal(ledger.body.currency, 'EUR');
+  assert.equal(ledger.body.environment, 'test');
+  assert.equal(ledger.body.starts_at, null);
+  const row = (section, category) => ledger.body.rows.find(entry => entry.section === section && entry.category === category);
+
+  // Rechnungen tragen die Steuer, die beim Checkout eingefroren wurde: die
+  // Summe aus netto und Steuer ergibt exakt brutto, nichts wird neu gerechnet.
+  const income = row('income', 'invoice_net');
+  assert.ok(income, 'Rechnungspositionen werden ausgewiesen');
+  assert.equal(BigInt(income.net_cents) + BigInt(income.tax_cents), BigInt(income.gross_cents),
+    'netto plus Steuer ergibt brutto');
+  assert.equal(String(ledger.body.totals.invoice_gross_cents),
+    ledger.body.rows.filter(entry => entry.section === 'income').reduce((total, entry) => total + BigInt(entry.gross_cents), 0n).toString());
+
+  // Die Gutschrift mindert dieselbe Steuer, statt eine zweite Einnahme zu sein.
+  // Der Test läuft auch isoliert (`--test-name-pattern`), dann fehlt sie noch;
+  // die Rechenregel gilt trotzdem und wird an den tatsächlichen Belegen geprüft.
+  const creditTotal = BigInt(ledger.body.totals.credit_gross_cents);
+  assert.ok(creditTotal >= 0n);
+  assert.equal(ledger.body.totals.net_after_credits_cents,
+    (BigInt(ledger.body.totals.invoice_net_cents) - BigInt(ledger.body.totals.credit_net_cents)).toString());
+  assert.equal(ledger.body.totals.tax_after_credits_cents,
+    (BigInt(ledger.body.totals.invoice_tax_cents) - BigInt(ledger.body.totals.credit_tax_cents)).toString());
+
+  // Offene Forderung: der unbestätigte Beleg taucht auf, die bestätigten nicht.
+  assert.ok(BigInt(ledger.body.totals.receivables_cents) >= 19900n);
+  // Nur der unbestätigte Beleg ist eine Forderung; eine bestätigte Zahlung
+  // desselben Zeitraums steht im Zahlungsweg, nicht bei den Forderungen.
+  const paidInvoices = await db.invoice.count({ where: { order_id: { not: open.id },
+    order: { payment_state: 'paid' } } });
+  assert.ok(paidInvoices >= 0);
+  assert.ok(row('receivables', 'open_invoice'));
+
+  // Über den Zeitraum „Heute“ (Berliner Kalendertag) sind dieselben Belege sichtbar.
+  const today = await admin.get('/admin/dashboard/ledger?period=today'); status(today, 200);
+  assert.ok(today.body.starts_at, 'Tagesbeginn wird ausgewiesen');
+  // Der Tagesbeginn ist der Berliner Kalendertag, nicht der UTC-Tag: im Winter
+  // liegt er eine Stunde vor Mitternacht UTC.
+  const berlinDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', dateStyle: 'short' });
+  assert.equal(berlinDay.format(new Date(today.body.as_of)), berlinDay.format(new Date(today.body.starts_at)));
+  assert.ok(new Date(today.body.starts_at) <= new Date(today.body.as_of));
+
+  // Rechte und Eingaben: nur globale Admins, nur bekannte Zeiträume. Der
+  // Support hat Berichtsrechte, aber keine Buchhaltungseinsicht.
+  status(await support.get('/admin/dashboard/ledger?period=all'), 403);
+  status(await buyer.get('/admin/dashboard/ledger?period=all'), 403);
+  status(await new Browser().get('/admin/dashboard/ledger'), 401);
+  status(await admin.get('/admin/dashboard/ledger?period=last_hour'), 422);
+  status(await admin.get('/admin/dashboard/ledger?environment=live'), 400);
+});

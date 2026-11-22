@@ -9,6 +9,7 @@ import { requireRates, splitGross } from './tax';
 import { apiError, bodyObject, keyedHash, normalizeEmail, requireUuid } from './security';
 import { billingAddress, couponCode, discountFor, idempotencyKey, optionalCouponCode, paymentMethod,
   type BillingAddress } from './commerce-validation';
+import { couponScopeMessage, couponScopeMismatch } from './coupon-scope';
 import { getConfig } from './config';
 import { Outbox } from './outbox';
 import { Invoices } from './invoices';
@@ -181,17 +182,28 @@ export class Shop {
       sales_enabled: true };
   }
 
-  /** Validate a coupon for the current cart without reserving it. */
-  private async resolveCoupon(tx: Prisma.TransactionClient, code: string, userId: string, productIds: string[], now: Date) {
-    const coupon = await tx.coupon.findUnique({ where: { code_canonical: code }, include: { products: true, _count: { select: { reservations: { where: { status: 'redeemed' } } } } } });
+  /**
+   * Validate a coupon for the current cart without reserving it.
+   *
+   * `cart` ist der aktuelle Warenkorb mit Produkt und Titel; daraus entsteht
+   * eine Meldung, die den nicht abgedeckten Artikel nennt, statt nur „gilt
+   * nicht“ zu sagen. Beim Checkout wird derselbe Warenkorb erneut geprüft.
+   */
+  private async resolveCoupon(tx: Prisma.TransactionClient, code: string, userId: string,
+                              cart: readonly { product_id: string; title: string }[], now: Date) {
+    const coupon = await tx.coupon.findUnique({ where: { code_canonical: code }, include: { products: true, _count: { select: { reservations: { where: { status: { in: ['reserved', 'redeemed'] } } } } } } });
     if (!coupon || !coupon.active || coupon.valid_from > now || (coupon.valid_until && coupon.valid_until <= now)) {
       throw apiError(422, 'COUPON_INVALID', 'Dieser Gutscheincode ist ungültig oder abgelaufen.');
     }
+    // Offene Reservierungen zählen mit: ein abgebrochener Checkout darf das
+    // Kontingent nicht dauerhaft verbrauchen, solange die Bestellung läuft.
     if (coupon.max_redemptions !== null && coupon._count.reservations >= coupon.max_redemptions) {
       throw apiError(422, 'COUPON_EXHAUSTED', 'Dieser Gutscheincode wurde bereits vollständig eingelöst.');
     }
-    if (coupon.products.length && !productIds.every(id => coupon.products.some(link => link.product_id === id))) {
-      throw apiError(422, 'COUPON_NOT_APPLICABLE', 'Dieser Gutscheincode gilt nicht für alle Produkte im Warenkorb.');
+    const mismatch = couponScopeMismatch(coupon.products.map(link => link.product_id), cart);
+    if (mismatch.length) {
+      throw apiError(422, 'COUPON_NOT_APPLICABLE', couponScopeMessage(mismatch),
+        { coupon_code: 'Nicht auf alle Artikel im Warenkorb anwendbar.' });
     }
     const own = await tx.couponReservation.findFirst({ where: { coupon_id: coupon.id, user_id: userId,
       status: { in: ['reserved', 'redeemed'] } } });
@@ -204,8 +216,7 @@ export class Shop {
     const code = optionalCouponCode(body.coupon_code);
     const cart = await this.getCart(ctx);
     if (!code) return { ...cart, discount_cents: '0', total_gross_cents: cart.subtotal_gross_cents, coupon_code: null };
-    const coupon = await this.resolveCoupon(this.db, code, ctx.user.id,
-      cart.items.map(item => item.product_id), new Date());
+    const coupon = await this.resolveCoupon(this.db, code, ctx.user.id, cart.items, new Date());
     const subtotal = BigInt(cart.subtotal_gross_cents);
     const discount = discountFor(coupon.type, coupon.value, subtotal);
     return { ...cart, discount_cents: String(discount), total_gross_cents: String(subtotal - discount),
@@ -295,7 +306,8 @@ export class Shop {
       let discount = 0n;
       let couponId: string | null = null;
       if (code) {
-        const coupon = await this.resolveCoupon(tx, code, ctx.user.id, lines.map(line => line.productId), now);
+        const coupon = await this.resolveCoupon(tx, code, ctx.user.id,
+          lines.map(line => ({ product_id: line.productId, title: line.title })), now);
         // Lock the coupon so concurrent checkouts cannot exceed max_redemptions.
         await tx.$queryRaw`SELECT id FROM coupons WHERE id = ${coupon.id}::uuid FOR UPDATE`;
         const reserved = await tx.couponReservation.count({ where: { coupon_id: coupon.id,

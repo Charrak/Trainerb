@@ -1,4 +1,5 @@
 import { apiError, bodyObject } from './security';
+import { uniqueCouponProducts } from './coupon-scope';
 
 const invalid = (field: string, message = 'Ungültiger Wert.'): never => {
   throw apiError(422, 'INVALID_CHECKOUT_FIELD', 'Bitte prüfe deine Angaben.', { [field]: message });
@@ -101,12 +102,17 @@ export function couponValues(input: unknown) {
   if (max !== null && (typeof max !== 'number' || !Number.isSafeInteger(max) || max < 1 || max > 1_000_000)) {
     return invalid('max_redemptions');
   }
-  const productIds = body.product_ids === undefined || body.product_ids === null ? [] : body.product_ids;
-  if (!Array.isArray(productIds) || productIds.length > 50 || productIds.some(id => typeof id !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) return invalid('product_ids');
+  let productIds: string[];
+  try {
+    productIds = uniqueCouponProducts(body.product_ids);
+  } catch {
+    // Mehr als 50 Produkte, Duplikate in falscher Form oder keine UUID: alles
+    // endet hier als Feldhinweis und nicht als Serverfehler.
+    return invalid('product_ids', 'Bitte höchstens 50 gültige Produkte auswählen.');
+  }
   return { code_original: code, code_canonical: code.toUpperCase(), type, value: BigInt(body.value), currency,
     valid_from: validFrom, valid_until: validUntil, max_redemptions: max,
-    active: body.active === undefined ? false : body.active === true, product_ids: productIds as string[] };
+    active: body.active === undefined ? false : body.active === true, product_ids: productIds };
 }
 
 /**
