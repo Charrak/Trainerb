@@ -71,7 +71,8 @@ jobs:
           psql -h 127.0.0.1 -U trainerb -d postgres -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE trainerb_test OWNER trainerb;' \
             -c 'CREATE DATABASE cert_drill_test OWNER trainerb;' \
-            -c 'CREATE DATABASE cert_browser_e2e_test OWNER trainerb;'
+            -c 'CREATE DATABASE cert_browser_e2e_test OWNER trainerb;' \
+            -c 'CREATE DATABASE belege_browser_e2e_test OWNER trainerb;'
 
       - name: Prepare a local environment
         run: |
@@ -148,6 +149,21 @@ jobs:
         env:
           E2E_SINGLE_PROCESS: 'yes'
         run: node --test tests/e2e/systemseiten.cjs
+
+      - name: Browser acceptance of the bookkeeping export (isolated test database)
+        env:
+          E2E_ALLOW_TEST_DATA: 'yes'
+          E2E_SINGLE_PROCESS: 'yes'
+          DATABASE_URL: postgresql://trainerb:trainerb-local-only@127.0.0.1:5432/belege_browser_e2e_test
+          REDIS_URL: redis://127.0.0.1:6379/12
+          APP_ENV: test
+          NODE_ENV: test
+          PUBLIC_BASE_URL: https://academy.test
+          TRAINERB_DESTRUCTIVE_TEST_DATABASE: confirmed
+        run: |
+          # The suite deletes its own data, so it only ever touches a *_e2e_test database.
+          node scripts/migrate.mjs
+          npm run test:belege:browser
 
       - name: Install the PDF verifier
         run: |

@@ -16,3 +16,18 @@ export function pdfResponse(res: Response, file: InvoiceDownload): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.end(file.content);
 }
+
+/**
+ * Send the bookkeeping export (CSV or bundle PDF).
+ *
+ * The same headers as a single document: a download, never something a browser
+ * renders, and never cached — an export names every buyer of a period.
+ */
+export function fileResponse(res: Response, file: { fileName: string; content: Buffer },
+                             contentType: string): void {
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.end(file.content);
+}

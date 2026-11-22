@@ -68,5 +68,6 @@ else if (certificateRestore) {
   run(['tests/restore/certificate-drill.cjs']);
 } else run(['--test', '--test-concurrency=1', 'tests/integration/operations-probe.test.cjs', 'tests/integration/runtime-role.test.cjs', 'tests/integration/identity.test.cjs', 'tests/integration/catalog.test.cjs',
   'tests/integration/commerce.test.cjs', 'tests/integration/guest-checkout.test.cjs',
-  'tests/integration/refunds.test.cjs', 'tests/integration/retention.test.cjs',
+  'tests/integration/refunds.test.cjs', 'tests/integration/documents.test.cjs',
+  'tests/integration/retention.test.cjs',
   'tests/integration/stripe-webhook.test.cjs']);

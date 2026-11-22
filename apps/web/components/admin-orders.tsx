@@ -389,7 +389,8 @@ function DisputePanel({ order, profile, busy, setBusy, setError, setSuccess, rel
 
 type CommerceState = { settings: { sales_enabled: boolean; invoice_seller_name: string; invoice_seller_street: string;
   invoice_seller_postal: string; invoice_seller_city: string; invoice_seller_country: string; invoice_seller_email: string;
-  invoice_seller_vat_id: string | null; bank_account_holder: string; bank_iban: string; bank_bic: string | null;
+  invoice_seller_vat_id: string | null; invoice_seller_tax_number: string | null; small_business: boolean;
+  bank_account_holder: string; bank_iban: string; bank_bic: string | null;
   bank_name: string | null; payment_term_days: number } | null;
   documents: { kind: string; versions: { id: string; version: number; status: string; wording: string;
     activated_at: string | null }[] }[] };
@@ -401,16 +402,19 @@ export function AdminCommerce() {
   const [busy, setBusy] = useState('');
   const [form, setForm] = useState<Record<string, string>>({});
   const [salesEnabled, setSalesEnabled] = useState(false);
+  const [smallBusiness, setSmallBusiness] = useState(false);
   const allowed = !!profile && canConfigure(profile);
   async function load() {
     const data = await api<CommerceState>('/admin/commerce');
     setState(data);
     if (data.settings) {
       setSalesEnabled(data.settings.sales_enabled);
+      setSmallBusiness(data.settings.small_business);
       setForm({ invoice_seller_name: data.settings.invoice_seller_name, invoice_seller_street: data.settings.invoice_seller_street,
         invoice_seller_postal: data.settings.invoice_seller_postal, invoice_seller_city: data.settings.invoice_seller_city,
         invoice_seller_country: data.settings.invoice_seller_country, invoice_seller_email: data.settings.invoice_seller_email,
-        invoice_seller_vat_id: data.settings.invoice_seller_vat_id ?? '', bank_account_holder: data.settings.bank_account_holder,
+        invoice_seller_vat_id: data.settings.invoice_seller_vat_id ?? '',
+        invoice_seller_tax_number: data.settings.invoice_seller_tax_number ?? '', bank_account_holder: data.settings.bank_account_holder,
         bank_iban: data.settings.bank_iban, bank_bic: data.settings.bank_bic ?? '', bank_name: data.settings.bank_name ?? '',
         payment_term_days: String(data.settings.payment_term_days) });
     }
@@ -432,6 +436,7 @@ export function AdminCommerce() {
     try {
       await api('/admin/commerce/settings', 'POST', { sales_enabled: salesEnabled, ...form,
         payment_term_days: Number(form.payment_term_days), invoice_seller_vat_id: form.invoice_seller_vat_id || null,
+        invoice_seller_tax_number: form.invoice_seller_tax_number || null, small_business: smallBusiness,
         bank_bic: form.bank_bic || null, bank_name: form.bank_name || null });
       await load(); setSuccess('Einstellungen gespeichert.');
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(''); }
@@ -452,7 +457,12 @@ export function AdminCommerce() {
           <div className="field-row"><Field label="Postleitzahl" id="seller-postal"><input id="seller-postal" value={form.invoice_seller_postal ?? ''} onChange={change('invoice_seller_postal')} maxLength={16} required/></Field>
             <Field label="Ort" id="seller-city"><input id="seller-city" value={form.invoice_seller_city ?? ''} onChange={change('invoice_seller_city')} maxLength={120} required/></Field></div>
           <div className="field-row"><Field label="Land" id="seller-country"><input id="seller-country" value={form.invoice_seller_country ?? ''} onChange={change('invoice_seller_country')} maxLength={2} required/></Field>
+            <Field label="Steuernummer" id="seller-tax"><input id="seller-tax" value={form.invoice_seller_tax_number ?? ''} onChange={change('invoice_seller_tax_number')} maxLength={30}/></Field>
             <Field label="USt-IdNr." id="seller-vat"><input id="seller-vat" value={form.invoice_seller_vat_id ?? ''} onChange={change('invoice_seller_vat_id')} maxLength={20}/></Field></div>
+          <p className="muted small-print">Jede Rechnung braucht Steuernummer oder USt-IdNr. (§ 14 Abs. 4 Nr. 2 UStG).
+            Beides ist möglich; was hier steht, wird beim Ausstellen in den Beleg eingefroren.</p>
+          <div className="choice-row"><label><input type="checkbox" checked={smallBusiness}
+            onChange={e => setSmallBusiness(e.target.checked)}/> Kleinunternehmer nach § 19 UStG (keine Umsatzsteuer ausweisen)</label></div>
           <Field label="Rechnungs-E-Mail" id="seller-email"><input id="seller-email" type="email" value={form.invoice_seller_email ?? ''} onChange={change('invoice_seller_email')} maxLength={254} required/></Field>
           <div className="field-row"><Field label="Kontoinhaber" id="bank-holder"><input id="bank-holder" value={form.bank_account_holder ?? ''} onChange={change('bank_account_holder')} maxLength={160} required/></Field>
             <Field label="IBAN" id="bank-iban"><input id="bank-iban" value={form.bank_iban ?? ''} onChange={change('bank_iban')} maxLength={34} required/></Field></div>

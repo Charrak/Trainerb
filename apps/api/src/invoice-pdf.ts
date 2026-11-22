@@ -37,6 +37,13 @@ export type DocumentMeta = {
 export type InvoiceSnapshot = {
   invoice_number: string;
   issued_at: Date;
+  /** § 14 Abs. 4 Nr. 6 UStG: Zeitpunkt (oder Beginn) der Leistung. */
+  service_date?: Date | null;
+  /** Ende eines Leistungszeitraums; nur wenn die Leistung eine Laufzeit hat. */
+  service_end_date?: Date | null;
+  /** Prüfsumme und Vorgänger, damit ein Ausdruck prüfbar bleibt. */
+  content_hash?: Uint8Array | null;
+  previous_hash?: Uint8Array | null;
   seller_snapshot: unknown;
   buyer_snapshot: unknown;
   lines_snapshot: unknown;
@@ -50,7 +57,8 @@ export type InvoiceSnapshot = {
 
 type Seller = {
   name?: unknown; street?: unknown; postal_code?: unknown; city?: unknown; country?: unknown;
-  email?: unknown; vat_id?: unknown; bank?: { holder?: unknown; iban?: unknown; bic?: unknown; name?: unknown };
+  email?: unknown; vat_id?: unknown; tax_number?: unknown; small_business?: unknown;
+  bank?: { holder?: unknown; iban?: unknown; bic?: unknown; name?: unknown };
 };
 type Buyer = {
   company?: unknown; first_name?: unknown; last_name?: unknown; street?: unknown; street_extra?: unknown;
@@ -222,12 +230,17 @@ class Layout {
 
 function sellerLines(seller: Seller): string[] {
   const vatId = clean(seller.vat_id, 30);
+  const taxNumber = clean(seller.tax_number, 30);
+  // § 14 Abs. 4 Nr. 2 UStG: Steuernummer *oder* USt-IdNr. Stehen beide zur
+  // Verfügung, stehen beide auf dem Beleg — das ist nie falsch und erspart
+  // Rückfragen bei einer Betriebsprüfung.
   return [
     clean(seller.name, 160),
     clean(seller.street, 160),
     [clean(seller.postal_code, 16), clean(seller.city, 120)].filter(Boolean).join(' '),
     clean(seller.country, 2),
     clean(seller.email, 254),
+    taxNumber ? `Steuernummer: ${taxNumber}` : '',
     vatId ? `USt-IdNr.: ${vatId}` : '',
   ].filter(Boolean);
 }
@@ -270,9 +283,19 @@ function writeLetterhead(layout: Layout, seller: Seller, title: string): void {
 
 function writeFacts(layout: Layout, invoice: InvoiceSnapshot, top: number): number {
   const creditNote = invoice.document?.kind === 'credit_note';
+  // Der Leistungszeitpunkt steht direkt neben dem Rechnungsdatum: er ist die
+  // zweite Datumsangabe, die eine vollständige Rechnung braucht.
+  const serviceLabel = invoice.service_end_date ? 'Leistungszeitraum' : 'Leistungsdatum';
+  const serviceValue = invoice.service_end_date
+    ? `${formatDate(invoice.service_date ?? null)} – ${formatDate(invoice.service_end_date)}`
+    : invoice.service_date ? formatDate(invoice.service_date ?? null)
+    // Ohne gespeicherten Zeitpunkt wird nichts behauptet: der Hinweis nennt nur
+    // die Tatsache, dass das Rechnungsdatum gilt.
+    : 'entspricht dem Rechnungsdatum';
   const rows: Array<[string, string]> = [
     [creditNote ? 'Gutschriftnummer' : 'Rechnungsnummer', clean(invoice.invoice_number, 60)],
     [creditNote ? 'Gutschriftdatum' : 'Rechnungsdatum', formatDate(invoice.issued_at)],
+    [serviceLabel, serviceValue],
     ...(invoice.document?.references ?? []).map(reference => [clean(reference.label, 60), clean(reference.value, 60)] as [string, string]),
     ['Zahlungsreferenz', clean(invoice.payment_reference, 60)],
     ['Fällig am', formatDate(invoice.due_at)],
@@ -346,7 +369,8 @@ function writeTotals(layout: Layout, invoice: InvoiceSnapshot, currency: string)
   layout.rule(14, 0.9);
   const lines = Array.isArray(invoice.lines_snapshot) ? invoice.lines_snapshot as Line[] : [];
   const groups = taxGroups(lines);
-  if (groups.length) {
+  const smallBusiness = (invoice.seller_snapshot as Seller | null)?.small_business === true;
+  if (groups.length && !smallBusiness) {
     // Net, tax and gross per rate — the three numbers a German invoice needs.
     for (const group of groups) {
       layout.line(`Nettobetrag (${group.label})`, { size: 9, alignRightAt: columnX.total - 110 });
@@ -386,23 +410,38 @@ function writePaymentNotice(layout: Layout, invoice: InvoiceSnapshot, seller: Se
   // split it names the rate; without one it says so instead of implying zero.
   const lines = Array.isArray(invoice.lines_snapshot) ? invoice.lines_snapshot as Line[] : [];
   const groups = taxGroups(lines);
-  const notice = groups.length
-    ? 'Alle Beträge sind Bruttobeträge. Die Umsatzsteuer ist je Steuersatz ausgewiesen und im Gesamtbetrag enthalten.'
-    : 'Alle Beträge sind Bruttobeträge. Für diese Positionen ist kein Steuersatz hinterlegt; eine Aufteilung ' +
-      'erfolgt daher nicht.';
+  const smallBusiness = (invoice.seller_snapshot as Seller | null)?.small_business === true;
+  // § 19 Abs. 1 UStG: Kleinunternehmer weisen keine Umsatzsteuer aus und müssen
+  // das auf dem Beleg sagen. Die Steuerzeilen bleiben deshalb weg.
+  const notice = smallBusiness
+    ? 'Kein Ausweis von Umsatzsteuer gemäß § 19 Abs. 1 UStG (Kleinunternehmerregelung). ' +
+      'Alle Beträge sind Bruttobeträge.'
+    : groups.length
+      ? 'Alle Beträge sind Bruttobeträge. Die Umsatzsteuer ist je Steuersatz ausgewiesen und im Gesamtbetrag enthalten.'
+      : 'Alle Beträge sind Bruttobeträge. Für diese Positionen ist kein Steuersatz hinterlegt; eine Aufteilung ' +
+        'erfolgt daher nicht.';
   layout.paragraph(notice, { size: 8 });
   if (clean(invoice.recipient_email, 254)) {
     layout.line(`Rechnung bereitgestellt an ${clean(invoice.recipient_email, 254)}.`, { size: 8 });
   }
 }
 
-/** Footer on every page: seller, invoice number, page number. */
-function writeFooters(layout: Layout, seller: Seller, invoiceNumber: string): void {
+/**
+ * Footer on every page: seller, document number, page number — and, when the
+ * document was sealed, its fingerprint. A printed or filed PDF can then be
+ * matched against the value in the export without trusting the file.
+ */
+function writeFooters(layout: Layout, seller: Seller, invoiceNumber: string, contentHash?: Uint8Array | null): void {
   const total = layout.pages.length;
+  const fingerprint = contentHash && contentHash.length
+    ? `Prüfsumme (SHA-256): ${Buffer.from(contentHash).toString('hex').slice(0, 32)}…` : '';
   for (const [index, page] of layout.pages.entries()) {
     page.commands.push({ kind: 'rule', x1: MARGIN, x2: PAGE_WIDTH - MARGIN, y: FOOTER_Y + 12, thickness: 0.4 });
     const label = `${clean(seller.name, 80)} · ${clean(invoiceNumber, 60)} · Seite ${index + 1} von ${total}`;
     page.commands.push({ kind: 'text', x: MARGIN, y: FOOTER_Y, size: 8, bold: false, text: label });
+    if (fingerprint) {
+      page.commands.push({ kind: 'text', x: MARGIN, y: FOOTER_Y - 9, size: 6, bold: false, text: fingerprint });
+    }
   }
 }
 
@@ -497,9 +536,15 @@ export function renderInvoicePdf(invoice: InvoiceSnapshot): Buffer {
   writeLineTable(layout, lines, currency);
   writeTotals(layout, invoice, currency);
   writePaymentNotice(layout, invoice, seller);
-  writeFooters(layout, seller, invoice.invoice_number);
+  writeFooters(layout, seller, invoice.invoice_number, invoice.content_hash);
 
   return assemble(layout.pages);
+}
+
+/** „01.11.2026“ oder „01.11.2026 – 30.11.2026“, für Beleg und Export. */
+export function servicePeriod(serviceDate?: Date | null, serviceEndDate?: Date | null): string {
+  if (serviceEndDate) return `${formatDate(serviceDate ?? null)} – ${formatDate(serviceEndDate)}`;
+  return formatDate(serviceDate ?? null);
 }
 
 /** File name for the download; the number is already server-generated. */

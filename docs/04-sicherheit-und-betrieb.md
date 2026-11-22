@@ -74,7 +74,7 @@ Die Maßnahmen sind ab der ersten Entwicklungsphase zu berücksichtigen, nicht e
 | Widerrufsvorgänge | Die Erklärung selbst ist Beweismittel für Frist und Zugang; abgeschlossene Vorgänge daher bis zum Ende der widerrufsrechtlichen Frist aufbewahren, danach nach freigegebener Regel löschen. **Technisch umgesetzt:** `npm run retention:run` (bzw. `-- --dry-run`) entfernt nach `withdrawalAddressDays` (Standard 180 Tage ab Entscheidung) die Klartextadresse in `withdrawal_requests.contact_email`, setzt `contact_email_scrubbed_at` und lässt Vorgang, Grund, Zeitpunkte und Adress-HMAC stehen; ein CHECK verlangt genau eine dieser beiden Formen, sodass „entfernt“ und „nie vorhanden“ unterscheidbar bleiben. Der Fall kann danach keinen Bestätigungslink mehr versenden (`409 WITHDRAWAL_EMAIL_REMOVED`). Die Frist ist ein Startwert, keine Rechtsentscheidung. |
 | Technische Logs/Audit | Zugriffsbeschränkt und datensparsam; konkrete Fristen je Ereignistyp vor Livegang begründen und als automatisierte Richtlinie umsetzen. |
 | Newsletter-Nachweise | Einwilligung und Widerruf angemessen beweisbar halten; Dauer, Sperrliste und Löschung vor Livegang rechtlich festlegen. |
-| Rechnungen, Steuer- und Vertragsbelege | Gesetzlich einschlägige Fristen und Beginn individuell bestimmen; gesperrt aufbewahren, danach kontrolliert löschen. |
+| Rechnungen, Steuer- und Vertragsbelege | Gesetzlich einschlägige Fristen und Beginn individuell bestimmen; gesperrt aufbewahren, danach kontrolliert löschen. **Technisch umgesetzt:** Belege sind ab Ausstellung auf Datenbankebene unveränderlich und unlöschbar (`trainerb_documents_immutable` auf `invoices`/`credit_notes`, siehe § 4.11); die Frist beginnt mit dem Ende des Kalenderjahres der Ausstellung (§ 147 Abs. 3 AO, § 14b Abs. 1 UStG) und ist im Export ausgewiesen. **Offen:** die Frist ist eine gesetzliche Angabe, keine Bestätigung für den Einzelfall — Beginn, Dauer und ein etwaiger Löschlauf nach Fristende gehören in die Rechts-/Steuerberatung. |
 | Backups | Technischer Zielwert 30 Tage, verschlüsselt und getrennt; bei Löschung verfallen Sicherungen nach Ablauf, Ausnahmen und Wiederherstellungsvorkehrungen dokumentieren. |
 
 **Nicht durch den Aufbewahrungslauf gelöscht** werden Rechnungen, Gutschriften, Zahlungsereignisse, Streitfälle und Audit-Ereignisse; sie sind Nachweis eines abgeschlossenen Vorgangs und brauchen eine eigene, rechtlich freigegebene Regel. Der Lauf ist bewusst ein eigener CLI-Auftrag (`apps/api/src/cli/retention.ts`), nicht eine Web-Route: er braucht kein Konto, aber eine dokumentierte Zeitplanung.
@@ -182,3 +182,99 @@ Nur beim Entwicklungsserver ist `unsafe-eval` für das Next-Entwicklungswerkzeug
 `/robots.txt` und `/sitemap.xml` folgen dem **Build**-Stand, nicht dem Host-Header. Ohne Live-Build oder ohne gültige öffentliche HTTPS-Origin am Webprozess: alles für Crawler sperren, keine Sitemap-Einträge. Im freigegebenen Live-Build sind nur `/kurse`, `/seiten` und öffentliche Detailseiten indexierbar; paginierte CMS-Übersichten sind nichtkanonisch. Die Sitemap liest beide öffentlichen Listen mit ihren Seitenmarken, ohne Sitzung und ohne gespeicherte Kopie. Entwürfe, zurückgezogene Fassungen, nicht gelistete und private Kurse kommen nicht aus diesen Listen. Bei einem API-Ausfall wird keine unvollständige Sitemap als Erfolg ausgegeben. `/` ist derzeit ein Login, keine indexierbare Startseite.
 
 Am Zielproxy kontrollieren: `robots.txt` und Sitemap nicht zwischen Staging und Produktion teilen oder dauerhaft cachen; Stichproben für veröffentlichte und zurückgezogene Inhalte sowie Konto-, Bestell- und Bestätigungsrouten prüfen. Suchmaschinenhinweise sind **kein Zugriffsschutz** und entfernen externe Suchtreffer nicht sofort.
+
+## 4.8 Belege: Pflichtangaben, Unveränderbarkeit und Ausgabe
+
+Dieser Abschnitt beschreibt, was der Code technisch sichert. Er ist **keine** Rechtsberatung und
+bestätigt keine GoBD-Konformität; die Einordnung für das konkrete Angebot bleibt Aufgabe des
+Betreibers mit Steuer- und Rechtsberatung.
+
+### Pflichtangaben nach § 14 Abs. 4 UStG
+
+| Angabe | Umsetzung |
+|---|---|
+| Name und Anschrift von Aussteller und Empfänger | `seller_snapshot`/`buyer_snapshot`, beim Ausstellen eingefroren; eine spätere Änderung der Einstellungen ändert keinen Beleg. |
+| Steuernummer **oder** USt-IdNr. des Ausstellers (Nr. 2) | `commerce_settings.invoice_seller_tax_number` **und** `invoice_seller_vat_id`. Die Einstellungen werden nur gespeichert, wenn mindestens eine der beiden vorhanden ist; beide stehen im Beleg und im PDF. |
+| Ausstellungsdatum (Nr. 3) und fortlaufende Rechnungsnummer (Nr. 4) | `issued_at` und `invoice_number`; Nummer aus `trainerb_next_document_number`. |
+| Zeitpunkt bzw. Zeitraum der Leistung (Nr. 6) | `service_date` und – bei Leistungen mit Laufzeit (Kurszugang mit `access_days`) – `service_end_date`. Ohne gespeicherten Zeitpunkt behauptet das PDF keinen, sondern nennt „entspricht dem Rechnungsdatum“. |
+| Entgelt, Steuersatz, Steuerbetrag je Satz (Nr. 7–9) | Aus den eingefrorenen Positionen (`tax_rate_bp`, `net_cents`, `tax_cents`); nichts wird beim Rendern neu gerechnet. |
+| Kleinunternehmer (§ 19 Abs. 1 UStG) | Schalter `commerce_settings.small_business`. Ist er gesetzt, entfallen die Steuerzeilen und der Beleg trägt den Hinweis „Kein Ausweis von Umsatzsteuer gemäß § 19 Abs. 1 UStG“. Der eingefrorene Wert im Beleg entscheidet, nicht die heutige Einstellung. |
+
+### Nummernkreis
+
+`trainerb_next_document_number(prefix, kind, at)` zieht die Nummer aus einer Zeile **je Belegart und
+Kalenderjahr** (`document_number_counters`). Das Jahr stammt aus `at` in `Europe/Berlin` — also aus
+demselben Zeitpunkt, der als Rechnungsdatum auf dem Beleg steht. Vorgänger war eine globale Sequenz
+mit dem Jahr aus `CURRENT_DATE`: beim Jahreswechsel konnte eine Nummer mit „falschem“ Jahr entstehen,
+und ein Beleg von 2027 konnte eine Nummer von 2026 tragen.
+
+Bestehende Nummern bleiben unverändert; die Zähler starten hinter der höchsten bereits vergebenen
+Nummer des jeweiligen Jahres. Eine Lücke aus der alten Vergabe wird **nicht** rückwirkend gefüllt —
+sie bleibt sichtbar, was für eine Prüfung besser ist als eine nachträglich geglättete Historie.
+
+### Unveränderbarkeit und Nachvollziehbarkeit
+
+- **Trigger** `invoices_immutable` / `credit_notes_immutable` lehnen jedes `UPDATE` und `DELETE` ab
+  (`INVOICES_IMMUTABLE`, `CREDIT_NOTES_IMMUTABLE`). Die Sperre liegt in der Datenbank, nicht nur im
+  Anwendungscode. Einzige Ausnahme: das einmalige Versiegeln eines Belegs aus der Zeit vor der
+  Prüfsumme (siehe unten).
+- **Prüfsumme** `content_hash` = SHA-256 über einen kanonischen Inhalt (`trainerb.document.v1`:
+  Art, Nummer, Ausstellungs- und Leistungsdatum, Verkäufer-, Käufer- und Positions-Snapshots, Summe,
+  Währung, Fälligkeit, Zahlungsreferenz). Objektschlüssel werden sortiert, Geld geht als
+  Dezimalstring ein — das Ergebnis ist reproduzierbar (`apps/api/src/document-seal.ts`).
+- **Kette** `previous_hash` verweist auf den vorigen Beleg derselben Art. Wird ein Beleg entfernt,
+  umsortiert oder an der Anwendung vorbei geändert, bricht die Kette.
+- **Prüfung** im Backoffice: `GET /admin/documents/verify` rechnet jede Prüfsumme nach und meldet
+  `hash_mismatch` bzw. `chain_break` mit Belegnummer. Was der Hash **nicht** leistet: er ist keine
+  Signatur und beweist nicht, wer einen Beleg erzeugt hat. Das steht in der Antwort und im Export.
+
+### Ausgabe an die Buchhaltung
+
+| Route | Inhalt |
+|---|---|
+| `GET /admin/documents?from=&to=` | Eine Zeile je Beleg (Rechnung und Gutschrift) mit Pflichtangaben, Steuer je Satz, Zahlungsstatus und Prüfsumme. |
+| `GET /admin/documents.csv` | Dieselbe Liste als CSV: Semikolon, Dezimalkomma, UTF-8 mit BOM, Schutz vor Formel-Injektion. Zwei Kommentarzeilen nennen Zeitraum, Erzeugungszeitpunkt und Grenzen der Ausgabe. |
+| `GET /admin/documents.pdf` | Ein PDF mit Deckblatt (Zeitraum, Anzahl, Umgebung) und allen Belegseiten; es wird nichts neu gerendert, sondern die bestehenden Seiten übernommen. |
+| `GET /admin/documents/verify` | Ergebnis der Kettenprüfung. |
+
+Alle vier Routen verlangen `reports.read_all` **und** die Rolle `admin`/`superadmin`; `from`/`to`
+sind Kalendertage (beide inklusive, Grenzen in `Europe/Berlin`), ein verdrehter oder falsch
+formatierter Zeitraum wird mit `422` abgelehnt statt stillschweigend leer geliefert.
+
+**Bestehende Belege versiegeln:** `npm run docs:seal` zeigt, welche Belege keine Prüfsumme haben;
+`npm run docs:seal -- --apply` versiegelt sie in Belegreihenfolge und protokolliert `documents.sealed`
+im Audit-Log. Versiegelt wird ab dem ersten unversiegelten Beleg; der Vorgänger ist der Beleg davor,
+nicht der letzte im Archiv. Steht ein unversiegelter Beleg **zwischen** versiegelten, bricht der Lauf
+mit `documents.chain_gap` (Exitcode 2) ab, statt die Lücke zu überdecken — dieser Befund gehört zu
+einem Menschen (Sicherung, Zugriffswege, Buchhaltung). Eine heute berechnete Prüfsumme bestätigt den
+Beleg **ab heute** — nicht, dass er seit der Ausstellung unverändert war. Auch das ist im Export so
+formuliert.
+
+### Aufbewahrungsfrist mit Nachweis
+
+Die Zehnjahresfrist ist **keine Einstellung, die man vergessen kann**, sondern eine Rechnung mit
+Protokolleintrag (`apps/api/src/document-retention.ts`):
+
+- `npm run docs:retention` zeigt Bestand, Fristen und den frühesten bzw. spätesten Tag, an dem ein
+  Beleg entbehrlich würde. Es wird nichts geschrieben und nichts gelöscht.
+- `npm run docs:retention -- --record` schreibt `documents.retention_checked` ins Audit-Log: Zeitpunkt,
+  Frist, Anzahl der Belege, wie viele noch gesperrt sind, jüngster Beleg und Fristfenster. **Das ist
+  der Nachweis** — ein Prüfer fragt nicht „ist die Frist konfiguriert?“, sondern „wo steht, dass sie
+  kontrolliert wird?“.
+- Überschreitet ein Beleg die Frist, endet der Lauf mit `RETENTION_EXPIRED` (Exitcode 2) und
+  protokolliert `documents.retention_expired` mit den betroffenen Nummern. Erst `--release` quittiert
+  den Befund — und **löscht weiterhin nichts**: der Trigger bleibt stärker als jeder Lauf. Ein Beleg
+  wird damit „entbehrlich“, nicht „weg“; die Entscheidung darüber bleibt beim Betreiber.
+
+Die Frist beginnt mit dem **Ende des Kalenderjahres der Ausstellung** (§ 147 Abs. 3 AO, § 14b Abs. 1
+UStG): ein Beleg vom 22.11.2026 ist bis zum 31.12.2036 aufzubewahren und frühestens ab 01.01.2037
+entbehrlich. Gerechnet wird in `Europe/Berlin` aus demselben Ausstellungszeitpunkt, der auch die
+Nummer und das Rechnungsdatum bestimmt. Der Export nennt diese Tage je Zeitraum (`retention` in der
+Antwort, `retention_note` im Text), statt „zehn Jahre“ zu behaupten — bei einem Zeitraum über
+mehrere Jahre wäre ein fester Satz falsch. Die **Dauer** ist ein Startwert und keine
+Rechtsentscheidung; sie zu ändern ist eine Zeile in `RETENTION_RULE`, keine Codeänderung.
+
+**Bewusst nicht Teil dieses Abschnitts:** E-Rechnung nach EN 16931/XRechnung, Kontierung,
+Umsatzsteuer-Voranmeldung, Dauerfristverlängerung, Z3/DSFinV-K-Export, Signatur/Zertifikat und eine
+automatische Löschung nach Ablauf der Aufbewahrungsfrist. Diese Punkte sind Betreiber- bzw.
+Beratungsaufgaben und im Code nicht behauptet.

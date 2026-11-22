@@ -60,7 +60,11 @@ export async function seedCommerce(db: PrismaClient): Promise<void> {
         invoice_seller_name: 'Trainer B Akademie (Platzhalter – bitte ergänzen)',
         invoice_seller_street: 'Straße und Hausnummer ergänzen', invoice_seller_postal: '00000',
         invoice_seller_city: 'Ort ergänzen', invoice_seller_country: 'DE',
-        invoice_seller_email: 'rechnung@example.invalid', bank_account_holder: 'Kontoinhaber ergänzen',
+        invoice_seller_email: 'rechnung@example.invalid',
+        // Ohne Steuernummer/USt-IdNr. ist eine Rechnung nicht vollständig; der
+        // Platzhalter zwingt dazu, ihn vor dem ersten Verkauf zu ersetzen.
+        invoice_seller_tax_number: '000/000/00000', small_business: false,
+        bank_account_holder: 'Kontoinhaber ergänzen',
         bank_iban: 'DE00000000000000000000', payment_term_days: 14 } });
     }
   }, { timeout: 30_000 });

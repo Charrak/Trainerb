@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { api, errorMessage } from '../lib/api';
 import { FinanceReport } from './finance-report';
 import { LedgerReport } from './ledger-report';
+import { DocumentExport } from './document-export';
 import { Notice } from './site';
 
 type Counts =
@@ -67,6 +68,7 @@ export function DashboardCounts() {
       </section>
       {data?.scope === 'global' && <FinanceReport/>}
       {data?.scope === 'global' && <LedgerReport/>}
+      {data?.scope === 'global' && <DocumentExport/>}
     </div>
   );
 }
