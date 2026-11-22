@@ -32,8 +32,11 @@ test('Produktionsbuild: Startseite, Systemseiten, Kontozugang und Fußnavigation
   });
   const origin = await listen(site);
   t.after(() => { site.closeAllConnections(); site.close(); });
+  // Only sandbox and shm flags here: `--single-process` crash-loops on the
+  // headless Chromium used in this isolated run, so no test depends on it.
   const browser = await chromium.launch({executablePath:process.env.E2E_CHROMIUM_PATH || undefined,
-    args:process.env.E2E_SINGLE_PROCESS==='yes'?['--single-process','--no-zygote','--disable-dev-shm-usage']:[]});
+    args:process.env.E2E_CHROMIUM_ARGS ? process.env.E2E_CHROMIUM_ARGS.split(' ')
+      : (process.env.E2E_CHROMIUM_PATH ? ['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'] : [])});
   t.after(() => browser.close());
   const page = await browser.newPage({viewport:{width:375,height:812}, reducedMotion:'reduce'});
   const outside=[], violations=[];

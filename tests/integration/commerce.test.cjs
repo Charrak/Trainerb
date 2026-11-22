@@ -513,3 +513,86 @@ test('expired purchase can be bought again without overwriting its grant or lear
   assert.equal(chapter.body.access_id, renewed.id);
   assert.equal(await db.chapterProgress.count({ where: { access_id: old.id } }), 1);
 });
+
+test('a coupon restricted to products only applies when every cart line is covered', async () => {
+  await db.commerceSettings.update({ where: { id: 1 }, data: { sales_enabled: true } });
+  // Ein zweites Produkt auf demselben Kurs, damit ein Warenkorb entstehen kann,
+  // der nicht vollständig abgedeckt ist.
+  const second = await admin.change('post', '/admin/products', { sku: 'COMMERCE-02', type: 'single',
+    title: 'Zweites Produkt', description: 'Für die Gutscheinprüfung.', courses: [{ course_id: course.id }] });
+  status(second, 201);
+  const secondPrice = await admin.change('post', `/admin/products/${second.body.id}/prices`, { currency: 'EUR',
+    gross_cents: '5000', tax_category: 'standard', valid_from: iso(new Date(Date.now() - 60_000)) });
+  status(secondPrice, 201);
+  await freshReauth(admin, adminUser.id);
+  status(await admin.change('post', `/admin/products/${second.body.id}/activate`,
+    { revision: (await db.product.findUniqueOrThrow({ where: { id: second.body.id } })).revision }), 200);
+  status(await admin.change('post', `/admin/prices/${secondPrice.body.id}/activate`,
+    { revision: (await db.price.findUniqueOrThrow({ where: { id: secondPrice.body.id } })).revision }), 200);
+
+  // Eine Beschränkung auf ein nicht aktives Produkt wäre ein Rabatt, der nie
+  // greift. Das zweite Produkt ist aktiv, hat aber keinen aktiven Preis.
+  const draft = await admin.change('post', '/admin/products', { sku: 'COMMERCE-DRAFT', type: 'single',
+    title: 'Noch im Entwurf', courses: [{ course_id: course.id }] });
+  status(draft, 201);
+  assert.equal((await db.product.findUniqueOrThrow({ where: { id: draft.body.id } })).status, 'draft');
+  const draftCoupon = await admin.change('post', '/admin/coupons', { code: 'nurentwurf', type: 'percent',
+    value: 1000, active: true, product_ids: [draft.body.id] });
+  assert.equal(draftCoupon.status, 422,
+    `Beschränkung nur auf aktive Produkte mit aktivem Preis: ${JSON.stringify(draftCoupon.body)}`);
+  status(await admin.change('post', '/admin/coupons', { code: 'nurbekannt', type: 'percent', value: 1000,
+    active: true, product_ids: ['00000000-0000-4000-8000-000000000000'] }), 422);
+
+  const restricted = await admin.change('post', '/admin/coupons', { code: 'nurkurs', type: 'percent', value: 1000,
+    active: true, product_ids: [product.id] });
+  status(restricted, 201);
+  assert.deepEqual(restricted.body.product_ids, [product.id]);
+  const listed = (await admin.get('/admin/coupons')).body.data.find(c => c.id === restricted.body.id);
+  assert.deepEqual(listed.product_ids, [product.id]);
+  assert.equal(listed.products[0].title, product.title, 'das Backoffice sieht den Produktnamen, keine UUID');
+  assert.equal(listed.products[0].sku, product.sku);
+
+  const fixture = await register('commerce-scope');
+  status(await fixture.browser.change('post', '/auth/login', { email: fixture.email, password }), 200);
+  const shopper = fixture.browser;
+
+  // Nur das freigegebene Produkt im Warenkorb: der Code gilt.
+  status(await shopper.change('post', '/cart/items', { product_id: product.id }), 200);
+  const applied = await shopper.change('post', '/cart/coupon', { coupon_code: 'NURKURS' });
+  status(applied, 200);
+  assert.equal(applied.body.discount_cents, '1990');
+
+  // Zweites, nicht freigegebenes Produkt dazu: der Rabatt gilt nicht mehr, und
+  // die Meldung nennt genau den Artikel statt nur „ungültig“.
+  status(await shopper.change('post', '/cart/items', { product_id: second.body.id }), 200);
+  const mixed = await shopper.change('post', '/cart/coupon', { coupon_code: 'NURKURS' });
+  status(mixed, 422);
+  assert.equal(mixed.body.code, 'COUPON_NOT_APPLICABLE');
+  assert.match(mixed.body.message, /Zweites Produkt/);
+  assert.doesNotMatch(mixed.body.message, new RegExp(product.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'der abgedeckte Artikel wird nicht als Problem genannt');
+
+  // Auch der Checkout mit Code entscheidet erneut und lehnt den gemischten
+  // Warenkorb ab, damit die Bestellung nicht an der Prüfung im Warenkorb vorbeikommt.
+  const blocked = await shopper.change('post', '/orders', await checkoutBody({ coupon_code: 'NURKURS' }));
+  assert.equal(blocked.status, 422, `Checkout mit gemischtem Warenkorb: ${JSON.stringify(blocked.body)}`);
+  assert.equal(blocked.body.code, 'COUPON_NOT_APPLICABLE');
+
+  // Nach dem Entfernen des zweiten Artikels greift der Code wieder.
+  status(await shopper.change('delete', `/cart/items/${second.body.id}`), 200);
+  const placed = await shopper.change('post', '/orders', await checkoutBody({ coupon_code: 'NURKURS' }));
+  status(placed, 201);
+  assert.equal(placed.body.discount_cents, '1990');
+  assert.equal(placed.body.total_gross_cents, '17910');
+  const reservation = await db.couponReservation.findFirstOrThrow({ where: { order_id: placed.body.id } });
+  assert.equal(reservation.coupon_id, restricted.body.id);
+
+  // Datenbankgegenprobe: die Beschränkung steht als eigene Zeile und lässt
+  // sich nicht über eine zweite, doppelte Zeile umgehen.
+  assert.deepEqual((await db.couponProduct.findMany({ where: { coupon_id: restricted.body.id } }))
+    .map(link => link.product_id), [product.id]);
+  // Die Kombination ist der Primärschlüssel: eine zweite Zeile ist unmöglich,
+  // und eine Einlösung verhindert das Löschen des Gutscheinbelegs.
+  await assert.rejects(db.couponProduct.create({ data: { coupon_id: restricted.body.id, product_id: product.id } }));
+  await assert.rejects(db.coupon.delete({ where: { id: restricted.body.id } }));
+});

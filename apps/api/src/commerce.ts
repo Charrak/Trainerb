@@ -259,12 +259,16 @@ export class Commerce {
     return this.db.$transaction(async tx => {
       await this.staffActor(tx, ctx, 'coupons.manage');
       const coupons = await tx.coupon.findMany({ orderBy: { created_at: 'desc' }, take: 100,
-        include: { products: { select: { product_id: true } }, _count: { select: { reservations: {
-          where: { status: { in: ['reserved', 'redeemed'] } } } } } } });
+        include: { products: { select: { product_id: true, product: { select: { title: true, sku: true } } },
+          orderBy: { created_at: 'asc' } },
+          _count: { select: { reservations: { where: { status: { in: ['reserved', 'redeemed'] } } } } } } });
       return { data: coupons.map(coupon => ({ id: coupon.id, code: coupon.code_canonical, type: coupon.type,
         value: String(coupon.value), currency: coupon.currency, valid_from: coupon.valid_from,
         valid_until: coupon.valid_until, max_redemptions: coupon.max_redemptions, active: coupon.active,
-        redeemed: coupon._count.reservations, product_ids: coupon.products.map(link => link.product_id) })) };
+        redeemed: coupon._count.reservations, product_ids: coupon.products.map(link => link.product_id),
+        // Ohne Namen wäre die Liste im Backoffice nur eine Sammlung von UUIDs.
+        products: coupon.products.map(link => ({ id: link.product_id, title: link.product.title,
+          sku: link.product.sku })) })) };
     });
   }
 
@@ -280,16 +284,30 @@ export class Commerce {
       if (productIds.length) await tx.couponProduct.createMany({ data: productIds.map(product_id => ({
         coupon_id: coupon.id, product_id })) });
       await this.audit(tx, ctx, 'coupon.created', 'coupon', coupon.id,
-        { code: coupon.code_canonical, type: coupon.type, value: String(coupon.value), active: coupon.active });
-      return { id: coupon.id, code: coupon.code_canonical, active: coupon.active };
+        { code: coupon.code_canonical, type: coupon.type, value: String(coupon.value), active: coupon.active,
+          // Die Beschränkung steht im Audit, damit ein späterer Rabatt nachvollziehbar bleibt.
+          product_ids: productIds });
+      return { id: coupon.id, code: coupon.code_canonical, active: coupon.active, product_ids: productIds };
     });
   }
 
+  /**
+   * Eine Beschränkung darf nur auf Produkte zeigen, die es gibt und die heute
+   * verkäuflich sind. Ein Gutschein auf ein zurückgezogenes Produkt wäre ein
+   * Rabatt, der nie greifen kann.
+   */
   private async checkCouponProducts(tx: Prisma.TransactionClient, ids: string[]): Promise<string[]> {
     if (!ids.length) return [];
-    const found = await tx.product.count({ where: { id: { in: ids } } });
-    if (found !== new Set(ids).size) throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { product_ids: 'Unbekanntes Produkt.' });
-    return [...new Set(ids)];
+    const products = await tx.product.findMany({ where: { id: { in: ids } },
+      select: { id: true, status: true, prices: { where: { status: 'active' }, select: { id: true }, take: 1 } } });
+    if (products.length !== new Set(ids).size) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.', { product_ids: 'Unbekanntes Produkt.' });
+    }
+    if (products.some(product => product.status !== 'active' || product.prices.length === 0)) {
+      throw apiError(422, 'INVALID_FIELD', 'Bitte prüfe deine Eingaben.',
+        { product_ids: 'Nur aktive Produkte mit einem aktiven Preis können eingeschränkt werden.' });
+    }
+    return products.map(product => product.id);
   }
 
   async updateCoupon(ctx: SessionContext, couponIdInput: string, input: unknown) {

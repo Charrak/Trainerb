@@ -1,6 +1,7 @@
 import { Controller, Get, Query, Req } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { financeReport } from './finance-report';
+import { ledgerReport } from './ledger-report';
 import { Database } from './database';
 import { Sessions, type ApiRequest } from './sessions';
 import { apiError, bodyObject } from './security';
@@ -20,6 +21,21 @@ export class DashboardController {
     if (period !== 'today' && period !== 'month' && period !== 'all')
       throw apiError(422, 'INVALID_PERIOD', 'Ungültiger Berichtszeitraum.');
     return financeReport(this.db, period);
+  }
+
+  /**
+   * Buchhaltungsnahe Auswertung, aus denselben eingefrorenen Belegen.
+   * Getrennte Route, weil sie eine andere Frage beantwortet als der operative
+   * Finanzbericht: Steuer je Satz, Gutschriften und offene Forderungen.
+   */
+  @Get('ledger') async ledger(@Req() req: ApiRequest, @Query() input: unknown) {
+    const ctx = await this.sessions.require(req, { backoffice: true, permission: 'reports.read_all' });
+    if (!ctx.roleKeys.some((r) => r === 'admin' || r === 'superadmin'))
+      throw apiError(403, 'FORBIDDEN', 'Kein Zugriff.');
+    const { period = 'today' } = bodyObject(input, ['period']);
+    if (period !== 'today' && period !== 'month' && period !== 'all')
+      throw apiError(422, 'INVALID_PERIOD', 'Ungültiger Berichtszeitraum.');
+    return ledgerReport(this.db, period);
   }
 
   @Get() async counts(@Req() req: ApiRequest, @Query() input: unknown) {

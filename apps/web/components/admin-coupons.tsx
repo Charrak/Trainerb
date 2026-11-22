@@ -19,7 +19,10 @@ type Coupon = {
   active: boolean;
   redeemed: number;
   product_ids: string[];
+  products: { id: string; title: string; sku: string }[];
 };
+/** Nur aktive Produkte sind als Beschränkung sinnvoll; ein Entwurf ist nicht käuflich. */
+type SellableProduct = { id: string; title: string; sku: string; status: string; latest_price: { gross_cents: string } | null };
 const canManage = (profile: Profile) => profile.permissions.includes('coupons.manage') &&
   profile.roles.some(role => role === 'admin' || role === 'superadmin');
 
@@ -43,6 +46,8 @@ export function AdminCoupons() {
   const [validUntil, setValidUntil] = useState('');
   const [max, setMax] = useState('');
   const [active, setActive] = useState(false);
+  const [products, setProducts] = useState<SellableProduct[]>([]);
+  const [productIds, setProductIds] = useState<string[]>([]);
   const allowed = !!profile && canManage(profile);
 
   async function load() {
@@ -58,6 +63,10 @@ export function AdminCoupons() {
     let current = true;
     api<Profile>('/me').then(user => { if (current) setProfile(user); })
       .catch(e => { if (current) setError(errorMessage(e)); });
+    // Auswahlhilfe: nur aktive Produkte mit aktivem Preis können beschränkt werden.
+    api<{ data: SellableProduct[] }>('/admin/products?limit=100')
+      .then(value => { if (current) setProducts(value.data.filter(p => p.status === 'active' && p.latest_price)); })
+      .catch(() => { /* die Auswahl bleibt leer; ohne Auswahl gilt der Code für alles */ });
     void load();
     return () => { current = false; };
   }, []);
@@ -74,8 +83,9 @@ export function AdminCoupons() {
         code: code.trim(), type, value: type === 'percent' ? amount : Number(amount), active,
         ...(validUntil ? { valid_until: new Date(validUntil + 'T23:59:59').toISOString() } : {}),
         ...(max ? { max_redemptions: Number(max) } : {}),
+        ...(productIds.length ? { product_ids: productIds } : {}),
       });
-      setCode(''); setValue(''); setValidUntil(''); setMax(''); setActive(false);
+      setCode(''); setValue(''); setValidUntil(''); setMax(''); setActive(false); setProductIds([]);
       setNotice('Gutschein gespeichert. Ob er gilt, entscheidet zusätzlich seine Aktivierung und der Laufzeitraum.');
       await load();
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); }
@@ -133,7 +143,33 @@ export function AdminCoupons() {
             <button className="button button-primary" disabled={busy || !canSubmit}>
               {busy ? 'Bitte warten …' : 'Gutschein speichern'} <Arrow/>
             </button>
-            <p className="muted">Ohne Produktauswahl gilt der Code für alle Produkte. Eine Beschränkung auf einzelne Produkte ist derzeit nicht vorgesehen.</p>
+            <fieldset className="stack-form">
+              <legend>Gültig für</legend>
+              <label>
+                <input type="radio" name="coupon-scope" checked={!productIds.length}
+                  onChange={() => setProductIds([])}/> Alle Produkte
+              </label>
+              <label>
+                <input type="radio" name="coupon-scope" checked={!!productIds.length}
+                  onChange={() => setProductIds(products.length ? [products[0].id] : [])}
+                  disabled={!products.length}/>
+                Nur ausgewählte Produkte
+              </label>
+              {!!productIds.length && (products.length ? (
+                <div className="field-row" role="group" aria-label="Produkte auswählen">
+                  {products.map(product => (
+                    <label key={product.id}>
+                      <input type="checkbox" checked={productIds.includes(product.id)}
+                        onChange={e => setProductIds(current => e.target.checked
+                          ? [...current, product.id]
+                          : current.filter(id => id !== product.id))}/>{' '}
+                      {product.title} <span className="muted">({product.sku})</span>
+                    </label>
+                  ))}
+                </div>
+              ) : <p>Kein aktives Produkt mit aktivem Preis vorhanden. Lege zuerst ein Produkt an und aktiviere es.</p>)}
+            </fieldset>
+            <p className="muted">Ohne Auswahl gilt der Code für den gesamten Warenkorb. Mit Auswahl gilt er nur, wenn <strong>jedes</strong> Produkt im Warenkorb freigegeben ist – ein Teilrabatt wird nicht berechnet.</p>
           </form>
           <section className="dashboard-card">
             <h2>Identität für Änderungen bestätigen</h2>
@@ -145,7 +181,7 @@ export function AdminCoupons() {
               <div className="table-wrap">
                 <table>
                   <caption>Höchstens die letzten 100 Gutscheine.</caption>
-                  <thead><tr><th scope="col">Code</th><th scope="col">Rabatt</th><th scope="col">Zeitraum</th><th scope="col">Einlösungen</th><th scope="col">Status</th><th scope="col">Aktion</th></tr></thead>
+                  <thead><tr><th scope="col">Code</th><th scope="col">Rabatt</th><th scope="col">Zeitraum</th><th scope="col">Einlösungen</th><th scope="col">Gültig für</th><th scope="col">Status</th><th scope="col">Aktion</th></tr></thead>
                   <tbody>{coupons.map(coupon => (
                     <tr key={coupon.id}>
                       <th scope="row">{coupon.code}</th>
@@ -155,6 +191,9 @@ export function AdminCoupons() {
                         {coupon.valid_until ? ` bis ${new Date(coupon.valid_until).toLocaleDateString('de-DE')}` : ', unbefristet'}
                       </td>
                       <td>{coupon.redeemed}{coupon.max_redemptions ? ` von ${coupon.max_redemptions}` : ''}</td>
+                      <td>{coupon.products?.length
+                        ? coupon.products.map(product => product.title).join(', ')
+                        : 'Alle Produkte'}</td>
                       <td>{coupon.active ? 'Aktiv' : 'Inaktiv'}</td>
                       <td>
                         <button className="inline-button" disabled={busy} onClick={() => void toggle(coupon)}>
