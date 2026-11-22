@@ -9,7 +9,7 @@ const listen = server => new Promise((resolve,reject) => {
 });
 
 // Nur synthetische Antworten am Loopback. Keine Datenbank, öffentliche Fehlerroute oder Produktionsschalter.
-test('Produktionsbuild: 404, Ladezustand, API-Ausfall und Wiederholung am Mobilviewport', {timeout:90_000}, async t => {
+test('Produktionsbuild: Systemseiten, Kontozugang und Fußnavigation am Mobilviewport', {timeout:90_000}, async t => {
   let release, failing = true;
   const gate = new Promise(resolve => { release = resolve; });
   const api = http.createServer(async (req,res) => {
@@ -23,8 +23,11 @@ test('Produktionsbuild: 404, Ladezustand, API-Ausfall und Wiederholung am Mobilv
   const web = require('next')({dev:false,dir:path.resolve('apps/web')});
   await web.prepare(); t.after(() => web.close());
   const handle = web.getRequestHandler();
+  let navStatus = 200;
   const site = http.createServer((req,res) => {
-    if (req.url === '/api/v1/navigation') return res.writeHead(200,{'content-type':'application/json'}).end('{"header":[],"footer":[]}');
+    if (req.url === '/api/v1/navigation') return res.writeHead(navStatus,{'content-type':'application/json'}).end(JSON.stringify({
+      header:[], footer:[{label:'Redaktionelle Testseite',href:'/seiten/testseite'}],
+    }));
     return handle(req,res);
   });
   const origin = await listen(site);
@@ -66,6 +69,32 @@ test('Produktionsbuild: 404, Ladezustand, API-Ausfall und Wiederholung am Mobilv
   failing=false;
   await page.getByRole('button',{name:'Seite neu laden'}).click();
   await page.getByRole('heading',{name:'Website-Seiten'}).waitFor();
+  // Auch ohne redaktionelle Daten bleiben alle drei Gruppen und die Rechtswege benutzbar.
+  navStatus=503;
+  const navigationError=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/v1/navigation' && r.status()===503);
+  await page.goto(origin+'/anmelden'); await navigationError;
+  const main=page.getByRole('main'), footer=page.getByRole('contentinfo');
+  const academy=footer.getByRole('navigation',{name:'Akademie',exact:true});
+  const legal=footer.getByRole('navigation',{name:'Rechtliches',exact:true});
+  const account=footer.getByRole('navigation',{name:'Konto',exact:true});
+  assert.equal(await main.locator('h1').innerText(),'Anmelden');
+  assert.doesNotMatch(await main.innerText(),/Baustein|Wissen bewegt|Akademie befindet sich im Aufbau/);
+  assert.deepEqual(await footer.getByRole('heading',{level:2}).allTextContents(),['Akademie','Rechtliches','Konto']);
+  assert.equal(await academy.getByRole('link',{name:'Ausbildungen'}).getAttribute('href'),'/kurse');
+  assert.equal(await legal.getByRole('link',{name:'Vertrag widerrufen'}).getAttribute('href'),'/widerruf');
+  assert.equal(await legal.getByRole('link',{name:'Widerrufsbelehrung'}).getAttribute('href'),'/widerrufsbelehrung');
+  assert.equal(await account.getByRole('link',{name:'Mein Konto'}).getAttribute('href'),'/konto');
+  assert.equal(await footer.getByText(/Nur Testdaten verwenden/).count(),1);
+  assert.equal(await footer.getByRole('navigation',{name:'Weitere Links im Fußbereich'}).count(),0);
+  await accessible();
+  navStatus=200;
+  const register=main.getByRole('link',{name:'Jetzt registrieren'});
+  await register.focus(); await page.keyboard.press('Enter');
+  await main.getByRole('heading',{name:'Konto erstellen',level:1}).waitFor();
+  await main.getByLabel('Vorname').focus(); await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'last-name');
+  await footer.getByRole('navigation',{name:'Weitere Links im Fußbereich'}).getByRole('link',{name:'Redaktionelle Testseite'}).waitFor();
+  await accessible();
   assert.equal((await page.context().cookies()).length,0);
   assert.deepEqual(outside,[]); assert.deepEqual(violations,[]);
 });

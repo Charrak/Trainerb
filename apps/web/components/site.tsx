@@ -20,29 +20,34 @@ export function Header() {
     <Link className="catalog-link" href="/kurse">Katalog</Link><Link className="catalog-link" href="/buchen">Buchen</Link><Link href="/anmelden">Anmelden</Link><Link className="nav-cta" href="/registrieren">Konto erstellen <Arrow diagonal/></Link>
   </nav></div><EditorialNavigation location="header"/></header>;
 }
-export function Footer() {
-  return <footer className="site-footer"><div><Brand/><p>Ein guter Anfang für alles, was kommt.</p></div><div className="footer-note">{!liveSite && <><span className="status-dot"/> Entwicklungsversion · Nur Testdaten verwenden<br/><span>Zahlungen im Testbetrieb.</span></>}
-      <nav aria-label="Rechtliche Informationen"><Link href="/cookie-einstellungen">Cookie-Einstellungen</Link> · <Link href="/datenrechte">Meine Datenrechte</Link> · <Link href="/newsletter">Newsletter</Link> · <Link href="/seiten">Website-Seiten</Link> · <Link href="/zahlungsinformationen">Zahlungsinformationen</Link> · <Link href="/widerrufsbelehrung">Widerrufsbelehrung</Link> · <Link href="/impressum">Impressum</Link> · <Link href="/datenschutz">Datenschutz</Link> · <Link href="/agb">AGB</Link> · <Link href="/widerruf">Vertrag widerrufen</Link></nav><EditorialNavigation location="footer"/></div></footer>;
+const footerGroups = [
+  { title: 'Akademie', links: [['Ausbildungen', '/kurse'], ['Buchen', '/buchen'], ['Website-Seiten', '/seiten'], ['Newsletter', '/newsletter']] },
+  { title: 'Rechtliches', links: [['Impressum', '/impressum'], ['Datenschutz', '/datenschutz'], ['AGB', '/agb'],
+    ['Widerrufsbelehrung', '/widerrufsbelehrung'], ['Vertrag widerrufen', '/widerruf'], ['Zahlungsinformationen', '/zahlungsinformationen'],
+    ['Cookie-Einstellungen', '/cookie-einstellungen'], ['Meine Datenrechte', '/datenrechte']] },
+  { title: 'Konto', links: [['Mein Konto', '/konto'], ['Anmelden', '/anmelden'], ['Konto erstellen', '/registrieren']] },
+] as const;
+
+export function Footer({ live }: { live: boolean }) {
+  return <footer className="site-footer">
+    <Brand/>
+    <div className="footer-columns">{footerGroups.map(({ title, links }) => (
+      <div key={title}>
+        <h2 id={'footer-' + title}>{title}</h2>
+        <nav aria-labelledby={'footer-' + title}><ul>{links.map(([label, href]) => (
+          <li key={href}><Link href={href} prefetch={false}>{label}</Link></li>
+        ))}</ul></nav>
+        {title === 'Akademie' && <EditorialNavigation location="footer"/>}
+      </div>
+    ))}</div>
+    {!live && <p className="footer-note">Entwicklungsversion · Nur Testdaten verwenden. Zahlungen im Testbetrieb.</p>}
+  </footer>;
 }
 export function Shell({ children }: { children: ReactNode }) {
-  return <NavigationProvider><Header/><main id="inhalt">{children}</main><Footer/></NavigationProvider>;
+  return <NavigationProvider><Header/><main id="inhalt">{children}</main><Footer live={liveSite}/></NavigationProvider>;
 }
 export function AuthLayout({ children }: { children: ReactNode }) {
-  return <Shell><section className="auth-layout content-width">
-    <div className="intro-column">
-      <div className="eyebrow"><span className="eyebrow-line"/> DEIN NÄCHSTER SCHRITT</div>
-      <h1>Wissen bewegt.<br/><em>Du auch.</em></h1>
-      <p className="intro-copy">Dein persönlicher Zugang zur Akademie. Erstelle dein Konto und entdecke, was als Nächstes entsteht.</p>
-      <div className="journey" aria-label="So funktioniert die Kontoerstellung">
-        <div><span>01</span><p><strong>Konto erstellen</strong><small>Mit deinem Namen und deiner E-Mail</small></p></div>
-        <div><span>02</span><p><strong>E-Mail bestätigen</strong><small>Link öffnen und Passwort festlegen</small></p></div>
-        <div><span>03</span><p><strong>Sicher anmelden</strong><small>Dein persönlicher Bereich wartet</small></p></div>
-      </div>
-      <div className="intro-bottom"><span className="mini-seal"><Shield/></span><p><strong>Schritt für Schritt.</strong><br/>Die Akademie befindet sich im Aufbau.</p></div>
-      <div className="orbit orbit-one" aria-hidden="true"/><div className="orbit orbit-two" aria-hidden="true"/>
-    </div>
-    <div className="auth-card-wrap">{children}<p className="secure-caption"><Shield/> Dein Zugang ist persönlich und geschützt.</p></div>
-  </section><section className="build-note content-width"><div><span className="build-number">01 / 04</span><span className="build-divider"/><div><strong>Der Anfang ist gemacht.</strong><p>Konten & Sicherheit sind der erste Baustein.</p></div></div><Link href="/kurse" className="build-right">AUSBILDUNGEN ENTDECKEN <Arrow/></Link></section></Shell>;
+  return <Shell><div className="auth-form-layout">{children}</div></Shell>;
 }
 export function SimpleLayout({ children, eyebrow = 'DEIN KONTO' }: { children: ReactNode; eyebrow?: string }) {
   return <Shell><section className="simple-page content-width"><div className="simple-heading"><span className="eyebrow"><span className="eyebrow-line"/> {eyebrow}</span><Link className="back-link" href="/anmelden">← Zur Anmeldung</Link></div>{children}</section></Shell>;
