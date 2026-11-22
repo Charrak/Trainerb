@@ -1,5 +1,18 @@
-import { AuthLayout } from '../components/site';
-import { AuthPanel } from '../components/auth-panel';
-import { testInboxEnabled } from '../lib/test-inbox';
+import { Shell } from '../components/site';
+import { Startseite } from '../components/startseite';
+import { publicMetadata } from '../lib/public-index';
 export const dynamic = 'force-dynamic';
-export default function Home() { return <AuthLayout><AuthPanel mode="login" showTestInbox={testInboxEnabled()}/></AuthLayout>; }
+export function generateMetadata() {
+  return {
+    ...publicMetadata('/'),
+    title: 'Trainer B Akademie',
+    description: 'Geprüfte Ausbildungen, persönlicher Lernbereich und transparente Vertragsbedingungen.',
+  };
+}
+export default function Home() {
+  return (
+    <Shell>
+      <Startseite />
+    </Shell>
+  );
+}

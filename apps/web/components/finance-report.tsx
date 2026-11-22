@@ -24,7 +24,11 @@ type Report = {
   daily: { day: string; payments: string; refunds: string }[];
   sold_course_positions: number;
   orders_by_state: { payment_state: string; fulfillment_state: string; count: number }[];
+  payments_by_method: { method: string; gross_cents: string; count: number }[];
+  refund_window: { window_days: number; refunded_cents: string; paid_cents: string } | null;
+  subscription_income_cents: string;
 };
+const methods: Record<string, string> = { stripe: 'Karte (Stripe)', invoice: 'Rechnung/Überweisung' };
 const labels: Record<string, string> = {
   awaiting: 'Zahlung ausstehend',
   processing: 'In Bearbeitung',
@@ -128,6 +132,43 @@ export function FinanceReport() {
             <dt>Bezahlt bestätigte Kurspositionen (inklusive Paketbestandteile)</dt>
             <dd>{data.sold_course_positions}</dd>
           </dl>
+          <h3>Zahlungseingänge nach Zahlungsweg</h3>
+          {data.payments_by_method.length ? (
+            <table>
+              <caption>Ausschließlich bestätigte Zahlungen im gewählten Zeitraum, keine Schätzung.</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Weg</th>
+                  <th scope="col">Eingänge</th>
+                  <th scope="col">Anzahl</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.payments_by_method.map((row) => (
+                  <tr key={row.method}>
+                    <th scope="row">{methods[row.method] ?? row.method}</th>
+                    <td>{euro(row.gross_cents)}</td>
+                    <td>{row.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>Keine bestätigten Zahlungen im Zeitraum.</p>
+          )}
+          <h3>Erstattungen der letzten sieben Tage</h3>
+          {data.refund_window ? (
+            <p>
+              {euro(data.refund_window.refunded_cents)} erstattet bei {euro(data.refund_window.paid_cents)}{' '}
+              Zahlungseingängen im gleitenden Fenster von {data.refund_window.window_days} Tagen.
+            </p>
+          ) : (
+            <p>Kein Erstattungsfenster verfügbar.</p>
+          )}
+          <p>
+            Wiederkehrende Zahlungen sind nicht eingerichtet; der entsprechende Anteil bleibt daher bei{' '}
+            {euro(data.subscription_income_cents)}.
+          </p>
           <details>
             <summary>Zahlungsverlauf der letzten sieben Berliner Kalendertage</summary>
             <table>

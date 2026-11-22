@@ -24,8 +24,8 @@ export function PublicCourses() {
   useEffect(() => { void load(); }, []);
   return <div className="catalog-page content-width">
     <div className="catalog-hero"><div><span className="eyebrow"><span className="eyebrow-line"/> WISSEN, DAS WEITERBRINGT</span>
-      <h1>Ausbildungen<span className="accent-dot">.</span></h1><p>Hier stehen die freigegebenen Ausbildungen der Akademie.</p></div>
-      <span className="draft-badge">Akademie im Aufbau</span></div>
+      <h1>Ausbildungen<span className="accent-dot">.</span></h1><p>Hier stehen die freigegebenen Ausbildungen der Akademie. Jede wird erst nach vollständiger Prüfung und ausdrücklicher Freigabe veröffentlicht.</p></div>
+      <span className="draft-badge">Geprüfte Inhalte</span></div>
     <Notice message={error}/>
     {loading ? <p className="muted">Ausbildungen werden geladen …</p> : !error && !courses.length ?
       <section className="catalog-empty"><span className="section-kicker">NOCH IN VORBEREITUNG</span><h2>Hier entsteht etwas Neues.</h2>

@@ -16,11 +16,11 @@ test('Live-Allowlist und Sitemap verwenden nur die feste Origin und beide pagini
   assert.equal(indexOrigin(true, origin+'/'), origin);
   const {rules,sitemap} = crawlerRules(origin);
   assert.equal(sitemap,origin+'/sitemap.xml'); assert.equal(rules.disallow,'/');
-  assert.deepEqual(rules.allow, ['/seiten$', '/seiten/', '/kurse$', '/kurse/', '/_next/static/', '/sitemap.xml$', '/marke/', '/favicon.ico$']);
+  assert.deepEqual(rules.allow, ['/$', '/seiten$', '/seiten/', '/kurse$', '/kurse/', '/_next/static/', '/sitemap.xml$', '/marke/', '/favicon.ico$']);
   const pages = new Map([['pages',['seite-a','seite-a']],['pages?after=seite-a',['seite-b',null]],
     ['courses?limit=100',['kurs-a','kurs-a']],['courses?limit=100&cursor=kurs-a',['kurs-b',null]]]);
   const urls=await publishedUrls(origin, async path => { const [slug,next_cursor]=pages.get(path); return {data:[{slug}],next_cursor}; });
-  assert.deepEqual(urls.map(x=>x.url),['/seiten','/kurse','/seiten/seite-a','/seiten/seite-b','/kurse/kurs-a','/kurse/kurs-b'].map(p=>origin+p));
+  assert.deepEqual(urls.map(x=>x.url),['/','/seiten','/kurse','/seiten/seite-a','/seiten/seite-b','/kurse/kurs-a','/kurse/kurs-b'].map(p=>origin+p));
 });
 
 test('Fehler, fremde Pfade und nicht fortschreitende Seitenmarken ergeben keine Teilsitemap',async()=>{

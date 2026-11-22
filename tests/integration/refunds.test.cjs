@@ -290,6 +290,9 @@ test('a partial refund leaves the payment standing and issues one credit note', 
   assert.equal(report.body.payments_cents,'19900'); assert.equal(report.body.refunds_cents,'4900');
   assert.equal(report.body.balance_cents,'15000'); assert.equal(report.body.dispute_face_value_cents,'0');
   assert.equal(report.body.sold_course_positions,1);assert.ok(report.body.orders_by_state.some(g=>g.payment_state==='paid'&&g.count===1));
+  assert.deepEqual(report.body.payments_by_method,[{method:'invoice',gross_cents:'19900',count:1}],'Zahlungsweg kommt aus der bestätigten Zahlung');
+  assert.ok(report.body.refund_window,'Erstattungsfenster wird ausgewiesen');
+  assert.equal(BigInt(report.body.refund_window.refunded_cents)>=4900n,true);
   const feeRollback=new Error('discard fee evidence');await assert.rejects(db.$transaction(async tx=>{
     const id=uuidv7();await tx.paymentAttempt.create({data:{id,order_id:order.id,provider:'stripe',environment:'test',provider_idempotency_key:key(),provider_payment_id:'pi_fee_fixture',status:'succeeded',amount_cents:19900n,currency:'EUR',confirmed_at:new Date()}});
     const report=()=>require('../../apps/api/dist/finance-report').financeReport(tx,'all');assert.equal((await report()).fees_cents,null);

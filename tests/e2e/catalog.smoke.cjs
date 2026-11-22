@@ -454,6 +454,10 @@ test('browser: protected course drafts, typed chapter content, staff scope and a
     const mobileContext = await mobileBrowser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true });
     const mobile = await mobileContext.newPage();
     await mobile.goto(new URL('/', baseUrl).href);
+    await mobile.getByRole('heading', { level: 1, name: /Wissen, das weiterbringt/ }).waitFor();
+    assert.equal(await mobile.getByRole('link', { name: 'Ausbildungen ansehen', exact: true }).count(), 1);
+    await mobile.getByRole('link', { name: 'Anmelden', exact: true }).first().click();
+    await mobile.getByRole('heading', { level: 1, name: 'Anmelden' }).waitFor();
     await mobile.getByRole('link', { name: 'Ausbildungen', exact: true }).first().click();
     await mobile.getByText('Fitnesstrainer B-Lizenz', { exact: false }).first().waitFor();
     assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'Public catalog must fit a mobile viewport.');

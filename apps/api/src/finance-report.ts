@@ -29,6 +29,9 @@ export async function financeReport(db: Database, period: FinancePeriod, asOf = 
       payments_cents: string;
       refunds_cents: string;
       dispute_face_value_cents: string;
+      payments_by_method: { method: string; gross_cents: string; count: number }[];
+      refund_window: { window_days: number; refunded_cents: string; paid_cents: string } | null;
+      subscription_income_cents: string;
     }>
   >`WITH clock AS (SELECT ${asOf}::timestamptz AS stamp), bounds AS (SELECT stamp, ${start} AS starts_at FROM clock)
     , movements AS (
@@ -54,7 +57,27 @@ export async function financeReport(db: Database, period: FinancePeriod, asOf = 
           AND confirmed_at >= coalesce(starts_at,'-infinity') AND confirmed_at <= stamp) AS refunds_cents,
       (SELECT coalesce(sum(amount_cents),0)::text FROM disputes
         WHERE environment=${environment} AND currency='EUR'
-          AND opened_at >= coalesce(starts_at,'-infinity') AND opened_at <= stamp) AS dispute_face_value_cents
+          AND opened_at >= coalesce(starts_at,'-infinity') AND opened_at <= stamp) AS dispute_face_value_cents,
+      -- Zahlungen nach tatsächlichem Weg: Karte und Rechnung getrennt, ohne
+      -- Umrechnung und ohne Schätzung. Fehlgeschlagene Versuche zählen nicht.
+      (SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.method),'[]'::jsonb) FROM (
+        SELECT p.provider AS method, coalesce(sum(p.amount_cents),0)::text AS gross_cents, count(*)::int AS count
+        FROM payment_attempts p
+        WHERE p.environment=${environment} AND p.currency='EUR' AND p.status='succeeded'
+          AND p.confirmed_at BETWEEN coalesce(starts_at,'-infinity') AND stamp
+        GROUP BY p.provider) m) AS payments_by_method,
+      -- Rückerstattungen der letzten sieben Tage im Verhältnis zu den Zahlungen
+      -- desselben Fensters. Das ist eine Kennzahl, keine Buchhaltung.
+      (SELECT jsonb_build_object('window_days',7,
+        'refunded_cents',(SELECT coalesce(sum(amount_cents),0)::text FROM refunds
+          WHERE environment=${environment} AND currency='EUR' AND status='succeeded'
+            AND confirmed_at BETWEEN stamp-interval '7 days' AND stamp),
+        'paid_cents',(SELECT coalesce(sum(amount_cents),0)::text FROM payment_attempts
+          WHERE environment=${environment} AND currency='EUR' AND status='succeeded'
+            AND confirmed_at BETWEEN stamp-interval '7 days' AND stamp))) AS refund_window,
+      -- Wiederkehrende Zahlungen sind nicht eingerichtet; die Kennzahl bleibt
+      -- deshalb ehrlich bei 0, statt einen Umsatz zu erfinden.
+      '0'::text AS subscription_income_cents
     FROM bounds`;
   return {
     period,

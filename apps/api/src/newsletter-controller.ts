@@ -142,6 +142,29 @@ export class NewsletterController {
       throw invalid();
     return this.leave(token);
   }
+  /**
+   * Reichweite je Segment, ohne Adressen zu zeigen. Die Zahl zählt bestätigte
+   * Einwilligungen mit gültiger Fassung; "aktive Lernende" verlangt zusätzlich
+   * einen bestehenden Kurszugang.
+   */
+  @Get('admin/newsletter/audiences') async audiences(@Req() req: ApiRequest) {
+    await this.sessions.require(req, { backoffice: true, permission: 'newsletter.read' });
+    const p = await policy(this.db);
+    if (!p) return { available: false, data: [] };
+    const [row] = await this.db.$queryRaw<{ all: number; kurse: number; akademie: number; kurse_aktiv: number }[]>`
+      SELECT count(*)::int AS all,count(*) FILTER(WHERE s.topic='kurse')::int AS kurse,
+        count(*) FILTER(WHERE s.topic='akademie')::int AS akademie,
+        count(*) FILTER(WHERE s.topic='kurse' AND EXISTS(
+          SELECT 1 FROM users u JOIN course_access a ON a.user_id=u.id
+          WHERE u.email_canonical=s.email AND u.deleted_at IS NULL AND u.status='active'
+            AND a.revoked_at IS NULL AND a.suspended_at IS NULL AND a.starts_at<=now()
+            AND (a.ends_at IS NULL OR a.ends_at>now())))::int AS kurse_aktiv
+      FROM newsletter_subscribers s WHERE s.status='confirmed' AND s.policy=${p.policy}`;
+    return { available: true, data: [
+      { key: 'all', size: row.all }, { key: 'kurse', size: row.kurse },
+      { key: 'akademie', size: row.akademie }, { key: 'kurse_aktiv', size: row.kurse_aktiv },
+    ] };
+  }
   @Get('admin/newsletter/campaigns') async list(@Req() req: ApiRequest) {
     await this.sessions.require(req, { backoffice: true, permission: 'newsletter.read' });
     const rows = await this.db.$queryRaw<
@@ -158,7 +181,7 @@ export class NewsletterController {
         failed: number;
       }[]
     >`WITH latest AS (SELECT * FROM newsletter_campaigns ORDER BY created_at DESC,id DESC LIMIT 50)
-   SELECT c.id,c.subject,c.body,c.audience,c.status,c.scheduled_at,s.* FROM latest c CROSS JOIN LATERAL (SELECT count(*)::int AS total,
+   SELECT c.id,c.subject,c.body,c.audience,c.status,c.scheduled_at,c.audience_size,s.* FROM latest c CROSS JOIN LATERAL (SELECT count(*)::int AS total,
     count(*) FILTER(WHERE o.status='accepted')::int AS accepted,count(*) FILTER(WHERE o.status='suppressed' OR(c.status='cancelled' AND n.dispatched_at IS NULL))::int AS suppressed,
     count(*) FILTER(WHERE o.status='failed' OR(n.outbox_id IS NULL AND n.dispatched_at IS NOT NULL))::int AS failed FROM newsletter_sends n LEFT JOIN email_outbox o ON o.id=n.outbox_id WHERE n.campaign_id=c.id)s ORDER BY c.created_at DESC,c.id DESC`;
     return { enabled: sendingEnabled(), data: rows };
@@ -166,7 +189,7 @@ export class NewsletterController {
   @Post('admin/newsletter/campaigns') create(@Req() req: ApiRequest, @Body() input: unknown) {
     return backofficeWrite(this.db, this.sessions, req, 'newsletter.edit', async (tx, actor) => {
       const b = bodyObject(input, ['subject', 'body', 'audience']);
-      if (!['all', 'kurse', 'akademie'].includes(String(b.audience)) || typeof b.audience !== 'string') throw invalid();
+      if (!['all', 'kurse', 'akademie', 'kurse_aktiv'].includes(String(b.audience)) || typeof b.audience !== 'string') throw invalid();
       const id = uuidv7();
       await tx.newsletterCampaign.create({
         data: {
@@ -206,6 +229,42 @@ export class NewsletterController {
       });
       if (!r.count) throw apiError(409, 'CAMPAIGN_CHANGED', 'Bitte den Kampagnenstand neu laden.');
       await audit(tx, actor, 'scheduled', id);
+      return received;
+    });
+  }
+  /**
+   * Anhalten und Fortsetzen nur vor dem Einfrieren: sobald der Empfängerkreis
+   * festgelegt ist, darf ein Lauf nur noch gestoppt, nicht wiederbelebt werden.
+   */
+  @Post('admin/newsletter/campaigns/:id/pause') @HttpCode(200) pause(
+    @Req() req: ApiRequest,
+    @Param('id') id: string,
+    @Body() input: unknown,
+  ) {
+    return backofficeWrite(this.db, this.sessions, req, 'newsletter.send', async (tx, actor) => {
+      bodyObject(input, []);
+      const r = await tx.newsletterCampaign.updateMany({
+        where: { id: requireUuid(id), status: 'scheduled' },
+        data: { status: 'paused' },
+      });
+      if (!r.count) throw apiError(409, 'CAMPAIGN_CHANGED', 'Bitte den Kampagnenstand neu laden.');
+      await audit(tx, actor, 'paused', id);
+      return received;
+    });
+  }
+  @Post('admin/newsletter/campaigns/:id/resume') @HttpCode(200) resume(
+    @Req() req: ApiRequest,
+    @Param('id') id: string,
+    @Body() input: unknown,
+  ) {
+    return backofficeWrite(this.db, this.sessions, req, 'newsletter.send', async (tx, actor) => {
+      bodyObject(input, []);
+      const r = await tx.newsletterCampaign.updateMany({
+        where: { id: requireUuid(id), status: 'paused' },
+        data: { status: 'scheduled' },
+      });
+      if (!r.count) throw apiError(409, 'CAMPAIGN_CHANGED', 'Bitte den Kampagnenstand neu laden.');
+      await audit(tx, actor, 'resumed', id);
       return received;
     });
   }

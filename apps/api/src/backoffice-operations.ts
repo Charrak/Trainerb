@@ -1,4 +1,5 @@
 import { templates } from './mail-catalog';
+import { renderMailParts, sampleValues } from './mail-fassung';
 import { backofficeWrite } from './backoffice-write';
 import { Body, Controller, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
@@ -30,6 +31,8 @@ function templateText(value: unknown, subject: boolean, key: string) {
     .trim();
   const baseline = templates[key][subject ? 'subject' : 'text'],
     allowed = new Set(names(baseline));
+  // Jede eingebaute Vorlage darf für sich stehen; erlaubt bleiben genau die
+  // Platzhalter der Vorlage (plus der Anrede, wo sie fachlich zulässig ist).
   if (key === 'certificate_ready') allowed.add('first_name');
   const used = names(s);
   if (used.some((n) => !allowed.has(n)) || names(baseline).some((n) => n !== 'first_name' && !used.includes(n)))
@@ -184,8 +187,9 @@ export class BackofficeOperations {
     @Param('key') key?: string,
   ) {
     await this.sessions.require(req, { backoffice: true, permission: 'mail.manage' });
+    const mailKey = checkedKey(key);
     const template = await this.db.emailTemplate.findUnique({
-      where: { key_locale: checkedKey(key) },
+      where: { key_locale: mailKey },
       select: {
         status: true,
         versions: {
@@ -200,6 +204,8 @@ export class BackofficeOperations {
     return {
       published: template.versions.find((v) => v.state === 'published') ?? null,
       draft: template.versions.find((v) => v.state === 'draft') ?? null,
+      // Pflicht-Platzhalter der eingebauten Vorlage; die Anrede ist freiwillig.
+      variables: Array.from(new Set([...names(templates[mailKey.key].text), ...names(templates[mailKey.key].subject)])).sort(),
     };
   }
   private async lockTemplate(tx: Prisma.TransactionClient, key?: string) {
@@ -209,6 +215,26 @@ export class BackofficeOperations {
     >`SELECT id FROM email_templates WHERE key=${mailKey.key} AND locale=${mailKey.locale} AND status='active' FOR UPDATE`;
     if (!t) throw missing();
     return t.id;
+  }
+  /**
+   * Vorschau: die freigegebene Version mit synthetischen Werten in beiden
+   * Fassungen. Ist keine Version gespeichert, gilt der eingebaute Wortlaut.
+   */
+  @Get(['certificate-mail-template/preview', 'mail-templates/:key/preview']) async preview(
+    @Req() req: ApiRequest,
+    @Param('key') key?: string,
+  ) {
+    await this.sessions.require(req, { backoffice: true, permission: 'mail.manage' });
+    const mailKey = checkedKey(key);
+    const published = await this.db.emailTemplateVersion.findFirst({
+      where: { template: { key: mailKey.key, locale: mailKey.locale }, state: 'published' },
+      select: { subject_template: true, body_text_template: true },
+    });
+    return renderMailParts(
+      published?.subject_template ?? templates[mailKey.key].subject,
+      published?.body_text_template ?? templates[mailKey.key].text,
+      sampleValues,
+    );
   }
   @Post(['certificate-mail-template/drafts', 'mail-templates/:key/drafts']) draft(
     @Req() req: ApiRequest,
@@ -236,7 +262,7 @@ export class BackofficeOperations {
           state: 'draft',
           subject_template,
           body_text_template,
-          body_html_template: body_text_template.replaceAll('&', '&amp;').replaceAll('\n', '<br>'),
+          body_html_template: body_text_template,
           allowed_variables: last.allowed_variables as Prisma.InputJsonValue,
           created_by: actor,
         },

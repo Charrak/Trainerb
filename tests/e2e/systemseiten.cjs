@@ -9,7 +9,7 @@ const listen = server => new Promise((resolve,reject) => {
 });
 
 // Nur synthetische Antworten am Loopback. Keine Datenbank, öffentliche Fehlerroute oder Produktionsschalter.
-test('Produktionsbuild: Systemseiten, Kontozugang und Fußnavigation am Mobilviewport', {timeout:90_000}, async t => {
+test('Produktionsbuild: Startseite, Systemseiten, Kontozugang und Fußnavigation am Mobilviewport', {timeout:90_000}, async t => {
   let release, failing = true;
   const gate = new Promise(resolve => { release = resolve; });
   const api = http.createServer(async (req,res) => {
@@ -53,6 +53,12 @@ test('Produktionsbuild: Systemseiten, Kontozugang und Fußnavigation am Mobilvie
   assert.equal(missing.status(),404);
   await page.getByRole('heading',{name:'Seite nicht gefunden'}).waitFor();
   assert.equal(await page.locator('html').getAttribute('lang'),'de');
+  await accessible();
+  await page.goto(origin+'/');
+  await page.getByRole('heading',{level:1,name:/Wissen, das weiterbringt/}).waitFor();
+  assert.equal(await page.locator('meta[name=robots]').getAttribute('content'),'noindex, nofollow');
+  await page.getByRole('link',{name:'Ausbildungen ansehen'}).first().waitFor();
+  await page.getByRole('navigation',{name:'Rechtliches und Hilfe'}).getByRole('link',{name:'Vertrag widerrufen'}).waitFor();
   await accessible();
   await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
   assert.equal(new URL(page.url()).hash,'#inhalt');

@@ -132,19 +132,26 @@ type Campaign = {
   audience: string;
   status: string;
   scheduled_at: string | null;
+  audience_size: number | null;
   total: number;
   accepted: number;
   suppressed: number;
   failed: number;
 };
 type Workspace = { enabled: boolean; data: Campaign[] };
+type Audience = { key: string; size: number };
+type Reach = { available: boolean; data: Audience[] };
 const states: Record<string, string> = {
   draft: 'Entwurf',
   scheduled: 'Geplant',
   frozen: 'Empfänger festgelegt',
+  paused: 'Angehalten',
   cancelled: 'Gestoppt',
 };
-const topics: Record<string, string> = { all: 'Alle bestätigten Themen', kurse: 'Kurse', akademie: 'Akademie' };
+const topics: Record<string, string> = {
+  all: 'Alle bestätigten Themen', kurse: 'Thema Kurse', akademie: 'Thema Akademie',
+  kurse_aktiv: 'Lernende mit aktivem Zugang (Thema Kurse)',
+};
 export function Campaigns() {
   const [ws, W] = useState<Workspace>(),
     [subject, S] = useState(''),
@@ -152,12 +159,16 @@ export function Campaigns() {
     [audience, A] = useState('all'),
     [at, F] = useState(''),
     [selected, select] = useState(''),
+    [reach, setReach] = useState<Reach>(),
     [mail, M] = useState(''),
     [reason, R] = useState('bounced'),
     [busy, B] = useState(false),
     [error, E] = useState(''),
     [notice, N] = useState('');
-  const load = async () => W(await api<Workspace>('/admin/newsletter/campaigns'));
+  const load = async () => {
+    W(await api<Workspace>('/admin/newsletter/campaigns'));
+    setReach(await api<Reach>('/admin/newsletter/audiences'));
+  };
   useEffect(() => {
     load().catch((e) => E(errorMessage(e)));
   }, []);
@@ -215,10 +226,18 @@ export function Campaigns() {
                 {Object.entries(topics).map(([k, v]) => (
                   <option key={k} value={k}>
                     {v}
+                    {reach?.available && reach.data.some((a) => a.key === k)
+                      ? ` — ${reach.data.find((a) => a.key === k)!.size} Adressen`
+                      : ''}
                   </option>
                 ))}
               </select>
             </label>
+            <p>
+              {reach?.available
+                ? 'Die Zahlen zählen bestätigte Einwilligungen der aktuellen Fassung; sie werden beim Einfrieren und vor jeder Übergabe erneut geprüft.'
+                : 'Für eine genaue Reichweite fehlt der freigegebene Einwilligungstext oder eine aktive Datenschutzfassung.'}
+            </p>
             <button
               disabled={!subject.trim() || !body.trim()}
               onClick={() => act('/admin/newsletter/campaigns', { subject, body, audience }, 'Entwurf gespeichert.')}
@@ -251,6 +270,12 @@ export function Campaigns() {
                   {c.total} Empfänger festgelegt · {c.accepted} vom Mailserver angenommen · {c.suppressed} unterdrückt ·{' '}
                   {c.failed} fehlgeschlagen
                 </p>
+                <p>
+                  {c.audience_size === null
+                    ? 'Empfängerzahl wird beim Einfrieren festgelegt.'
+                    : `${c.audience_size} bestätigte Adressen in diesem Segment.`}{' '}
+                  Die Regel wird unmittelbar vor jeder Übergabe erneut geprüft.
+                </p>
                 {c.status === 'draft' && (
                   <>
                     <label>
@@ -270,6 +295,16 @@ export function Campaigns() {
                       Geprüften Entwurf zum Versand freigeben
                     </button>
                   </>
+                )}
+                {c.status === 'scheduled' && (
+                  <button onClick={() => act(`/admin/newsletter/campaigns/${c.id}/pause`, {}, 'Kampagne angehalten.')}>
+                    Geplanten Versand anhalten
+                  </button>
+                )}
+                {c.status === 'paused' && (
+                  <button onClick={() => act(`/admin/newsletter/campaigns/${c.id}/resume`, {}, 'Versand wieder geplant.')}>
+                    Versand fortsetzen
+                  </button>
                 )}
                 {c.status !== 'cancelled' && (
                   <button onClick={() => act(`/admin/newsletter/campaigns/${c.id}/cancel`, {}, 'Kampagne gestoppt.')}>
